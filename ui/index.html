@@ -223,7 +223,7 @@
         <button id="insertExample" class="small" type="button">Insert example</button>
       </div>
       <div class="editor-footer">
-        <div id="editorHelp" class="editor-help"><span id="cursorPosition">Ln 1, Col 1</span><span>Tab indent · Ctrl+Space complete</span></div>
+        <div id="editorHelp" class="editor-help"><span id="cursorPosition">Ln 1, Col 1</span><span>Tab accept / indent · Ctrl+Space complete</span></div>
         <button id="lintStatus" class="plain small" type="button" title="Show diagnostics (Ctrl+Shift+M)">Checking…</button>
         <button id="runButton" class="run" type="button" disabled>Run <span class="shortcut">Ctrl+Enter</span></button>
       </div>
@@ -297,7 +297,7 @@
     $('autoscroll').checked = stored.version === 2 && stored.autoscroll === true;
     if (['generic', 'macsploit-744.2'].includes(stored.profile)) $('profileSelect').value = stored.profile;
     const editor = EmulatorEditor.createEditor($('source'), {
-      doc: drafts[mode], context: mode, getToken: () => token, onChange: editChanged, onCursor: cursor,
+      doc: drafts[mode], context: mode, getToken: () => token, getRealm: () => $('realmSelect').value, onChange: editChanged, onCursor: cursor,
       onRun: runCode, onSizeError: showError,
       onLintStatus(text, detail) { $('lintStatus').textContent = text; $('lintStatus').title = detail || 'Show diagnostics (Ctrl+Shift+M)'; }
     });
@@ -340,6 +340,7 @@
     }
     function selectedRealm() { return (state?.realms || []).find(realm => realm.id === $('realmSelect').value); }
     function renderTargets() {
+      const previousRealm = $('realmSelect').value;
       let realms = eligibleRealms();
       const choice = choices[mode];
       $('clientField').hidden = mode === 'server';
@@ -355,6 +356,7 @@
       const options = realms.map(realm => [realm.id, realm.id + (realm.actorId ? ' · Actor: ' + realm.actorId : '')]);
       setOptions($('realmSelect'), options.length ? options : [['', state ? 'No matching VMs' : 'Waiting for state…']], choice.realm);
       choice.realm = $('realmSelect').value;
+      if (choice.realm !== previousRealm) editor.refreshCompletions();
       const realm = selectedRealm();
       const memory = Number.isFinite(realm?.memoryBytes) ? (realm.memoryBytes / 1048576).toFixed(2) + ' MiB' : '—';
       const profile = realm?.executor && realm.executorProfile ? ' · ' + realm.executorProfile : '';
@@ -705,7 +707,7 @@ print(table.concat(lines, "\n"))
     }
 
     for (const button of document.querySelectorAll('.mode')) button.addEventListener('click', () => switchMode(button.dataset.mode));
-    for (const [id, key] of [['clientSelect', 'client'], ['actorSelect', 'actor'], ['realmSelect', 'realm']]) $(id).addEventListener('change', () => { choices[mode][key] = $(id).value; renderTargets(); save(); });
+    for (const [id, key] of [['clientSelect', 'client'], ['actorSelect', 'actor'], ['realmSelect', 'realm']]) $(id).addEventListener('change', () => { choices[mode][key] = $(id).value; editor.refreshCompletions(); renderTargets(); save(); });
     $('source').addEventListener('editor-escape', () => $('openButton').focus());
     $('lintStatus').addEventListener('click', () => editor.showDiagnostics());
     document.addEventListener('keydown', event => { if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('resetDialog').open) { event.preventDefault(); runCode(); } });

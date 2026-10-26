@@ -1,10 +1,10 @@
-import {EditorState} from '@codemirror/state';
+import {EditorState, Prec} from '@codemirror/state';
 import {EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
   drawSelection, dropCursor, highlightActiveLine, hoverTooltip} from '@codemirror/view';
 import {defaultKeymap, history, historyKeymap, indentWithTab, indentSelection} from '@codemirror/commands';
 import {StreamLanguage, indentUnit, indentOnInput, bracketMatching, syntaxHighlighting,
   HighlightStyle, syntaxTree} from '@codemirror/language';
-import {autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, snippetCompletion} from '@codemirror/autocomplete';
+import {autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, snippetCompletion, acceptCompletion, closeCompletion} from '@codemirror/autocomplete';
 import {linter, lintGutter, lintKeymap, setDiagnostics, openLintPanel} from '@codemirror/lint';
 import {lua} from '@codemirror/legacy-modes/mode/lua';
 import {tags} from '@lezer/highlight';
@@ -58,7 +58,7 @@ const globals = [
   entry('setmetatable', '(table, metatable?) → table', 'Set a table metatable.'),
   entry('getmetatable', '(value) → any', 'Read the metatable or its protected value.'),
   ...['game', 'workspace', 'script', 'shared', '_G', 'Enum', 'Instance', 'Vector2', 'Vector3', 'CFrame', 'Color3',
-    'UDim', 'UDim2', 'Ray', 'task', 'math', 'string', 'table', 'buffer', 'coroutine', 'debug', 'os', 'utf8']
+    'UDim', 'UDim2', 'Random', 'Ray', 'task', 'math', 'string', 'table', 'buffer', 'coroutine', 'debug', 'os', 'utf8']
     .map(label => entry(label, 'global', label, 'variable'))
 ];
 const executor = [
@@ -92,7 +92,7 @@ const members = {
   buffer: ['create', 'fromstring', 'tostring', 'len', 'copy', 'fill', 'readu8', 'writeu8', 'readu32', 'writeu32', 'readf64', 'writef64'],
   Instance: ['new'], Vector2: ['new', 'zero', 'one'], Vector3: ['new', 'zero', 'one', 'xAxis', 'yAxis', 'zAxis'],
   CFrame: ['new', 'Angles', 'lookAt', 'fromMatrix', 'identity'], Color3: ['new', 'fromRGB', 'fromHSV', 'fromHex'],
-  UDim: ['new'], UDim2: ['new', 'fromScale', 'fromOffset'], Ray: ['new']
+  UDim: ['new'], UDim2: ['new', 'fromScale', 'fromOffset'], Random: ['new'], Ray: ['new']
 };
 const instanceMembers = ['GetService', 'FindService', 'GetChildren', 'GetDescendants', 'FindFirstChild', 'WaitForChild',
   'FindFirstChildOfClass', 'IsA', 'GetFullName', 'GetActor', 'GetAttribute', 'SetAttribute', 'GetAttributes',
@@ -100,31 +100,130 @@ const instanceMembers = ['GetService', 'FindService', 'GetChildren', 'GetDescend
   'Disconnect', 'BindToMessage', 'SendMessage'];
 const words = ['and', 'break', 'continue', 'do', 'else', 'elseif', 'end', 'export', 'false', 'in', 'local', 'nil', 'not',
   'or', 'repeat', 'return', 'then', 'true', 'type', 'until', 'while'];
+const reservedWords = new Set([...words, 'if', 'for', 'function']);
 const snippets = [
   snippetCompletion('if ${condition} then\n\t${}\nend', {label: 'if', type: 'keyword', detail: 'if block'}),
   snippetCompletion('function ${name}(${args})\n\t${}\nend', {label: 'function', type: 'keyword', detail: 'function block'}),
   snippetCompletion('for ${key}, ${value} in ${iterator} do\n\t${}\nend', {label: 'for', type: 'keyword', detail: 'for block'})
 ];
 
+// Resolve literal Instance paths only. Hints never evaluate Luau or invoke Instance methods.
+function pathTokens(source) {
+  const pattern = /--\[(=*)\[[\s\S]*?\]\1\]|--[^\r\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\[(=*)\[[\s\S]*?\]\2\]|[A-Za-z_]\w*|[^\s]/g;
+  return [...source.matchAll(pattern)].filter(match => !match[0].startsWith('--')).map(match => ({text: match[0], from: match.index, to: match.index + match[0].length}));
+}
+function literalString(token) {
+  const text = token?.text || '';
+  const long = /^\[(=*)\[([\s\S]*)\]\1\]$/.exec(text);
+  if (long) return long[2].replace(/^\r?\n/, '');
+  if (!/^(["'])[\s\S]*\1$/.test(text)) return null;
+  let valid = true;
+  const escaped = {a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', '"': '"', "'": "'"};
+  const value = text.slice(1, -1).replace(/\\(x[\da-fA-F]{2}|u\{[\da-fA-F]+\}|\d{1,3}|z\s*|\r?\n|[\s\S])/g, (_, escape) => {
+    if (Object.hasOwn(escaped, escape)) return escaped[escape];
+    if (escape[0] === 'z') return '';
+    if (escape[0] === 'x') return String.fromCharCode(parseInt(escape.slice(1), 16));
+    if (escape[0] === 'u') {
+      const point = parseInt(escape.slice(2, -1), 16);
+      if (point <= 0x10ffff) return String.fromCodePoint(point);
+    } else if (/^\d+$/.test(escape) && Number(escape) <= 255) return String.fromCharCode(Number(escape));
+    else if (/\r?\n/.test(escape)) return '\n';
+    valid = false; return '';
+  });
+  return valid ? value : null;
+}
+function readPath(tokens, start, aliases) {
+  const root = tokens[start]?.text;
+  let path = root === 'game' || root === 'workspace' ? [root] : aliases.get(root)?.slice();
+  if (!path) return null;
+  let index = start + 1;
+  while (index < tokens.length && path.length < 32) {
+    const token = tokens[index].text;
+    if (token === '.' && /^[A-Za-z_]\w*$/.test(tokens[index + 1]?.text || '')) {
+      path.push(tokens[index + 1].text); index += 2;
+    } else if (token === '[' && tokens[index + 2]?.text === ']') {
+      const name = literalString(tokens[index + 1]); if (name === null) break;
+      path.push(name); index += 3;
+    } else if (token === ':' && ['GetService', 'FindService', 'WaitForChild', 'FindFirstChild'].includes(tokens[index + 1]?.text) && tokens[index + 2]?.text === '(') {
+      const method = tokens[index + 1].text, name = literalString(tokens[index + 3]);
+      if (name === null || tokens[index + 4]?.text !== ')') break;
+      if ((method === 'GetService' || method === 'FindService') && (path.length !== 1 || path[0] !== 'game')) break;
+      path.push(name); index += 5;
+    } else break;
+  }
+  return {path, end: index};
+}
+function instancePath(source) {
+  const tokens = pathTokens(source), aliases = new Map();
+  for (let index = 0; index < tokens.length; index++) {
+    const local = tokens[index].text === 'local';
+    const nameIndex = local ? index + 1 : index, name = tokens[nameIndex]?.text;
+    if (!/^[A-Za-z_]\w*$/.test(name || '') || !local && !aliases.has(name)) continue;
+    if (!local && index > 0 && tokens[index - 1].text !== ';' && !/[\r\n]/.test(source.slice(tokens[index - 1].to, tokens[index].from))) continue;
+    let equals = nameIndex + 1;
+    if (tokens[equals]?.text === ':') while (equals < tokens.length && tokens[equals].text !== '=' && tokens[equals].text !== ';') equals++;
+    if (tokens[equals]?.text !== '=') { if (local) aliases.delete(name); continue; }
+    const result = readPath(tokens, equals + 1, aliases);
+    const next = result && tokens[result.end];
+    const boundary = result && (!next || [';', 'end', 'else', 'elseif', 'until'].includes(next.text) || /[\r\n]/.test(source.slice(tokens[result.end - 1].to, next.from)));
+    if (result && boundary) aliases.set(name, result.path);
+    else aliases.delete(name);
+  }
+  for (let index = Math.max(0, tokens.length - 160); index < tokens.length; index++) {
+    const result = readPath(tokens, index, aliases);
+    if (result?.end === tokens.length) return result.path;
+  }
+  return null;
+}
+
 export function createEditor(parent, options) {
   let context = options.context || 'server';
   let timer, controller, generation = 0;
   const docs = new Map([...globals, ...executor].map(item => [item.label, item]));
   function complete(request) {
-    const token = request.matchBefore(/[\w.:]*/);
-    if (!token || !request.explicit && !token.text) return null;
+    const token = request.matchBefore(/\w*/);
+    if (!token) return null;
     const node = syntaxTree(request.state).resolveInner(request.pos, -1);
     if (/string|comment/i.test(node.name)) return null;
-    const member = /^(.*)([.:])(\w*)$/.exec(token.text);
-    if (member) {
-      const name = member[1].split(/[.:]/).at(-1);
-      const names = member[2] === ':' ? [...instanceMembers, ...(context === 'server' ? ['FireClient', 'FireAllClients', 'InvokeClient'] : ['FireServer', 'InvokeServer'])] : (members[name] || []);
-      return {from: token.to - member[3].length, options: names.map(label => entry(label, member[2] === ':' ? 'method' : name, label)), validFor: /^\w*$/};
+    const before = request.state.doc.sliceString(0, token.from).trimEnd();
+    const operator = before.at(-1);
+    if (!request.explicit && !token.text && operator !== '.' && operator !== ':') return null;
+    if (operator === '.' || operator === ':') {
+      const receiver = before.slice(0, -1), path = instancePath(receiver);
+      const name = /([A-Za-z_]\w*)\s*$/.exec(receiver)?.[1];
+      const names = operator === ':' ? [...instanceMembers, ...(context === 'server' ? ['FireClient', 'FireAllClients', 'InvokeClient'] : ['FireServer', 'InvokeServer'])]
+        : (members[name] || (path ? ['Name', 'ClassName', 'Parent', 'Archivable', ...instanceMembers] : []));
+      const fallback = {from: token.from, options: names.map(label => entry(label, operator === ':' ? 'method' : name || 'member', label)), validFor: /^\w*$/};
+      return path ? completeInstance(request, path, operator, before.length - 1, fallback) : fallback;
     }
     const locals = [...request.state.doc.toString().matchAll(/\blocal\s+(?:function\s+)?([A-Za-z_]\w*)/g)]
       .map(match => entry(match[1], 'local', 'Local declaration', 'variable'));
     const list = [...globals, ...locals, ...(context === 'executor' ? executor : []), ...words.map(label => ({label, type: 'keyword'})), ...snippets];
     return {from: token.from, options: [...new Map(list.map(item => [item.label, item])).values()], validFor: /^\w*$/};
+  }
+  async function completeInstance(request, path, operator, operatorPosition, fallback) {
+    const realm = options.getRealm?.(), requestedContext = context, token = options.getToken?.();
+    if (!realm || !token) return fallback;
+    const abort = new AbortController();
+    request.addEventListener('abort', () => abort.abort(), {onDocChange: true});
+    const timeout = setTimeout(() => abort.abort(), 4000);
+    try {
+      const response = await fetch('/api/completions', {method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: abort.signal,
+        headers: {'Content-Type': 'application/json', 'X-Emulator-Token': token}, body: JSON.stringify({realm, context: requestedContext, path})});
+      const result = await response.json();
+      if (request.aborted || context !== requestedContext || options.getRealm?.() !== realm) return null;
+      if (!response.ok || !Array.isArray(result.items) || !result.items.length) return fallback;
+      const items = result.items.filter(item => typeof item.label === 'string' && (operator !== ':' || item.type === 'method' || item.type === 'function')).map(item => {
+        const completion = entry(item.label, String(item.detail || ''), String(item.info || ''), typeof item.type === 'string' ? item.type : 'property');
+        if (operator === '.' && (!/^[A-Za-z_]\w*$/.test(item.label) || reservedWords.has(item.label))) {
+          const quoted = JSON.stringify(item.label).replace(/\\u([\da-fA-F]{4})/g, '\\u{$1}');
+          completion.apply = (view, _completion, _from, to) => view.dispatch({changes: {from: operatorPosition, to, insert: '[' + quoted + ']'}, selection: {anchor: operatorPosition + quoted.length + 2}, scrollIntoView: true});
+        }
+        return completion;
+      });
+      return {...fallback, options: items};
+    } catch { return request.aborted || context !== requestedContext || options.getRealm?.() !== realm ? null : fallback; }
+    finally { clearTimeout(timeout); }
   }
   const hover = hoverTooltip((view, position) => {
     const line = view.state.doc.lineAt(position), offset = position - line.from;
@@ -182,6 +281,7 @@ export function createEditor(parent, options) {
   const extensions = [
     lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), history(), drawSelection(), dropCursor(),
     EditorState.allowMultipleSelections.of(true), indentUnit.of('    '), luau, indentOnInput(), bracketMatching(),
+    Prec.highest(keymap.of([{key: 'Tab', run: acceptCompletion}])),
     closeBrackets(), autocompletion({override: [complete]}), highlightActiveLine(), hover,
     linter(null), lintGutter(),
     keymap.of([{key: 'Mod-Enter', run: () => { options.onRun?.(); return true; }},
@@ -209,8 +309,10 @@ export function createEditor(parent, options) {
       '.cm-scroller': {overflow: 'auto', fontFamily: 'ui-monospace, "Cascadia Code", Consolas, monospace', fontSize: '14px', lineHeight: '1.65'},
       '.cm-content': {padding: '14px 0', caretColor: '#e7edf5'}, '.cm-line': {padding: '0 12px'},
       '.cm-gutters': {backgroundColor: '#11161d', color: '#65778d', borderRight: '1px solid #27313e'},
-      '.cm-activeLineGutter, .cm-activeLine': {backgroundColor: '#1a2532'},
-      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {backgroundColor: '#3c5472'},
+      '.cm-activeLineGutter': {backgroundColor: '#1a2532'}, '.cm-activeLine': {backgroundColor: 'transparent'},
+      '.cm-selectionBackground': {backgroundColor: '#375678'},
+      '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {backgroundColor: '#436f9d'},
+      '.cm-content ::selection': {backgroundColor: '#436f9d'},
       '&.cm-focused': {outline: 'none'}, '.cm-cursor, .cm-dropCursor': {borderLeftColor: '#e7edf5'},
       '.cm-tooltip': {backgroundColor: '#202a36', border: '1px solid #4c5e73', color: '#e7edf5', borderRadius: '6px', maxWidth: 'min(560px, 85vw)'},
       '.cm-tooltip-autocomplete > ul > li[aria-selected]': {backgroundColor: '#344e6d', color: '#fff'},
@@ -240,6 +342,7 @@ export function createEditor(parent, options) {
     focus: () => view.focus(),
     indent: () => indentSelection(view),
     showDiagnostics: () => openLintPanel(view),
+    refreshCompletions: () => closeCompletion(view),
     destroy() { clearTimeout(timer); controller?.abort(); view.destroy(); }
   };
 }

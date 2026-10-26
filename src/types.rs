@@ -1,6 +1,142 @@
 use mlua::{AnyUserData, Error, Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, ObjectLike, Result, Table, UserData, UserDataFields, UserDataMethods, UserDataRegistry, Value, ffi};
 use serde_json::{Value as Json, json};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UDim { pub scale:f32, pub offset:i32 }
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UDim2 { pub x:UDim, pub y:UDim }
+impl UserData for UDim { fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type","UDim");} }
+impl UserData for UDim2 { fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type","UDim2");} }
+fn dimension<const TWO:bool>(value:&Value)->Option<UDim2>{
+    let Value::UserData(value)=value else{return None};
+    if TWO {value.borrow::<UDim2>().ok().map(|v|*v)}else{value.borrow::<UDim>().ok().map(|v|UDim2{x:*v,y:UDim::default()})}
+}
+fn dimension_value<const TWO:bool>(lua:&Lua,value:UDim2)->Result<Value>{if TWO {value.into_lua(lua)}else{value.x.into_lua(lua)}}
+fn dimension_name<const TWO:bool>()->&'static str{if TWO {"UDim2"}else{"UDim"}}
+fn dimension_int(value:f64)->i32 {let value=value.trunc();if !value.is_finite()||value<i32::MIN as f64||value>i32::MAX as f64{i32::MIN}else{value as i32}}
+fn dimension_number(lua:&Lua,args:&MultiValue,index:usize)->Result<f64>{Ok(lua.coerce_number(args.get(index).cloned().unwrap_or(Value::Nil))?.unwrap_or(0.))}
+fn float9(value:f32)->String {
+    if value.is_nan(){return "NAN".into()}if value.is_infinite(){return if value.is_sign_negative(){"-INF"}else{"INF"}.into()}
+    let scientific=format!("{value:.8e}");let (digits,exponent)=scientific.split_once('e').unwrap();let exponent:i32=exponent.parse().unwrap();
+    let trim=|text:String|if text.contains('.') {text.trim_end_matches('0').trim_end_matches('.').to_owned()}else{text};
+    if !(-4..9).contains(&exponent){format!("{}e{exponent:+03}",trim(digits.into()))}else{trim(format!("{value:.precision$}",precision=(8-exponent).max(0)as usize))}
+}
+fn dimension_text(v:UDim)->String{format!("{}, {}",float9(v.scale),v.offset)}
+unsafe extern "C-unwind" fn dimension_error<const TWO:bool,const ARG:i32>(state:*mut ffi::lua_State)->std::ffi::c_int {unsafe{ffi::luaL_typeerror(state,ARG,if TWO {c"UDim2"}else{c"UDim"}.as_ptr())}}
+// All metatable dispatch happens in the original native frame, including bad self/key arguments.
+unsafe extern "C-unwind" fn dimension_meta<const TWO:bool,const OP:u8>(state:*mut ffi::lua_State)->std::ffi::c_int {unsafe{
+    Lua::invoke_native_callback(state,|lua,args|{
+        use mlua::state::NativeCall::{Dispatch,Return};
+        let Some(a)=args.front().and_then(dimension::<TWO>) else{return Ok(Dispatch(dimension_error::<TWO,1>))};
+        let name=dimension_name::<TWO>();
+        let value=match OP {
+            0|1=>{
+                let Some(key)=lua.coerce_string(args.get(1).cloned().unwrap_or(Value::Nil))? else{return Ok(Dispatch(enum_key_error))};let key=key.to_string_lossy();
+                let valid=if TWO {matches!(key.as_str(),"X"|"Y"|"Width"|"Height")}else{matches!(key.as_str(),"Scale"|"Offset")};
+                if OP==1 {return Err(Error::lua_string(if valid {format!("{key} member of {name} is read-only and cannot be assigned to")}else{format!("{key} is not a valid member of {name}")}))}
+                match key.as_str(){
+                    "X"|"Width" if TWO=>a.x.into_lua(lua)?,"Y"|"Height" if TWO=>a.y.into_lua(lua)?,
+                    "Scale" if !TWO=>Value::Number(a.x.scale as f64),"Offset" if !TWO=>Value::Integer(a.x.offset as i64),
+                    "Lerp"|"lerp" if TWO=>lookup(lua,"UDim2",&key)?,
+                    _=>return Err(Error::lua_string(if TWO {format!("{key} is not a valid member of UDim2")}else{format!("'{key}' is not a valid member of UDim")}))
+                }
+            },
+            2|3=>{let Some(b)=args.get(1).and_then(dimension::<TWO>)else{return Ok(Dispatch(dimension_error::<TWO,2>))};let op=|a:UDim,b:UDim|if OP==2{UDim{scale:a.scale+b.scale,offset:a.offset.wrapping_add(b.offset)}}else{UDim{scale:a.scale-b.scale,offset:a.offset.wrapping_sub(b.offset)}};dimension_value::<TWO>(lua,UDim2{x:op(a.x,b.x),y:op(a.y,b.y)})?},
+            4=>{let neg=|a:UDim|UDim{scale:-a.scale,offset:a.offset.wrapping_neg()};dimension_value::<TWO>(lua,UDim2{x:neg(a.x),y:neg(a.y)})?},
+            5=>Value::Boolean(args.get(1).and_then(dimension::<TWO>).is_some_and(|b|a==b)),
+            _=>if TWO {format!("{{{}}}, {{{}}}",dimension_text(a.x),dimension_text(a.y))}else{dimension_text(a.x)}.into_lua(lua)?
+        };Ok(Return(MultiValue::from_vec(vec![value])))
+    })
+}}
+fn variant_name(value:&Value)->String{match value {Value::Table(_)=>"Array".into(),Value::Boolean(_)=>"bool".into(),Value::Integer(_)|Value::Number(_)=>"double".into(),Value::String(_)=>"string".into(),Value::UserData(v)=>v.metatable().ok().and_then(|mt|mt.get::<String>("__type").ok()).unwrap_or_else(||"null".into()),Value::Vector(_)=>"Vector3".into(),_=>"null".into()}}
+fn dimension_lerp(lua:&Lua,args:MultiValue)->Result<UDim2>{
+    let required=|index:usize|args.get(index).filter(|v|!v.is_nil()).ok_or_else(||Error::lua_string(format!("Argument {} missing or nil",index+1)));
+    let cast=|v:&Value|dimension::<true>(v).ok_or_else(||Error::lua_string(format!("Unable to cast {} to UDim2",variant_name(v))));
+    let a=cast(required(0)?)?;let alpha=required(2)?;let alpha=lua.coerce_number(alpha.clone())?.ok_or_else(||Error::lua_string(format!("Unable to cast {} to float",variant_name(alpha))))? as f32;let b=cast(required(1)?)?;
+    let lerp=|a:UDim,b:UDim|UDim{scale:a.scale+(b.scale-a.scale)*alpha,offset:dimension_int((a.offset as f32+(b.offset as f32-a.offset as f32)*alpha).round()as f64)};
+    Ok(UDim2{x:lerp(a.x,b.x),y:lerp(a.y,b.y)})
+}
+fn dimension_metatable<const TWO:bool>(lua:&Lua,sample:Value)->Result<()>{unsafe{lua.exec_raw::<()>(sample,|state|{
+    ffi::lua_getmetatable(state,1);
+    for (key,f) in [(c"__index",dimension_meta::<TWO,0> as ffi::lua_CFunction),(c"__newindex",dimension_meta::<TWO,1>),(c"__add",dimension_meta::<TWO,2>),(c"__sub",dimension_meta::<TWO,3>),(c"__unm",dimension_meta::<TWO,4>),(c"__eq",dimension_meta::<TWO,5>),(c"__tostring",dimension_meta::<TWO,6>)]{ffi::lua_pushcfunction(state,f);ffi::lua_rawsetfield(state,-2,key.as_ptr());}
+    ffi::lua_pushstring(state,c"The metatable is locked".as_ptr());ffi::lua_rawsetfield(state,-2,c"__metatable".as_ptr());ffi::lua_settop(state,0);
+})}}
+fn install_dimensions(lua:&Lua)->Result<()>{
+    dimension_metatable::<false>(lua,UDim::default().into_lua(lua)?)?;dimension_metatable::<true>(lua,UDim2::default().into_lua(lua)?)?;
+    let api=lua.create_table()?;api.set("new",named(lua,c"new",|lua,args:MultiValue|Ok(UDim{scale:dimension_number(lua,&args,0)? as f32,offset:dimension_int(dimension_number(lua,&args,1)?)}))?)?;api.set_readonly(true);lua.globals().set("UDim",api)?;
+    let methods=lua.create_table()?;methods.set("Lerp",named(lua,c"Lerp",dimension_lerp)?)?;methods.set("lerp",named(lua,c"lerp",dimension_lerp)?)?;lua.set_named_registry_value("types.methods.UDim2",methods)?;
+    let api=lua.create_table()?;api.set("new",named(lua,c"new",|lua,args:MultiValue|{
+        if let Some(x)=args.front().and_then(dimension::<false>){return Ok(UDim2{x:x.x,y:args.get(1).and_then(dimension::<false>).map(|v|v.x).unwrap_or_default()})}
+        Ok(UDim2{x:UDim{scale:dimension_number(lua,&args,0)? as f32,offset:dimension_int(dimension_number(lua,&args,1)?)},y:UDim{scale:dimension_number(lua,&args,2)? as f32,offset:dimension_int(dimension_number(lua,&args,3)?)}})
+    })?)?;
+    api.set("fromScale",named(lua,c"fromScale",|lua,args:MultiValue|Ok(UDim2{x:UDim{scale:dimension_number(lua,&args,0)? as f32,offset:0},y:UDim{scale:dimension_number(lua,&args,1)? as f32,offset:0}}))?)?;
+    api.set("fromOffset",named(lua,c"fromOffset",|lua,args:MultiValue|Ok(UDim2{x:UDim{scale:0.,offset:dimension_int(dimension_number(lua,&args,0)?)},y:UDim{scale:0.,offset:dimension_int(dimension_number(lua,&args,1)?)}}))?)?;
+    api.set_readonly(true);lua.globals().set("UDim2",api)
+}
+
+#[derive(Clone, Debug)]
+struct Random { state:std::cell::Cell<u64> }
+impl UserData for Random {fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type","Random");}}
+impl Random {
+    // PCG-XSH-RR and seeding from the pinned Luau 740 VM/src/lmathlib.cpp (MIT).
+    fn next(&self)->u32{let old=self.state.get();self.state.set(old.wrapping_mul(6364136223846793005).wrapping_add(105));((((old>>18)^old)>>27)as u32).rotate_right((old>>59)as u32)}
+    fn seeded(seed:u64)->Self{let r=Self{state:std::cell::Cell::new(0)};r.next();r.state.set(r.state.get().wrapping_add(seed));r.next();r}
+    fn next64(&self)->u64{let low=self.next()as u64;low|((self.next()as u64)<<32)}
+}
+fn random_int(value:f64)->i64{if !value.is_finite()||value< -9223372036854775808.||value>=9223372036854775808.{i64::MIN}else{value as i64}}
+unsafe extern "C-unwind" fn random_self_error(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_typeerror(state,1,c"Random".as_ptr())}}
+unsafe extern "C-unwind" fn random_number_error<const ARG:i32>(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_typeerror(state,ARG,c"number".as_ptr())}}
+unsafe extern "C-unwind" fn random_count_error(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_error(state,c"Random:NextNumber requires 0 or 2 arguments".as_ptr())}}
+unsafe extern "C-unwind" fn random_call<const OP:u8>(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
+    Lua::invoke_native_callback(state,|lua,args|{
+        use mlua::state::NativeCall::{Dispatch,Return};
+        if OP==0 {
+            let seed=if args.front().is_none_or(Value::is_nil){let mut seed=[0u8;8];crate::native::random_bytes(&mut seed).map_err(Error::external)?;u64::from_ne_bytes(seed)}else{
+                let Some(seed)=lua.coerce_number(args[0].clone())? else{return Ok(Dispatch(random_number_error::<1>))};
+                // Studio accepts exact integer seeds in the double precision range; out-of-range seeds reset to zero.
+                if seed.abs()>9007199254740991. {0}else{random_int(seed)as u64}
+            };return Ok(Return(MultiValue::from_vec(vec![Random::seeded(seed).into_lua(lua)?])))
+        }
+        let Some(Value::UserData(userdata))=args.front()else{return Ok(Dispatch(random_self_error))};
+        let Ok(random)=userdata.borrow::<Random>()else{return Ok(Dispatch(random_self_error))};
+        let result=if OP==3 {(*random).clone().into_lua(lua)?}else{
+            if OP==2&&args.len()==2{return Ok(Dispatch(random_count_error))}
+            let (a,b)=if OP==2&&args.len()==1{(0.,1.)}else{
+                let Some(a)=lua.coerce_number(args.get(1).cloned().unwrap_or(Value::Nil))?else{return Ok(Dispatch(random_number_error::<2>))};
+                let Some(b)=lua.coerce_number(args.get(2).cloned().unwrap_or(Value::Nil))?else{return Ok(Dispatch(random_number_error::<3>))};(a,b)
+            };
+            if OP==1 {
+                let (a,b)=(random_int(a),random_int(b));let (low,high)=if a>b{(b,a)}else{(a,b)};let count=(high as i128-low as i128+1)as u128;
+                let offset=if count<=u32::MAX as u128{(count*random.next()as u128)>>32}else{(count*random.next64()as u128)>>64};
+                Value::Number((low as i128+offset as i128)as f64)
+            }else{let (low,high)=if a>b{(b,a)}else{(a,b)};let unit=(random.next64()as f64)*(1./18446744073709551616.);Value::Number(low+(high-low)*unit)}
+        };Ok(Return(MultiValue::from_vec(vec![result])))
+    })
+}}
+unsafe extern "C-unwind" fn random_meta<const OP:u8>(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
+    Lua::invoke_native_callback(state,|lua,args|{
+        use mlua::state::NativeCall::{Dispatch,Return};
+        let Some(Value::UserData(userdata))=args.front()else{return Ok(Dispatch(random_self_error))};
+        let Ok(random)=userdata.borrow::<Random>()else{return Ok(Dispatch(random_self_error))};
+        let value=match OP {
+            0|1=>{let Some(key)=lua.coerce_string(args.get(1).cloned().unwrap_or(Value::Nil))?else{return Ok(Dispatch(enum_key_error))};let key=key.to_string_lossy();let method=if OP==0{lookup(lua,"Random",&key)?}else{Value::Nil};if method.is_nil(){return Err(Error::lua_string(format!("{key} is not a valid member of Random")))}method},
+            2=>Value::Boolean(matches!(args.get(1),Some(Value::UserData(other))if other.borrow::<Random>().is_ok_and(|other|random.state.get()==other.state.get()))),
+            _=>"Random".into_lua(lua)?
+        };Ok(Return(MultiValue::from_vec(vec![value])))
+    })
+}}
+fn install_random(lua:&Lua)->Result<()>{
+    let methods=lua.create_table()?;
+    for (name,callback)in [(c"NextInteger",random_call::<1>as ffi::lua_CFunction),(c"NextNumber",random_call::<2>),(c"Clone",random_call::<3>)]{
+        let f:Function=unsafe{lua.exec_raw((),|s|ffi::lua_pushcfunctiond(s,callback,name.as_ptr()))?};methods.set(name.to_str().unwrap(),f)?;
+    }lua.set_named_registry_value("types.methods.Random",methods)?;
+    unsafe{lua.exec_raw::<()>(Random::seeded(0),|state|{
+        ffi::lua_getmetatable(state,1);for(key,f)in [(c"__index",random_meta::<0>as ffi::lua_CFunction),(c"__newindex",random_meta::<1>),(c"__eq",random_meta::<2>),(c"__tostring",random_meta::<3>)]{ffi::lua_pushcfunction(state,f);ffi::lua_rawsetfield(state,-2,key.as_ptr());}
+        ffi::lua_pushstring(state,c"The metatable is locked".as_ptr());ffi::lua_rawsetfield(state,-2,c"__metatable".as_ptr());ffi::lua_settop(state,0);
+    })?;}
+    let api=lua.create_table()?;let new:Function=unsafe{lua.exec_raw((),|s|ffi::lua_pushcfunctiond(s,random_call::<0>,c"new".as_ptr()))?};api.set("new",new)?;api.set_readonly(true);lua.globals().set("Random",api)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vector<const N: usize>(pub [f32; N]);
 pub type Vector3 = Vector<3>;
@@ -163,6 +299,7 @@ fn install_vector3(lua:&Lua)->Result<()> {
 }
 pub fn install(lua:&Lua)->Result<()> {
     install_enums(lua)?;
+    install_dimensions(lua)?;install_random(lua)?;
     install_vector::<2>(lua)?;install_vector3(lua)?;
     let index=lua.create_function(|lua,(v,k):(AnyUserData,String)|cf_index(lua,&*v.borrow::<CFrame>()?,&k))?;
     seal(lua,CFrame::identity(),"CFrame",&[("Inverse",c"Inverse"),("GetComponents",c"GetComponents"),("ToWorldSpace",c"ToWorldSpace"),("ToObjectSpace",c"ToObjectSpace"),("PointToWorldSpace",c"PointToWorldSpace"),("PointToObjectSpace",c"PointToObjectSpace"),("VectorToWorldSpace",c"VectorToWorldSpace"),("VectorToObjectSpace",c"VectorToObjectSpace"),("ToOrientation",c"ToOrientation")],index)?;
@@ -193,6 +330,8 @@ pub fn encode_value(v:&Value)->Result<Option<Json>> {
     if let Ok(v)=v.borrow::<CFrame>(){return Ok(Some(json!({"tag":"CFrame","components":v.components()})));}
     if let Ok(v)=v.borrow::<Color3>(){return Ok(Some(json!({"tag":"Color3","r":v.0[0],"g":v.0[1],"b":v.0[2]})));}
     if let Ok(v)=v.borrow::<Ray>(){return Ok(Some(json!({"tag":"Ray","origin":v.origin.0,"direction":v.direction.0})));}
+    if let Ok(v)=v.borrow::<UDim>(){return Ok(Some(json!({"tag":"UDim","scale":v.scale,"offset":v.offset})));}
+    if let Ok(v)=v.borrow::<UDim2>(){return Ok(Some(json!({"tag":"UDim2","xScale":v.x.scale,"xOffset":v.x.offset,"yScale":v.y.scale,"yOffset":v.y.offset})));}
     if let Ok(v)=v.borrow::<EnumItem>(){return Ok(Some(json!({"tag":"EnumItem","enum":v.family,"name":v.name})));}
     Ok(None)
 }
@@ -202,6 +341,8 @@ pub fn decode_value(lua:&Lua,v:&Json)->Result<Option<Value>> {
         "Vector2"=>Some(Vector([n("x"),n("y")]).into_lua(lua)?),"Vector3"=>Some(vector_value(lua,Vector([n("x"),n("y"),n("z")]))?),"Color3"=>Some(Color3([n("r"),n("g"),n("b")]).into_lua(lua)?),
         "CFrame"=>{let a=v["components"].as_array().filter(|a|a.len()==12).ok_or_else(||Error::lua_string("Invalid CFrame wire value"))?;let mut f=CFrame::identity();for i in 0..3{f.p.0[i]=a[i].as_f64().unwrap_or(0.) as f32;for j in 0..3{f.r[i][j]=a[3+i*3+j].as_f64().unwrap_or(0.) as f32;}}Some(f.into_lua(lua)?)},
         "Ray"=>{let read=|key:&str|->Result<Vector3>{let a=v[key].as_array().filter(|a|a.len()==3).ok_or_else(||Error::lua_string("Invalid Ray wire value"))?;Ok(Vector(std::array::from_fn(|i|a[i].as_f64().unwrap_or(0.)as f32)))};Some(Ray{origin:read("origin")?,direction:read("direction")?}.into_lua(lua)?)},
+        "UDim"=>Some(UDim{scale:n("scale"),offset:dimension_int(v["offset"].as_f64().unwrap_or(0.))}.into_lua(lua)?),
+        "UDim2"=>Some(UDim2{x:UDim{scale:n("xScale"),offset:dimension_int(v["xOffset"].as_f64().unwrap_or(0.))},y:UDim{scale:n("yScale"),offset:dimension_int(v["yOffset"].as_f64().unwrap_or(0.))}}.into_lua(lua)?),
         "EnumItem"=>{let family=v["enum"].as_str().unwrap_or("");let name=v["name"].as_str().unwrap_or("");let items:Table=lua.named_registry_value(format!("types.enum.{family}").as_str())?;let item:Value=items.get(name)?;if item.is_nil(){return Err(Error::lua_string("Invalid EnumItem wire value"));}Some(item)},_=>None})
 }
 

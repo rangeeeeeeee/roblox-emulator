@@ -1,5 +1,17 @@
 use mlua::{Function, Lua, Result, Table, ffi, chunk::Compiler};
 
+pub(crate) fn random_bytes(bytes:&mut [u8])->std::io::Result<()> {
+    #[cfg(windows)] {
+        #[link(name="bcrypt")]
+        unsafe extern "system" {fn BCryptGenRandom(algorithm:*mut std::ffi::c_void,output:*mut u8,length:u32,flags:u32)->i32;}
+        if unsafe{BCryptGenRandom(std::ptr::null_mut(),bytes.as_mut_ptr(),bytes.len() as u32,2)}<0 {
+            return Err(std::io::Error::other("Cannot obtain operating-system randomness"));
+        }
+    }
+    #[cfg(not(windows))] {use std::io::Read;std::fs::File::open("/dev/urandom")?.read_exact(bytes)?;}
+    Ok(())
+}
+
 unsafe extern "C-unwind" {
     fn emu_set_executor_profile(state: *mut ffi::lua_State, profile: std::ffi::c_int);
     fn emu_getgc(state: *mut ffi::lua_State) -> std::ffi::c_int;

@@ -26,12 +26,12 @@ pub(crate) struct Node {
 pub(crate) struct Instance(pub(crate) Link);
 
 const CACHE: &str = "emulator.native.instances";
-const METHODS: &str = "emulator.native.instance.methods";
+pub(crate) const METHODS: &str = "emulator.native.instance.methods";
 pub(crate) const SERVICES: &[&str] = &["Workspace", "Players", "ReplicatedStorage", "ReplicatedFirst",
     "ServerStorage", "ServerScriptService", "RunService", "LogService", "HttpService", "CoreGui",
     "UserInputService", "GuiService", "VRService", "TextService", "ContentProvider", "NetworkClient",
     "StarterGui", "StarterPlayer", "EncodingService", "CollectionService", "Stats", "TweenService", "Chat", "ScriptContext",
-    "CommerceService", "MarketplaceService", "HttpRbxApiService"];
+    "CommerceService", "MarketplaceService", "HttpRbxApiService", "Lighting", "TextChatService", "ContextActionService", "SoundService"];
 
 #[derive(serde::Deserialize)]
 pub(crate) struct ClassInfo{superclass:Option<String>,pub(crate) service:bool,pub(crate) creatable:bool}
@@ -193,7 +193,8 @@ pub(crate) fn missing_member(node: &Node, key: &str) -> Error {
 pub(crate) fn method_class(name: &str) -> Option<&'static str> {
     match name {
         "GetService" | "FindService" => Some("ServiceProvider"),
-        "IsA" | "GetChildren" | "GetDescendants" | "FindFirstChild" | "FindFirstChildOfClass" |
+        "IsA" | "GetChildren" | "GetDescendants" | "FindFirstChild" | "FindFirstChildOfClass" | "FindFirstChildWhichIsA" |
+        "FindFirstAncestor" | "FindFirstAncestorOfClass" | "FindFirstAncestorWhichIsA" |
         "GetFullName" | "GetActor" | "IsDescendantOf" | "Destroy" | "ClearAllChildren" |
         "GetAttribute" | "GetAttributes" | "SetAttribute" => Some("Instance"),
         _ => crate::model::method_class(name),
@@ -310,6 +311,21 @@ impl UserData for Instance {
             this.0.borrow().children.iter().find(|child| child.borrow().class == class)
                 .cloned().map(|node| wrapper(lua, node)).transpose()
         });
+        register_method(methods,"FindFirstChildWhichIsA", |lua, this, (class, recursive): (String, Option<bool>)| {
+            let nodes = if recursive.unwrap_or(false) { descendants(&this.0) } else { this.0.borrow().children.clone() };
+            nodes.into_iter().find(|node| is_a(&node.borrow(), &class)).map(|node| wrapper(lua, node)).transpose()
+        });
+        for method in ["FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA"] {
+            register_method(methods,method,move|lua,this,query:String| {
+                let mut ancestor=this.0.borrow().parent.upgrade();
+                while let Some(node)=ancestor {
+                    let found={let n=node.borrow();match method {"FindFirstAncestor"=>n.name==query,"FindFirstAncestorOfClass"=>n.class==query,_=>is_a(&n,&query)}};
+                    if found{return wrapper(lua,node).map(Some)}
+                    ancestor=node.borrow().parent.upgrade();
+                }
+                Ok(None)
+            });
+        }
         register_method(methods,"GetFullName", |_, this, ()| Ok(full_name(&this.0)));
         register_method(methods,"GetActor", |lua, this, ()| {
             let mut cursor = this.0.borrow().parent.upgrade();
@@ -403,7 +419,9 @@ pub fn install(lua: &Lua) -> Result<()> {
     let native_methods = lua.create_table()?;
     for (name, debug_name) in [("IsA", c"IsA"), ("GetChildren", c"GetChildren"),
         ("GetDescendants", c"GetDescendants"), ("FindFirstChild", c"FindFirstChild"),
-        ("FindFirstChildOfClass", c"FindFirstChildOfClass"), ("GetFullName", c"GetFullName"),
+        ("FindFirstChildOfClass", c"FindFirstChildOfClass"), ("FindFirstChildWhichIsA",c"FindFirstChildWhichIsA"),
+        ("FindFirstAncestor",c"FindFirstAncestor"), ("FindFirstAncestorOfClass",c"FindFirstAncestorOfClass"),
+        ("FindFirstAncestorWhichIsA",c"FindFirstAncestorWhichIsA"), ("GetFullName", c"GetFullName"),
         ("GetActor", c"GetActor"), ("IsDescendantOf", c"IsDescendantOf"), ("GetService", c"GetService"), ("FindService",c"FindService"),
         ("Destroy", c"Destroy"), ("ClearAllChildren", c"ClearAllChildren"),
         ("GetAttribute", c"GetAttribute"), ("GetAttributes", c"GetAttributes"), ("SetAttribute", c"SetAttribute")] {

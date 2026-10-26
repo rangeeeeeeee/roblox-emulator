@@ -74,18 +74,7 @@ fn reply_json(stream: &mut TcpStream, status: u16, value: Value) {
 
 fn session_token() -> std::io::Result<String> {
     let mut bytes = [0u8; 32];
-    #[cfg(windows)] {
-        #[link(name = "bcrypt")]
-        unsafe extern "system" {
-            fn BCryptGenRandom(algorithm: *mut std::ffi::c_void, output: *mut u8, length: u32, flags: u32) -> i32;
-        }
-        if unsafe { BCryptGenRandom(std::ptr::null_mut(), bytes.as_mut_ptr(), bytes.len() as u32, 2) } < 0 {
-            return Err(std::io::Error::other("Cannot obtain operating-system randomness"));
-        }
-    }
-    #[cfg(not(windows))] {
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    }
+    crate::native::random_bytes(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -118,6 +107,14 @@ impl App {
             let source = body.get("source").and_then(Value::as_str).ok_or("Source must be a string")?;
             let context = body.get("context").and_then(Value::as_str).ok_or("Select a context")?;
             return serde_json::to_value(crate::lint::analyze(source,context)?).map_err(|error|error.to_string());
+        }
+        if path == "/api/completions" {
+            let realm = body.get("realm").and_then(Value::as_str).ok_or("Select a VM")?;
+            let context = body.get("context").and_then(Value::as_str).ok_or("Select a context")?;
+            let segments = body.get("path").and_then(Value::as_array).ok_or("Path must be a string array")?;
+            if segments.len() > 16 { return Err("Completion path requires at most 16 segments".into()); }
+            let segments = segments.iter().map(|segment|segment.as_str().map(str::to_owned).ok_or("Path must be a string array")).collect::<Result<Vec<_>,_>>()?;
+            return self.session.completions(realm,context,&segments).map_err(|error|error.to_string());
         }
         let mut command = None;
         match path {

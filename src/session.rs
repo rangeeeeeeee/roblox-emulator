@@ -347,6 +347,17 @@ impl Session {
             "limits":{"sourceBytes":MAX_SOURCE,"advanceSeconds":MAX_ADVANCE,"sessionSeconds":MAX_TIME,"memoryMb":self.scenario.memory_mb,"cpuMs":self.scenario.cpu_ms}}))
     }
 
+    pub fn completions(&self, realm: &str, context: &str, path: &[String]) -> Result<Json> {
+        let realm = self.realms.iter().find(|candidate|candidate.config.id == realm).ok_or_else(||failure("Unknown realm"))?;
+        if context != realm.config.side && !(context == "executor" && realm.config.side == "client" && realm.config.executor) {
+            return Err(failure("Context is not available in the selected realm"));
+        }
+        if path.len() > 16 || path.iter().any(|segment| segment.is_empty() || segment.len() > 256 || segment.contains('\0')) {
+            return Err(failure("Completion path requires at most 16 segments of 1..256 bytes"));
+        }
+        Ok(json!({"items":model::completions(&realm.lua,path)?}))
+    }
+
     pub fn clear_output(&mut self) { self.host.logs.borrow_mut().clear(); }
 
     pub fn set_cpu_budget(&mut self, ms: u64) -> Result<()> {

@@ -23,7 +23,16 @@ struct Model {
     children_waiting: Vec<ChildWait>,
     invokes_waiting: Vec<(String, Thread, MultiValue)>,
     unsupported: BTreeMap<String, u64>,
+    assets: HashMap<String, AssetFetch>,
+    pending_assets: usize,
+    actions: HashMap<String, BoundAction>,
+    action_order: u64,
 }
+struct BoundAction { _callback:Function, inputs:Vec<Value>, priority:i64, order:u64 }
+#[derive(Clone, Copy, PartialEq)]
+enum AssetFetch { Loading, Failure }
+#[derive(Clone)]
+struct AssetResource { key: String, content: String }
 struct Change { node: Link, keys: Option<BTreeMap<&'static str, BTreeSet<String>>> }
 struct ChildWait { parent: String, name: String, thread: Thread, deadline: Option<f64> }
 enum Module { Loading { owner: Thread, waiters: Vec<Thread> }, Ready(Value), Failed(Value) }
@@ -36,6 +45,7 @@ const BASE_ENV: &str = "emulator.native.base.environment";
 const MAX_NODES: usize = 100_000;
 const MAX_SOURCE: usize = 8 * 1024 * 1024;
 const MAX_WAITERS: usize = 10_000;
+const MAX_ASSETS: usize = 4096;
 
 fn state(lua: &Lua) -> Option<State> { lua.app_data_ref::<State>().map(|s| s.clone()) }
 fn required(lua: &Lua) -> Result<State> { state(lua).ok_or_else(|| Error::runtime("UnsupportedApi: model runtime not installed")) }
@@ -186,11 +196,11 @@ pub(crate) fn destroy(lua: &Lua, node: &Link) -> Result<()> {
 fn event_class(name: &str) -> Option<&'static str> {
     match name {
         "ChildAdded"|"ChildRemoved"|"DescendantAdded"|"DescendantRemoving"|"AncestryChanged"|"Changed"|"Destroying"|"AttributeChanged" => Some("Instance"),
-        "Loaded" => Some("DataModel"), "Event" => Some("BindableEvent"), "OnServerEvent"|"OnClientEvent" => Some("RemoteEvent"),
+        "Loaded" => Some("DataModel"), "Event" => Some("BindableEvent"), "OnServerEvent"|"OnClientEvent" => Some("BaseRemoteEvent"),
         "PlayerAdded"|"PlayerRemoving" => Some("Players"), "CharacterAdded"|"CharacterRemoving"|"Idled" => Some("Player"),
         "Heartbeat"|"Stepped"|"RenderStepped"|"PreSimulation"|"PostSimulation"|"PreRender" => Some("RunService"),
         "MessageOut" => Some("LogService"), "Died"|"StateChanged" => Some("Humanoid"),
-        "Error" => Some("ScriptContext"),
+        "Error" => Some("ScriptContext"), "AssetFetchFailed" => Some("ContentProvider"),
         "InputBegan"|"InputEnded"|"InputChanged"|"WindowFocused"|"WindowFocusReleased" => Some("UserInputService"),
         _=>None,
     }
@@ -227,13 +237,32 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "Health"|"MaxHealth" if is("Humanoid")=>Some(Value::Number(100.0)),
         "WalkSpeed" if is("Humanoid")=>Some(Value::Number(16.0)),
         "JumpPower" if is("Humanoid")=>Some(Value::Number(50.0)),
+        "HipHeight" if is("Humanoid")=>Some(Value::Number(0.0)),
+        "JumpHeight" if is("Humanoid")=>Some(Value::Number(7.2f32 as f64)),
+        "UseJumpPower" if is("Humanoid")=>Some(Value::Boolean(true)),
         "Visible" if is("GuiObject")=>Some(Value::Boolean(true)),
         "Active" if is("GuiObject")=>Some(Value::Boolean(false)),
+        "Size"|"Position" if is("GuiObject")=>Some(crate::types::UDim2::default().into_lua(lua)?),
         "BackgroundTransparency" if is("GuiObject")=>Some(Value::Number(0.0)),
         "Text" if is("TextLabel")||is("TextButton")=>Some(str_value(lua,"")?),
         "Image" if is("ImageLabel")||is("ImageButton")=>Some(str_value(lua,"")?),
+        "IsLoaded" if is("ImageLabel")||is("ImageButton")=>Some(Value::Boolean(false)),
+        "ImageTransparency" if is("ImageLabel")||is("ImageButton")=>Some(Value::Number(0.0)),
+        "ZIndex" if is("GuiObject")=>Some(Value::Integer(1)),
+        "ResetOnSpawn" if is("LayerCollector")=>Some(Value::Boolean(true)),
+        "DisplayOrder" if is("ScreenGui")=>Some(Value::Integer(0)),
         "TouchEnabled"|"GamepadEnabled"|"VREnabled" if is("UserInputService")||is("VRService")=>Some(Value::Boolean(false)),
         "KeyboardEnabled"|"MouseEnabled" if is("UserInputService")=>Some(Value::Boolean(true)),
+        "MenuIsOpen" if is("GuiService")=>Some(Value::Boolean(false)),
+        "IsWindows" if is("GuiService")=>Some(Value::Boolean(cfg!(windows))),
+        "MemoryTrackingEnabled" if is("Stats")=>Some(Value::Boolean(true)),
+        "Brightness" if is("Lighting")=>Some(Value::Number(3.0)),
+        "ClockTime" if is("Lighting")=>Some(Value::Number(14.5)),
+        "FogStart"|"ExposureCompensation" if is("Lighting")=>Some(Value::Number(0.0)),
+        "FogEnd" if is("Lighting")=>Some(Value::Number(100000.0)),
+        "GlobalShadows" if is("Lighting")=>Some(Value::Boolean(true)),
+        "Ambient"|"OutdoorAmbient" if is("Lighting")=>Some(crate::types::Color3([70.0/255.0;3]).into_lua(lua)?),
+        "ChatVersion" if is("TextChatService")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"ChatVersion","name":"TextChatService"}))?,
         _=>None,
     };
     Ok(result)
@@ -242,12 +271,14 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
 pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
     if state(lua).is_none(){return Ok(None)}
     if let Some(value)=node.borrow().properties.get(key){return Ok(Some(value.clone()))}
+    if key=="RequestQueueSize"&&node.borrow().class=="ContentProvider" {return Ok(Some(Value::Integer(required(lua)?.borrow().pending_assets as i64)))}
     if key=="Source"&&instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(unsupported(lua,"LuaSourceContainer.Source runtime capability"))}
     if key=="LocalPlayer"&&node.borrow().class=="Players" {
         let s=required(lua)?; let s=s.borrow();
         return Ok(Some(if s.side=="client" {s.nodes.get(&s.client).and_then(Weak::upgrade).map(|n|value(lua,n)).transpose()?.unwrap_or(Value::Nil)}else{Value::Nil}));
     }
     if key=="DistributedGameTime"&&node.borrow().class=="Workspace"{return Ok(Some(Value::Number(now(lua))))}
+    if key=="InstanceCount"&&node.borrow().class=="Stats"{return Ok(Some(Value::Integer(required(lua)?.borrow().nodes.values().filter(|node|node.strong_count()>0).count() as i64)))}
     if event_class(key).is_some_and(|class|instance::is_a(&node.borrow(),class)){return Ok(Some(Value::UserData(signal(lua,node,key)?)))}
     default(lua,node,key)
 }
@@ -255,6 +286,17 @@ pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>>
 pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bool> {
     if state(lua).is_none(){return Ok(false)}
     guard_write(lua)?;
+    let previous=||->Result<Option<Value>>{let stored=node.borrow().properties.get(key).cloned();if stored.is_some(){Ok(stored)}else{default(lua,node,key)}};
+    let same=|old:&Value,new:&Value|{
+        if old==new{return true}
+        // Compare native value types directly; never run a Lua __eq while assigning a property.
+        if let(Value::UserData(a),Value::UserData(b))=(old,new){
+            macro_rules! equal_native {($ty:ty)=>{if let(Ok(a),Ok(b))=(a.borrow::<$ty>(),b.borrow::<$ty>()){return *a==*b}}}
+            equal_native!(crate::types::CFrame);equal_native!(crate::types::Color3);equal_native!(crate::types::Vector2);
+            equal_native!(crate::types::UDim);equal_native!(crate::types::UDim2);
+        }
+        false
+    };
     if node.borrow().class=="Camera"{
         match key{
             "ViewportSize"|"NearPlaneZ"=>return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only"))),
@@ -271,20 +313,25 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
                     }};
                     crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"FieldOfViewMode","name":name}))?.ok_or_else(||Error::runtime("FieldOfViewMode unavailable"))?
                 }else{return Err(Error::lua_string(format!("Unable to assign property FieldOfViewMode. EnumItem, number, or string expected, got {}",new.type_name())))};
+                if previous()?.as_ref().is_some_and(|old|same(old,&mode)){return Ok(true)}
                 node.borrow_mut().properties.insert(key.into(),mode);changed(lua,node,key)?;return Ok(true)
             },
             "FieldOfView"=>{
                 let fov=lua.coerce_number(new.clone())?.ok_or_else(||Error::lua_string("Unable to assign property FieldOfView. Number expected"))?;
-                node.borrow_mut().properties.insert(key.into(),Value::Number((fov as f32).clamp(1.0,120.0)as f64));changed(lua,node,key)?;return Ok(true)
+                let fov=Value::Number((fov as f32).clamp(1.0,120.0)as f64);
+                if previous()?.as_ref().is_some_and(|old|same(old,&fov)){return Ok(true)}
+                node.borrow_mut().properties.insert(key.into(),fov);changed(lua,node,key)?;return Ok(true)
             },_=>{},
         }
     }
     match key {
-        "Name"=>{if let Value::String(v)=new{node.borrow_mut().name=v.to_str()?.to_string()}else{return Err(Error::lua_string("Name must be a string"))}},
-        "Archivable"=>{if let Value::Boolean(v)=new{node.borrow_mut().archivable=*v}else{return Err(Error::lua_string("Archivable must be a boolean"))}},
-        "LinkedSource" if instance::is_a(&node.borrow(),"LuaSourceContainer")=>{if let Value::String(v)=new{node.borrow_mut().linked_source=v.to_str()?.to_string()}else{return Err(Error::lua_string("LinkedSource must be a string"))}},
+        "Name"=>{if let Value::String(v)=new{let name=v.to_str()?;if node.borrow().name.as_str()==&*name{return Ok(true)}node.borrow_mut().name=name.to_string()}else{return Err(Error::lua_string("Name must be a string"))}},
+        "Archivable"=>{if let Value::Boolean(v)=new{if node.borrow().archivable==*v{return Ok(true)}node.borrow_mut().archivable=*v}else{return Err(Error::lua_string("Archivable must be a boolean"))}},
+        "LinkedSource" if instance::is_a(&node.borrow(),"LuaSourceContainer")=>{if let Value::String(v)=new{let source=v.to_str()?;if node.borrow().linked_source.as_str()==&*source{return Ok(true)}node.borrow_mut().linked_source=source.to_string()}else{return Err(Error::lua_string("LinkedSource must be a string"))}},
         _=>{
-            if default(lua,node,key)?.is_none()&&!node.borrow().properties.contains_key(key){return Ok(false)}
+            let Some(previous)=previous()?else{return Ok(false)};
+            // Callback assignment also captures the assigning script's environment, even when the function is reused.
+            if !matches!(key,"OnInvoke"|"OnServerInvoke"|"OnClientInvoke")&&same(&previous,new){return Ok(true)}
             node.borrow_mut().properties.insert(key.into(),new.clone());
             if matches!(key,"OnInvoke"|"OnServerInvoke"|"OnClientInvoke"){
                 if matches!(new,Value::Function(_)){node.borrow_mut().callback_environments.insert(key.into(),lua.globals());}
@@ -381,37 +428,209 @@ fn reject_cycles(value:&Value)->Result<()>{
         },
     }}Ok(())
 }
-fn content_id(lua:&Lua,value:Value)->Result<String>{
+fn asset_cast(value:&Value,target:&str)->Error {
+    let kind=match value { Value::Boolean(_)=>"bool",Value::Integer(_)|Value::Number(_)=>"double",Value::Table(_)=>"Array",Value::Function(_)=>"Function",Value::UserData(_)=>"Object",_=>value.type_name() };
+    Error::lua_string(format!("Unable to cast {kind} to {target}"))
+}
+fn asset_resource(value:Value)->Result<AssetResource>{
     reject_cycles(&value)?;
     if value.is_nil(){return Err(Error::lua_string("Argument 1 missing or nil"))}
-    let id=lua.coerce_string(value)?.ok_or_else(||Error::lua_string("Unable to cast Array to ContentId"))?;
-    let text=id.to_str()?;let id=text.strip_prefix("rbxassetid://").unwrap_or(&text);
-    id.parse::<u64>().map(|id|id.to_string()).map_err(|_|unsupported(lua,"ContentProvider asset identifier"))
+    let Value::String(value)=value else{return Err(asset_cast(&value,"ContentId"))};
+    let content=value.to_str()?.to_string();
+    if content.len()>2048{return Err(Error::runtime("BudgetExceeded: asset identifier length"))}
+    let numeric=content.strip_prefix("rbxassetid://").unwrap_or(&content);
+    let key=numeric.parse::<u64>().map(|id|id.to_string()).unwrap_or_else(|_|content.clone());
+    Ok(AssetResource{key,content})
+}
+fn content_id(_lua:&Lua,value:Value)->Result<String>{Ok(asset_resource(value)?.key)}
+fn asset_enum(lua:&Lua,name:&str)->Result<Value>{
+    crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"AssetFetchStatus","name":name}))?.ok_or_else(||Error::runtime("AssetFetchStatus unavailable"))
+}
+fn asset_status(lua:&Lua,key:&str)->Result<Value>{
+    let name=match required(lua)?.borrow().assets.get(key){Some(AssetFetch::Loading)=>"Loading",Some(AssetFetch::Failure)=>"Failure",None if key.is_empty()=>"Failure",None=>"None"};
+    asset_enum(lua,name)
+}
+fn offline_asset(lua:&Lua,resource:&AssetResource)->Result<bool>{
+    let state=required(lua)?;let mut model=state.borrow_mut();
+    if model.assets.get(&resource.key)==Some(&AssetFetch::Failure){return Ok(false)}
+    if !model.assets.contains_key(&resource.key)&&model.assets.len()>=MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: offline asset cache"))}
+    model.assets.insert(resource.key.clone(),AssetFetch::Loading);
+    // There are no configured asset bytes or network provider. Cache the actual
+    // failed offline lookup; never manufacture a successful fetch.
+    model.assets.insert(resource.key.clone(),AssetFetch::Failure);
+    Ok(true)
+}
+fn asset_failed(lua:&Lua,node:&Link,resource:&AssetResource)->Result<()>{
+    fire(lua,node,&format!("{}AssetFetchStatusChanged",resource.key),args([asset_enum(lua,"Failure")?]))?;
+    fire(lua,node,"AssetFetchFailed",args([str_value(lua,&resource.content)?]))?;
+    if let Ok(logger)=crate::internal::<Function>(lua,"__host_log"){
+        logger.call::<()>(("error",format!("Failed to load {}: resource is unavailable in the offline emulator",resource.content)))?;
+    }
+    Ok(())
+}
+fn preload_resources(input:Value)->Result<Vec<AssetResource>>{
+    reject_cycles(&input)?;
+    if input.is_nil(){return Err(Error::lua_string("Argument 1 missing or nil"))}
+    let Value::Table(table)=input else{return Err(asset_cast(&input,"Array"))};
+    let length=table.raw_len();
+    if length>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload asset count"))}
+    if length==0&&table.pairs::<Value,Value>().next().transpose()?.is_some(){return Err(Error::lua_string("Unable to cast Dictionary to Array"))}
+    let mut resources=Vec::new();let mut inspected=0;
+    for index in 1..=length{
+        let item:Value=table.raw_get(index)?;
+        if let Value::UserData(value)=&item{if let Ok(instance)=value.borrow::<Instance>(){
+            let mut nodes=vec![instance.0.clone()];
+            while let Some(node)=nodes.pop(){
+                inspected+=1;if inspected>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload Instance count"))}
+                let node=node.borrow();
+                for property in ["Image","Texture","TextureID","MeshId","SoundId","AnimationId","ColorMapContent"]{
+                    if let Some(Value::String(value))=node.properties.get(property){if !value.as_bytes().is_empty(){resources.push(asset_resource(Value::String(value.clone()))?);}}
+                }
+                if nodes.len()+node.children.len()>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload Instance count"))}
+                nodes.extend(node.children.iter().rev().cloned());
+                if resources.len()>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload asset count"))}
+            }
+            continue
+        }}
+        resources.push(asset_resource(item)?);
+        if resources.len()>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload asset count"))}
+    }
+    Ok(resources)
+}
+fn preload_async(lua:&Lua,mut values:MultiValue)->Result<NativeCall>{
+    let node=object_arg(&mut values)?;instance::validate_method(&node.borrow(),"PreloadAsync")?;
+    let resources=preload_resources(values.pop_front().unwrap_or(Value::Nil))?;
+    let callback=match values.pop_front(){None|Some(Value::Nil)=>None,Some(Value::Function(function))=>Some(function),Some(value)=>return Err(asset_cast(&value,"Function"))};
+    if resources.is_empty(){return Ok(NativeCall::Return(MultiValue::new()))}
+    guard_write(lua)?;
+    let count=resources.len();let state=required(lua)?;
+    if state.borrow().pending_assets.saturating_add(count)>MAX_WAITERS{return Err(Error::runtime("BudgetExceeded: pending asset requests"))}
+    crate::scheduler::park_current(lua)?;
+    let caller=lua.current_thread();let environment=lua.globals();
+    let work=lua.create_function(move|lua,()|{
+        let mut completed=0;
+        let result=(||->Result<Vec<AssetResource>>{
+            let mut failures=Vec::new();
+            for resource in &resources{
+                if offline_asset(lua,resource)?{failures.push(resource.clone());}
+                let state=required(lua)?;let pending=state.borrow().pending_assets;state.borrow_mut().pending_assets=pending.saturating_sub(1);completed+=1;
+                if let Some(callback)=&callback{
+                    crate::scheduler::spawn_with(lua,Value::Function(callback.clone()),args([str_value(lua,&resource.content)?,asset_enum(lua,"Failure")?]),Some("serial"),None)?;
+                }
+            }
+            Ok(failures)
+        })();
+        let state=required(lua)?;let pending=state.borrow().pending_assets;state.borrow_mut().pending_assets=pending.saturating_sub(count-completed);
+        match result{
+            Ok(failures)=>{
+                crate::scheduler::schedule(lua,caller.clone(),MultiValue::new(),None)?;
+                for resource in failures{asset_failed(lua,&node,&resource)?;}
+            },
+            Err(error)=>crate::scheduler::schedule_error(lua,caller.clone(),str_value(lua,&error.to_string())?)?,
+        }
+        Ok(())
+    })?;
+    let worker=lua.create_thread(work)?;crate::scheduler::set_thread_environment(lua,&worker,&environment)?;
+    crate::scheduler::schedule(lua,worker,MultiValue::new(),Some("serial"))?;
+    state.borrow_mut().pending_assets+=count;
+    Ok(NativeCall::Yield(MultiValue::new()))
 }
 
-const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("Preload",c"Preload"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Raycast",c"Raycast"),("Blockcast",c"Blockcast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("GetStyled",c"GetStyled"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
+const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Raycast",c"Raycast"),("Blockcast",c"Blockcast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
 const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
-pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).copied().chain([("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("PreloadAsync",c"PreloadAsync"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
+pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
 pub(crate) fn method_class(name:&str)->Option<&'static str>{
     Some(match name {
         "Clone"|"GetPropertyChangedSignal"|"GetAttributeChangedSignal"|"QueryDescendants"|"WaitForChild"=>"Instance",
-        "GetPlayers"=>"Players","GetNetworkPing"|"Kick"=>"Player",
+        "GetPlayers"|"GetPlayerFromCharacter"=>"Players","GetNetworkPing"|"Kick"=>"Player",
+        "GetMemoryUsageMbForTag"=>"Stats","GetServerTimeNow"=>"Workspace",
         "IsClient"|"IsServer"|"IsStudio"|"IsRunning"=>"RunService","IsLoaded"=>"DataModel",
         "Fire"=>"BindableEvent","Invoke"=>"BindableFunction",
-        "FireServer"|"FireClient"|"FireAllClients"=>"RemoteEvent","InvokeServer"|"InvokeClient"=>"RemoteFunction",
+        "FireServer"|"FireClient"|"FireAllClients"=>"BaseRemoteEvent","InvokeServer"|"InvokeClient"=>"RemoteFunction",
         "SendMessage"|"BindToMessage"|"BindToMessageParallel"=>"Actor",
-        "GetLogHistory"=>"LogService","JSONEncode"|"JSONDecode"=>"HttpService","ComputeStringHash"=>"EncodingService",
-        "InspectPlayerFromHumanoidDescription"|"CloseInspectMenu"=>"GuiService",
+        "GetLogHistory"=>"LogService","JSONEncode"|"JSONDecode"|"GenerateGUID"=>"HttpService","ComputeStringHash"=>"EncodingService",
+        "InspectPlayerFromHumanoidDescription"|"CloseInspectMenu"|"IsTenFootInterface"=>"GuiService",
+        "GetFocusedTextBox"|"GetPlatform"=>"UserInputService",
+        "BindAction"|"BindActionAtPriority"|"UnbindAction"|"UnbindAllActions"|"GetBoundActionInfo"|"GetAllBoundActionInfo"=>"ContextActionService",
         "GetAssetFetchStatusChangedSignal"|"GetAssetFetchStatus"|"PreloadAsync"|"Preload"=>"ContentProvider",
         "GetRealPhysicsFPS"=>"Workspace","Raycast"|"Blockcast"|"GetPartBoundsInBox"=>"WorldRoot",
-        "ScreenPointToRay"|"ViewportPointToRay"=>"Camera","GetStyled"=>"Humanoid","Clear"=>"Terrain",
+        "ScreenPointToRay"|"ViewportPointToRay"=>"Camera","GetStyled"=>"Instance","Clear"=>"Terrain",
         "PostAsync"|"PostAsyncFullUrl"|"RequestLimitedAsync"=>"HttpRbxApiService",
         "PromptPurchase"|"GetRobuxBalance"|"PerformPurchaseV2"|"PromptRobloxPurchase"|"PromptThirdPartyPurchase"=>"MarketplaceService",
         "PromptRealWorldCommerceBrowser"=>"CommerceService",
         _=>return None,
     })
 }
+fn bound_action_info(lua:&Lua,action:Option<&BoundAction>)->Result<Table>{
+    let result=lua.create_table()?;
+    if let Some(action)=action{
+        result.raw_set("priorityLevel",action.priority)?;result.raw_set("stackOrder",action.order)?;
+        result.raw_set("inputTypes",lua.create_sequence_from(action.inputs.iter().cloned())?)?;
+    }
+    Ok(result)
+}
 pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
+    for method in ["BindAction","BindActionAtPriority"]{instance::register_method(m,method,move|lua,_,mut values:MultiValue|{
+        let name=match values.pop_front(){Some(Value::String(name))=>name.to_str()?.to_owned(),_=>return Err(Error::lua_string("Argument 1 missing or nil"))};
+        let callback=match values.pop_front(){Some(Value::Function(callback))=>callback,_=>return Err(Error::lua_string("Unable to cast value to function"))};
+        let _touch=match values.pop_front(){Some(Value::Boolean(value))=>value,_=>return Err(Error::lua_string("Unable to cast value to bool"))};
+        let priority=if method=="BindActionAtPriority"{lua.coerce_integer(values.pop_front().unwrap_or(Value::Nil))?.ok_or_else(||Error::lua_string("Unable to cast value to int"))?}else{2000};
+        if name.len()>4096||values.len()>128{return Err(Error::runtime("BudgetExceeded: input binding"))}
+        for input in &values {
+            let valid=crate::types::encode_value(input)?.is_some_and(|item|item["tag"]=="EnumItem"&&matches!(item["enum"].as_str(),Some("KeyCode"|"UserInputType"|"PlayerActions")));
+            if !valid{return Err(Error::lua_string("Invalid input type for ContextActionService"))}
+        }
+        let state=required(lua)?;let mut state=state.borrow_mut();
+        if state.actions.len()>=MAX_WAITERS&&!state.actions.contains_key(&name){return Err(Error::runtime("BudgetExceeded: input bindings"))}
+        state.action_order+=1;let order=state.action_order;
+        state.actions.insert(name,BoundAction{_callback:callback,inputs:values.into_iter().collect(),priority,order});
+        Ok(())
+    });}
+    instance::register_method(m,"UnbindAction",|lua,_,name:String|{required(lua)?.borrow_mut().actions.remove(&name);Ok(())});
+    instance::register_method(m,"UnbindAllActions",|lua,_,()|{required(lua)?.borrow_mut().actions.clear();Ok(())});
+    instance::register_method(m,"GetBoundActionInfo",|lua,_,name:String|bound_action_info(lua,required(lua)?.borrow().actions.get(&name)));
+    instance::register_method(m,"GetAllBoundActionInfo",|lua,_,()|{
+        let result=lua.create_table()?;
+        for(name,action)in &required(lua)?.borrow().actions{result.raw_set(name.as_str(),bound_action_info(lua,Some(action))?)?;}
+        Ok(result)
+    });
+    instance::register_method(m,"GetStyled",|lua,this,key:String|{
+        // There are no style rules in the headless scene, so a styled property is its stored value.
+        if matches!(key.as_str(),"Name"|"ClassName"|"Parent"|"Archivable")||key=="LinkedSource"&&instance::is_a(&this.0.borrow(),"LuaSourceContainer") {
+            return instance::read_property(lua,this,&key);
+        }
+        if event_class(&key).is_none(){if let Some(value)=read_property(lua,&this.0,&key)?{return Ok(value)}}
+        Err(Error::lua_string(format!("GetStyled(): No such property named `{key}`")))
+    });
+    instance::register_method(m,"GenerateGUID",|_,_,braces:Option<bool>|{
+        let mut bytes=[0u8;16];crate::native::random_bytes(&mut bytes).map_err(Error::external)?;
+        bytes[6]=(bytes[6]&0x0f)|0x40;bytes[8]=(bytes[8]&0x3f)|0x80;
+        let hex:String=bytes.iter().map(|byte|format!("{byte:02x}")).collect();
+        let id=format!("{}-{}-{}-{}-{}",&hex[..8],&hex[8..12],&hex[12..16],&hex[16..20],&hex[20..]);
+        Ok(if braces.unwrap_or(true){format!("{{{id}}}")}else{id})
+    });
+    // The headless input service has no focused text box or ten-foot shell.
+    instance::register_method(m,"GetFocusedTextBox",|_,_,()|Ok(Value::Nil));
+    instance::register_method(m,"IsTenFootInterface",|_,_,()|Ok(false));
+    instance::register_method(m,"GetPlatform",|lua,_,()|{
+        if crate::scheduler::current_origin(lua)=="game"{return Err(Error::lua_string("The current thread cannot call 'GetPlatform' (lacking capability RobloxScript)"))}
+        crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"Platform","name":if cfg!(windows){"Windows"}else if cfg!(target_os="macos"){"OSX"}else{"Linux"}}))?.ok_or_else(||Error::runtime("Platform unavailable"))
+    });
+    instance::register_method(m,"GetPlayerFromCharacter",|lua,this,values:MultiValue|{
+        let Some(input)=values.front()else{return Err(Error::lua_string("Argument 1 missing or nil"))};
+        if input.is_nil(){return Ok(None)}
+        let Value::UserData(input)=input else{return Err(Error::lua_string("Unable to cast value to Object"))};
+        let character=input.borrow::<Instance>()?;
+        let players=this.0.borrow().children.clone();
+        let found=players.into_iter().find(|player|matches!(player.borrow().properties.get("Character"),Some(Value::UserData(value))if value.borrow::<Instance>().is_ok_and(|v|Rc::ptr_eq(&v.0,&character.0))));
+        found.map(|node|instance::wrapper(lua,node)).transpose()
+    });
+    instance::register_method(m,"GetMemoryUsageMbForTag",|lua,_,tag:Value|{
+        let tag=crate::types::encode_value(&tag)?.filter(|v|v["tag"]=="EnumItem"&&v["enum"]=="DeveloperMemoryTag").ok_or_else(||Error::lua_string("Unable to cast value to DeveloperMemoryTag"))?;
+        // The headless runtime allocates no GUI renderer resources; LuaHeap is measured by Luau.
+        match tag["name"].as_str(){Some("LuaHeap")=>Ok(lua.used_memory() as f64/1048576.0),Some("Gui")=>Ok(0.0),_=>Err(unsupported(lua,"Stats.GetMemoryUsageMbForTag category"))}
+    });
+    instance::register_method(m,"GetServerTimeNow",|lua,_,()|Ok(1700000000.0+now(lua)));
     for (name,message) in [("RequestLimitedAsync","RequestLimitedAsync is disabled"),("GetRobuxBalance","The current thread cannot call 'GetRobuxBalance' (lacking capability RobloxScript)"),("PerformPurchaseV2","The current thread cannot call 'PerformPurchaseV2' (lacking capability RobloxScript)")]{
         instance::register_method(m,name,move|lua,this,_:MultiValue|{
             if crate::scheduler::current_origin(lua)=="game"{Err::<(),_>(Error::lua_string(message))}
@@ -429,21 +648,16 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
         Err::<(),_>(unsupported(lua,"CommerceService.PromptRealWorldCommerceBrowser"))
     });
     instance::register_method(m,"GetAssetFetchStatus",|lua,_,input:Value|{
-        content_id(lua,input)?;
-        // This offline cache starts unfetched; loading assets is explicitly unsupported.
-        crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"AssetFetchStatus","name":"None"}))?.ok_or_else(||Error::runtime("AssetFetchStatus unavailable"))
+        asset_status(lua,&content_id(lua,input)?)
     });
     instance::register_method(m,"GetAssetFetchStatusChangedSignal",|lua,this,input:Value|{
         let id=content_id(lua,input)?;let key=format!("{id}AssetFetchStatusChanged");
         if !this.0.borrow().signals.contains_key(&key)&&this.0.borrow().signals.len()>=MAX_WAITERS{return Err(Error::runtime("BudgetExceeded: asset status signals"))}
         signal(lua,&this.0,&key)
     });
-    instance::register_method(m,"PreloadAsync",|lua,_,mut values:MultiValue|{
-        let input=values.pop_front().unwrap_or(Value::Nil);reject_cycles(&input)?;
-        let Value::Table(table)=input else{return Err(Error::lua_string("PreloadAsync expects an array"))};
-        if !matches!(values.pop_front(),None|Some(Value::Nil)|Some(Value::Function(_))){return Err(Error::lua_string("PreloadAsync callback must be a function"))}
-        if table.pairs::<Value,Value>().next().transpose()?.is_some(){return Err(unsupported(lua,"ContentProvider.PreloadAsync asset loading"))}
-        Ok(())
+    instance::register_method(m,"Preload",|lua,this,input:Value|{
+        guard_write(lua)?;let resource=asset_resource(input)?;
+        if offline_asset(lua,&resource)?{asset_failed(lua,&this.0,&resource)?;}Ok(())
     });
     for name in ["ScreenPointToRay","ViewportPointToRay"]{instance::register_method(m,name,|lua,this,values:MultiValue|{
         let number=|index:usize,default:Option<f32>|->Result<f32>{
@@ -484,7 +698,14 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
         }
         lua.create_string(Sha256::digest(input.as_bytes()))
     });
-    instance::register_method(m,"QueryDescendants",|lua,this,query:String|{let class=query.strip_prefix("IsA(\"").and_then(|q|q.strip_suffix("\")")).ok_or_else(||unsupported(lua,"Instance.QueryDescendants selector"))?;instance::instance_list(lua,instance::descendants(&this.0).into_iter().filter(|n|instance::is_a(&n.borrow(),class)).collect())});
+    instance::register_method(m,"QueryDescendants",|lua,this,query:String|{
+        let class=query.trim();
+        if !class.is_empty()&&class.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'){
+            return instance::instance_list(lua,instance::descendants(&this.0).into_iter().filter(|n|instance::is_a(&n.borrow(),class)).collect());
+        }
+        if class.starts_with("IsA("){return Err(Error::lua_string("Unexpected trailing character: '('"))}
+        Err(unsupported(lua,"Instance.QueryDescendants selector"))
+    });
     for (name,_) in UNSUPPORTED {let method=*name;instance::register_method(m,*name,move|lua,this,_:MultiValue|Err::<Value,_>(unsupported(lua,&format!("{}.{method}",this.0.borrow().class))));}
 }
 
@@ -662,7 +883,13 @@ pub fn deliver(lua:&Lua,kind:&str,payload:Json)->Result<()>{
         let thread=required(lua)?.borrow_mut().pending.remove(payload["requestId"].as_str().unwrap_or(""));
         if let Some(thread)=thread{let mut values=decode_args(lua,&payload["args"])?;if payload["ok"].as_bool()==Some(true){crate::scheduler::schedule(lua,thread,values,None)?;}else{crate::scheduler::schedule_error(lua,thread,values.pop_front().unwrap_or(Value::Nil))?;}}return Ok(())
     }
-    let n=lookup(lua,id).ok_or_else(||Error::runtime(format!("Message target unavailable: {id}")))?;let mut values=decode_args(lua,&payload["args"])?;
+    // A client-created RemoteEvent has no server counterpart. An event queued before
+    // its receiver was destroyed likewise has nothing to deliver to.
+    let Some(n)=lookup(lua,id)else{
+        if kind=="remote_event"{return Ok(())}
+        return Err(Error::runtime(format!("Message target unavailable: {id}")));
+    };
+    let mut values=decode_args(lua,&payload["args"])?;
     match kind{
         "actor_message"=>fire(lua,&n,&format!("message:{}",payload["topic"].as_str().unwrap_or("")),values),
         "remote_event"=>{if required(lua)?.borrow().side=="server"{let player=lookup(lua,payload["sender"].as_str().or(payload["clientId"].as_str()).unwrap_or("")).ok_or_else(||Error::runtime("Unknown remote sender"))?;values.push_front(value(lua,player)?);fire(lua,&n,"OnServerEvent",values)}else{fire(lua,&n,"OnClientEvent",values)}},
@@ -920,6 +1147,12 @@ unsafe extern "C-unwind" fn raw_require(state:*mut ffi::lua_State)->std::ffi::c_
 })}}
 
 unsafe fn raw_function(lua:&Lua,callback:ffi::lua_CFunction,name:&'static CStr)->Result<Function>{unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunctiond(state,callback,name.as_ptr()))}}
+unsafe extern "C-unwind" fn raw_preload_async(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
+    Lua::invoke_native_callback(state,|lua,values|{
+        if !instance::has_instance_self(&values){return Err(Error::lua_string("Expected ':' not '.' calling member function PreloadAsync"))}
+        preload_async(lua,values)
+    })
+}}
 unsafe extern "C-unwind" fn raw_namecall(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
     let name=ffi::lua_namecallatom(state,std::ptr::null_mut());
     let callback=ffi::lua_tocfunction(state,ffi::lua_upvalueindex(2)).expect("native namecall dispatcher");
@@ -928,16 +1161,119 @@ unsafe extern "C-unwind" fn raw_namecall(state:*mut ffi::lua_State)->std::ffi::c
         if name.is_null(){return Err(Error::lua_string("attempt to call an unknown method"))}
         let name=CStr::from_ptr(name).to_str().map_err(Error::external)?;
         let node=object_arg(&mut values)?;instance::validate_method(&node.borrow(),name)?;
-        let callback=match name{"JSONEncode"=>raw_json_encode,"Fire"=>raw_fire,"WaitForChild"=>raw_wait_for_child,"Invoke"=>raw_invoke,"InvokeServer"=>raw_invoke_server,"InvokeClient"=>raw_invoke_client,_=>callback};
+        let callback=match name{"JSONEncode"=>raw_json_encode,"Fire"=>raw_fire,"WaitForChild"=>raw_wait_for_child,"Invoke"=>raw_invoke,"InvokeServer"=>raw_invoke_server,"InvokeClient"=>raw_invoke_client,"PreloadAsync"=>raw_preload_async,_=>callback};
         Ok(NativeCall::Dispatch(callback))
     })
 }}
 pub(crate) fn install_yielding_methods(lua:&Lua,game:&AnyUserData,methods:&Table)->Result<()>{unsafe{
+    methods.raw_set("PreloadAsync",raw_function(lua,raw_preload_async,c"PreloadAsync")?)?;
     for(name,cname,callback)in[("JSONEncode",c"JSONEncode",raw_json_encode as ffi::lua_CFunction),("Fire",c"Fire",raw_fire),("WaitForChild",c"WaitForChild",raw_wait_for_child),("Invoke",c"Invoke",raw_invoke),("InvokeServer",c"InvokeServer",raw_invoke_server),("InvokeClient",c"InvokeClient",raw_invoke_client)]{methods.raw_set(name,raw_function(lua,callback,cname)?)?;}
     let original:Function=game.metatable()?.get("__namecall")?;
     let replacement:Function=lua.exec_raw(original,|state|{ffi::lua_getupvalue(state,1,1);ffi::lua_pushvalue(state,1);ffi::lua_pushcclosurek(state,raw_namecall,std::ptr::null(),2,None);ffi::lua_remove(state,1);})?;
     lua.exec_raw::<()>((game.clone(),replacement),|state|{ffi::lua_getmetatable(state,1);ffi::lua_pushvalue(state,2);ffi::lua_rawsetfield(state,-2,c"__namecall".as_ptr());ffi::lua_settop(state,0);})?;Ok(())
 }}
+
+// Host completion metadata mirrors implemented defaults without constructing their
+// Lua values. In particular, looking up a signal or CFrame must not allocate one.
+const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
+    ("Instance", "Name ClassName", "string"), ("Instance", "Parent", "Instance | nil"),
+    ("Instance", "Archivable", "boolean"), ("LuaSourceContainer", "LinkedSource", "string"),
+    ("LuaSourceContainer", "Source", "string (restricted)"),
+    ("BaseScript|LayerCollector", "Enabled", "boolean"), ("BaseScript", "Disabled", "boolean"),
+    ("BindableFunction", "OnInvoke", "function | nil"), ("RemoteFunction", "OnServerInvoke OnClientInvoke", "function | nil"),
+    ("Model", "PrimaryPart", "BasePart | nil"), ("Player", "Character", "Model | nil"),
+    ("Players", "LocalPlayer", "Player | nil"), ("Player", "UserId AccountAge", "number"), ("Player", "DisplayName", "string"),
+    ("Workspace", "CurrentCamera", "Camera | nil"), ("Workspace", "Gravity DistributedGameTime", "number"),
+    ("Camera", "ViewportSize", "Vector2"), ("Camera", "NearPlaneZ FieldOfView", "number"),
+    ("Camera", "FieldOfViewMode", "Enum.FieldOfViewMode"), ("Camera", "CFrame", "CFrame"),
+    ("DataModel", "PlaceId GameId PlaceVersion CreatorId", "number"), ("DataModel", "JobId", "string"),
+    ("StringValue", "Value", "string"), ("BoolValue", "Value", "boolean"),
+    ("NumberValue|IntValue", "Value", "number"), ("ObjectValue", "Value", "Instance | nil"),
+    ("BasePart", "Anchored Massless CanCollide CanTouch CanQuery", "boolean"), ("BasePart", "Transparency", "number"),
+    ("Humanoid", "Health MaxHealth WalkSpeed JumpPower HipHeight JumpHeight", "number"), ("Humanoid", "UseJumpPower", "boolean"),
+    ("GuiObject", "Visible Active", "boolean"), ("GuiObject", "Size Position", "UDim2"), ("GuiObject", "ZIndex", "number"),
+    ("GuiObject", "BackgroundTransparency", "number"), ("TextLabel|TextButton", "Text", "string"),
+    ("ImageLabel|ImageButton", "Image", "string"), ("ImageLabel|ImageButton", "IsLoaded", "boolean"),
+    ("ImageLabel|ImageButton", "ImageTransparency", "number"), ("LayerCollector", "ResetOnSpawn", "boolean"), ("ScreenGui", "DisplayOrder", "number"),
+    ("UserInputService|VRService", "TouchEnabled GamepadEnabled VREnabled", "boolean"),
+    ("UserInputService", "KeyboardEnabled MouseEnabled", "boolean"),
+    ("Stats", "InstanceCount", "number"), ("Stats", "MemoryTrackingEnabled", "boolean"),
+    ("Lighting", "Brightness ClockTime FogStart FogEnd ExposureCompensation", "number"),
+    ("Lighting", "GlobalShadows", "boolean"), ("Lighting", "Ambient OutdoorAmbient", "Color3"),
+    ("GuiService", "MenuIsOpen IsWindows", "boolean"), ("TextChatService", "ChatVersion", "Enum.ChatVersion"),
+    ("ContentProvider", "RequestQueueSize", "number"),
+];
+const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased";
+
+fn completion_class(node: &instance::Node, classes: &str) -> bool { classes.split('|').any(|class| instance::is_a(node, class)) }
+fn completion_label(label: &str) -> bool { !label.is_empty() && label.len() <= 256 && !label.contains('\0') }
+fn completion_item(label: &str, kind: &str, detail: &str, info: &str) -> Json {
+    json!({"label":label,"type":kind,"detail":detail,"info":info})
+}
+fn completion_target(model: &Model, node: &Link, key: &str) -> Option<Link> {
+    let node = node.borrow();
+    if instance::method_class(key).is_some_and(|class| instance::is_a(&node, class)) { return None; }
+    if let Some(value) = node.properties.get(key) {
+        return if let Value::UserData(value) = value { value.borrow::<Instance>().ok().map(|value| value.0.clone()) } else { None };
+    }
+    if key == "Parent" { return node.parent.upgrade(); }
+    if key == "LocalPlayer" && node.class == "Players" {
+        return (model.side == "client").then(|| model.nodes.get(&model.client).and_then(Weak::upgrade)).flatten();
+    }
+    if COMPLETION_PROPERTIES.iter().any(|(classes, names, _)| completion_class(&node, classes) && names.split_whitespace().any(|name|name == key))
+        || event_class(key).is_some_and(|class| instance::is_a(&node, class)) { return None; }
+    node.children.iter().take(4096).find(|child| { let child=child.borrow(); !child.destroyed && child.name == key }).cloned()
+}
+
+pub(crate) fn completions(lua: &Lua, path: &[String]) -> Result<Vec<Json>> {
+    let state = required(lua)?;
+    let model = state.borrow();
+    if path.is_empty() {
+        return Ok([("game", "game", "DataModel"), ("workspace", "Workspace", "Workspace")].into_iter()
+            .filter(|(_,id,_)| model.nodes.get(*id).and_then(Weak::upgrade).is_some())
+            .map(|(label,_,class)| completion_item(label,"variable",class,"DataModel root in the selected VM")).collect());
+    }
+    let id = match path[0].as_str() { "game" | "Game" => "game", "workspace" | "Workspace" => "Workspace", _ => return Ok(Vec::new()) };
+    let Some(mut node) = model.nodes.get(id).and_then(Weak::upgrade) else { return Ok(Vec::new()); };
+    for key in &path[1..] {
+        let Some(next) = completion_target(&model, &node, key) else { return Ok(Vec::new()); };
+        node = next;
+    }
+    let node = node.borrow();
+    if node.destroyed { return Ok(Vec::new()); }
+    let mut items = BTreeMap::new();
+    for (classes, names, detail) in COMPLETION_PROPERTIES {
+        if completion_class(&node, classes) {
+            for name in names.split_whitespace() { items.insert(name.to_owned(), completion_item(name,"property",detail,"Implemented Instance property")); }
+        }
+    }
+    for name in COMPLETION_EVENTS.split_whitespace() {
+        if event_class(name).is_some_and(|class| instance::is_a(&node, class)) {
+            items.insert(name.to_owned(), completion_item(name,"property","RBXScriptSignal","Instance event; completion does not create the signal"));
+        }
+    }
+    for (name,value) in node.properties.iter().take(512) {
+        if !completion_label(name) { continue; }
+        let detail = match value { Value::UserData(value) => value.borrow::<Instance>().ok().map(|instance|instance.0.borrow().class.clone()), _ => None };
+        items.insert(name.clone(), completion_item(name,"property",detail.as_deref().unwrap_or(value.type_name()),"Stored Instance property in the selected VM"));
+    }
+    // Raw iteration reads existing key objects and never interns the user's path.
+    let methods: Table = lua.named_registry_value(instance::METHODS)?;
+    for entry in methods.pairs::<Value,Value>().take(512) {
+        let (Value::String(name),Value::Function(_)) = entry? else { continue; };
+        let Ok(name) = name.to_str() else { continue; };
+        if !completion_label(&name) || !instance::method_class(&name).is_some_and(|class|instance::is_a(&node,class)) { continue; }
+        let info = if UNSUPPORTED.iter().any(|(method,_)|*method == &*name) { "Known method; this emulator reports UnsupportedApi" } else { "Native Instance method in the selected VM" };
+        items.insert(name.to_string(), completion_item(&name,"method","function",info));
+    }
+    for child in node.children.iter().take(4096) {
+        if items.len() >= 256 { break; }
+        let child = child.borrow();
+        if child.destroyed || !completion_label(&child.name) { continue; }
+        items.entry(child.name.clone()).or_insert_with(||completion_item(&child.name,"property",&child.class,"DataModel child in the selected VM"));
+    }
+    Ok(items.into_values().take(256).collect())
+}
 
 #[cfg(all(test, emulator_local_tests))]
 #[path = "../local_tests/model.rs"]

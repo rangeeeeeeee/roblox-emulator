@@ -364,7 +364,7 @@ impl RawLua {
         let state = self.state();
         unsafe {
             let _sg = StackGuard::new(state);
-            check_stack(state, 3)?;
+            check_stack(state, 4)?;
 
             let name = name.map(CStr::as_ptr).unwrap_or(ptr::null());
             let mode = match mode {
@@ -372,10 +372,37 @@ impl RawLua {
                 Some(ChunkMode::Text) => cstr!("t"),
                 None => cstr!("bt"),
             };
+            // Luau 740 resolves GETIMPORT constants through the loading thread's
+            // globals, even when luau_load receives a different closure environment.
+            // Root the caller's globals on the stack and restore them on both load
+            // success and protected failure, without disabling import optimizations.
+            #[cfg(feature = "luau")]
+            struct GlobalsGuard(*mut ffi::lua_State, c_int);
+            #[cfg(feature = "luau")]
+            impl Drop for GlobalsGuard {
+                fn drop(&mut self) {
+                    unsafe {
+                        ffi::lua_pushvalue(self.0, self.1);
+                        ffi::lua_replace(self.0, ffi::LUA_GLOBALSINDEX);
+                        ffi::lua_remove(self.0, self.1);
+                    }
+                }
+            }
+            #[cfg(feature = "luau")]
+            let saved_globals = env.map(|env| {
+                ffi::lua_pushvalue(state, ffi::LUA_GLOBALSINDEX);
+                let saved = ffi::lua_gettop(state);
+                self.push_ref(&env.0);
+                ffi::lua_replace(state, ffi::LUA_GLOBALSINDEX);
+                GlobalsGuard(state, saved)
+            });
             // Luau and Lua 5.2 can trigger an exception during chunk loading.
-            let status = protect_lua_mem!(self, 0, 1, |state| {
+            let loaded = protect_lua_mem!(self, 0, 1, |state| {
                 self.load_chunk_inner(state, name, env, mode, source)
-            })?;
+            });
+            #[cfg(feature = "luau")]
+            drop(saved_globals);
+            let status = loaded?;
             match status {
                 ffi::LUA_OK => Ok(Function(self.try_pop_ref()?)),
                 err => Err(pop_error(state, err)),
