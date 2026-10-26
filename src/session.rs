@@ -26,6 +26,10 @@ impl Output {
         logs.push(json!({"seq":seq,"time":self.clock.get(),"realm":realm,"context":context,"level":level,
             "message":message.chars().take(4096).collect::<String>()}));
     }
+    fn log_values(&self, realm: &str, context: &str, level: &str, values: &[Json]) {
+        self.log(realm, context, level, &serde_json::to_string(values).unwrap_or_default());
+        if let Some(log) = self.logs.borrow_mut().last_mut() { log["arguments"] = json!(values); }
+    }
 }
 
 pub struct Session {
@@ -232,21 +236,25 @@ impl Session {
             deadline.set(Instant::now() + Duration::from_millis(cpu_budget.get()));
             match outcome {
                 Ok(values) if !timed_out => {
-                    let (count, values) = tuple_preview(values);
+                    let (count, values) = tuple_preview(lua, values);
                     let mut record = completed.borrow_mut();
                     record["status"] = json!("completed"); record["returnCount"] = json!(count); record["returns"] = json!(values);
-                    output.log(&realm_id, &command_context, "return", &serde_json::to_string(&record["returns"]).unwrap_or_default());
+                    output.log_values(&realm_id, &command_context, "return", &values);
                 }
                 outcome => {
                     let error = match outcome { Err(error) => error, _ => Value::Nil };
                     let game_message = error_message(&error);
                     let message = if timed_out { "BudgetExceeded: Luau wall-time budget".into() } else { game_message.chars().take(4096).collect::<String>() };
+                    let truncated = !timed_out && match &error {
+                        Value::String(value) => crate::console::render_bytes(&value.as_bytes(), 4096).1,
+                        _ => message.len() < game_message.len(),
+                    };
                     let mut record = completed.borrow_mut();
                     record["status"] = json!("error");
-                    record["error"] = json!({"type":if timed_out {"budget"} else {error.type_name()},"message":message,"truncated":!timed_out&&message.len()<game_message.len()});
+                    record["error"] = json!({"type":if timed_out {"budget"} else {error.type_name()},"message":message,"truncated":truncated});
                     drop(record);
                     output.log(&realm_id, &command_context, "error", &message);
-                    let _ = model::log(lua, "error", &game_message.chars().take(4096).collect::<String>());
+                    let _ = model::log(lua, "error", game_message.chars().take(4096).collect::<String>().as_bytes());
                     let _ = model::script_error(lua, &game_message, &finished_thread);
                     let _ = scheduler::cancel(lua, finished_thread.clone());
                 }
@@ -258,13 +266,13 @@ impl Session {
         let yielded = command.clone();
         let realm_id = realm.to_owned();
         let command_context = context.to_owned();
-        let observer: scheduler::YieldObserver = Rc::new(move |_, values| {
-            let (count, values) = tuple_preview(values);
+        let observer: scheduler::YieldObserver = Rc::new(move |lua, values| {
+            let (count, values) = tuple_preview(lua, values);
             let mut record = yielded.borrow_mut();
             record["status"] = json!("yielded");
             record["yieldCount"] = json!(record["yieldCount"].as_u64().unwrap_or(0) + 1);
             record["yieldArity"] = json!(count); record["yielded"] = json!(values);
-            output.log(&realm_id, &command_context, "yield", &serde_json::to_string(&record["yielded"]).unwrap_or_default());
+            output.log_values(&realm_id, &command_context, "yield", &values);
             Ok(())
         });
         if let Err(error) = scheduler::spawn_observed(&runtime.lua, Value::Thread(thread.clone()), MultiValue::new(), Some("serial"),
@@ -326,9 +334,7 @@ impl Session {
         let mut realms = Vec::new();
         for realm in &self.realms {
             realm.arm(self.scenario.cpu_ms);
-            let status: Value = internal::<Table>(&realm.lua, "__rt")?.get::<Function>("status")?.call(())?;
-            use mlua::LuaSerdeExt;
-            let status: Json = realm.lua.from_value(status)?;
+            let status = scheduler::status(&realm.lua)?;
             realms.push(json!({"id":realm.config.id,"side":realm.config.side,"clientId":realm.config.client_id,
                 "actorId":realm.config.actor_id,"executor":realm.config.executor,"executorProfile":realm.config.executor_profile,
                 "memoryBytes":realm.lua.used_memory(),"scheduler":status,
@@ -354,7 +360,7 @@ impl Session {
 
 fn error_message(error: &Value) -> String {
     match error {
-        Value::String(value) => value.to_string_lossy(),
+        Value::String(value) => crate::console::display_bytes(&value.as_bytes(), 4096),
         Value::Integer(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
         Value::Error(error) => error.to_string(),
@@ -362,36 +368,8 @@ fn error_message(error: &Value) -> String {
     }
 }
 
-fn tuple_preview(values: MultiValue) -> (usize, Vec<Json>) {
-    let count = values.len();
-    let mut budget = 64;
-    (count, values.into_iter().take(32).map(|value| preview(value, 0, &mut budget)).collect())
-}
-fn preview(value: Value, depth: usize, budget: &mut usize) -> Json {
-    if *budget == 0 { return json!({"type":value.type_name(),"truncated":true}); }
-    *budget -= 1;
-    match value {
-        Value::Nil => json!({"type":"nil"}),
-        Value::Boolean(value) => json!({"type":"boolean","value":value}),
-        Value::Integer(value) => json!({"type":"number","value":value}),
-        Value::Number(value) => json!({"type":"number","value":if value.is_finite(){json!(value)}else{json!(value.to_string())}}),
-        Value::String(value) => json!({"type":"string","value":value.to_string_lossy().chars().take(1024).collect::<String>(),"bytes":value.as_bytes().len()}),
-        Value::Table(table) if depth < 2 => {
-            let mut entries = Vec::new();
-            for pair in table.pairs::<Value, Value>().take(8) {
-                if *budget == 0 { break; }
-                if let Ok((key, value)) = pair { entries.push(json!({"key":preview(key,depth+1,budget),"value":preview(value,depth+1,budget)})); }
-            }
-            json!({"type":"table","entries":entries,"preview":true})
-        }
-        Value::UserData(value) => {
-            if let Ok(instance) = value.borrow::<crate::instance::Instance>() {
-                let node = instance.0.borrow();
-                json!({"type":"Instance","class":node.class,"name":node.name.chars().take(1024).collect::<String>(),"id":node.id.chars().take(1024).collect::<String>()})
-            } else { crate::types::encode_value(&Value::UserData(value.clone())).ok().flatten().unwrap_or_else(||json!({"type":"userdata"})) }
-        }
-        other => json!({"type":other.type_name()}),
-    }
+fn tuple_preview(lua: &mlua::Lua, values: MultiValue) -> (usize, Vec<Json>) {
+    (values.len(), crate::console::snapshot(lua, values.iter()))
 }
 
 #[cfg(all(test, emulator_local_tests))]

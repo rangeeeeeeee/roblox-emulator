@@ -12,6 +12,8 @@ mod executor;
 mod diagnostics;
 mod session;
 mod web;
+mod console;
+mod lint;
 
 pub(crate) fn internal<T: mlua::FromLua>(lua:&Lua,name:&str)->LuaResult<T> {
     if let Ok(table)=lua.named_registry_value::<Table>("emulator.internal") { table.get(name) } else {lua.globals().get(name)}
@@ -97,6 +99,7 @@ impl Host {
 
     fn realm(&self, cfg: &RealmConfig, scenario: &Scenario) -> LuaResult<Realm> {
         let lua = Lua::new();
+        if self.interactive { lua.set_app_data(console::Capture::default()); }
         native::install(&lua)?;
         native::set_executor_profile(&lua,&cfg.executor_profile)?;
         lua.set_memory_limit(scenario.memory_mb * 1024 * 1024)?;
@@ -121,17 +124,20 @@ impl Host {
         let log_sequence = self.log_sequence.clone();
         let interactive = self.interactive;
         let side = cfg.side.clone();
-        globals.set("__host_log", lua.create_function(move |lua, (level, message): (String, String)| {
+        globals.set("__host_log", lua.create_function(move |lua, (level, message): (String, mlua::LuaString)| {
+            let arguments = console::take(lua);
             if logs.borrow().len() >= 4000 {
                 if interactive { logs.borrow_mut().drain(..2000); }
                 else { return Err(LuaError::runtime("BudgetExceeded: console log limit")); }
             }
-            let text: String = message.chars().take(4096).collect();
+            let text = console::display_bytes(&message.as_bytes(), 4096);
             if !interactive { println!("[{:.3}][{}][{}] {}", clock.get(), realm_id, level, text); }
             log_sequence.set(log_sequence.get().saturating_add(1));
             let context = if native_mode && scheduler::current_origin(lua)=="executor" { "executor" } else { side.as_str() };
-            logs.borrow_mut().push(json!({"seq":log_sequence.get(),"time":clock.get(),"realm":realm_id,"context":context,"level":level,"message":text}));
-            if native_mode { model::log(lua,&level,&text)?; }
+            let mut record = json!({"seq":log_sequence.get(),"time":clock.get(),"realm":realm_id,"context":context,"level":level,"message":text});
+            if let Some(arguments) = arguments { record["arguments"] = json!(arguments); }
+            logs.borrow_mut().push(record);
+            if native_mode { model::log(lua,&level,&message.as_bytes())?; }
             Ok(())
         })?)?;
         let messages = self.messages.clone();
@@ -391,8 +397,10 @@ fn run(path: &Path, report_path: Option<&Path>) -> Result<bool, Box<dyn std::err
     let mut failed = false;
     for realm in &realms {
         realm.arm(scenario.cpu_ms);
-        let status: Value = internal::<Table>(&realm.lua,"__rt")?.get::<Function>("status")?.call(())?;
-        let status: Json = realm.lua.from_value(status)?;
+        let status: Json = if realm.native { serde_json::to_value(scheduler::status(&realm.lua)?)? } else {
+            let status: Value = internal::<Table>(&realm.lua,"__rt")?.get::<Function>("status")?.call(())?;
+            realm.lua.from_value(status)?
+        };
         let errors = status.get("errors").and_then(Json::as_u64).unwrap_or_else(||status.get("errors").and_then(Json::as_array).map_or(0,|x|x.len() as u64));
         scheduler_errors.push((realm.config.id.clone(),errors));
         let unsupported = if realm.native { model::unsupported_calls(&realm.lua)? } else {Default::default()};
@@ -501,7 +509,7 @@ fn native_probe(probe: &Path, reference: &Path, full_runtime: bool) -> Result<bo
     types::install(&lua)?;
     if full_runtime {
         lua.globals().set("__config",lua.to_value(&json!({"realmId":"probe","side":"server","isStudio":true,"executor":false,"signalBehavior":"deferred"}))?)?;
-        lua.globals().set("__host_log",lua.create_function(|_,(level,message):(String,String)|{eprintln!("[probe][{level}] {message}");Ok(())})?)?;
+        lua.globals().set("__host_log",lua.create_function(|_,(level,message):(String,mlua::LuaString)|{eprintln!("[probe][{level}] {}",console::display_bytes(&message.as_bytes(),4096));Ok(())})?)?;
         scheduler::install(&lua)?;
         model::install(&lua)?;
         hide_internals(&lua)?;

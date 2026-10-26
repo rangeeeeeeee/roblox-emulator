@@ -10,6 +10,9 @@ pub type Completion = Rc<dyn Fn(&Lua, std::result::Result<MultiValue, Value>) ->
 pub type YieldObserver = Rc<dyn Fn(&Lua, MultiValue) -> Result<()>>;
 type Shared = Rc<RefCell<Scheduler>>;
 
+#[derive(serde::Serialize)]
+pub struct Status { pub pending: usize, pub parked: usize, pub errors: usize }
+
 struct Scheduler {
     now: f64,
     tick: u64,
@@ -94,6 +97,15 @@ impl UserData for ConnectionView {}
 fn fail(message: impl Into<String>) -> Error { Error::lua_string(message) }
 fn shared(lua: &Lua) -> Result<Shared> {
     lua.app_data_ref::<Shared>().map(|value| value.clone()).ok_or_else(|| fail("scheduler is not installed"))
+}
+pub fn status(lua: &Lua) -> Result<Status> {
+    let shared = shared(lua)?;
+    let state = shared.borrow();
+    Ok(Status {
+        pending: state.queue.len(),
+        parked: state.tasks.values().filter(|task| task.parked && task.thread.is_resumable()).count(),
+        errors: state.errors.raw_len(),
+    })
 }
 fn key(thread: &Thread) -> usize { thread.state() as usize }
 fn clear_profile(lua: &Lua, thread: &Thread) -> Result<()> {
@@ -646,13 +658,12 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
             Ok(returned(Value::Integer(step(lua, now)? as i64)))
         }
         Op::Status => {
-            let state = shared(lua)?;
-            let state = state.borrow();
-            let status = lua.create_table()?;
-            status.raw_set("pending", state.queue.len())?;
-            status.raw_set("parked", state.tasks.values().filter(|task| task.parked && task.thread.is_resumable()).count())?;
-            status.raw_set("errors", state.errors.raw_len())?;
-            Ok(returned(Value::Table(status)))
+            let current = status(lua)?;
+            let table = lua.create_table()?;
+            table.raw_set("pending", current.pending)?;
+            table.raw_set("parked", current.parked)?;
+            table.raw_set("errors", current.errors)?;
+            Ok(returned(Value::Table(table)))
         }
         Op::GetMode => Ok(returned(Value::String(lua.create_string(current_mode(lua))?))),
         Op::GetOrigin => Ok(returned(Value::String(lua.create_string(current_origin(lua))?))),
@@ -681,9 +692,18 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
         }
         Op::Print | Op::Warn => {
             let tostring: Function = lua.globals().get("tostring")?;
+            let mut bytes = Vec::new();
             let mut strings = Vec::with_capacity(args.len());
-            for value in args { strings.push(tostring.call::<String>(value)?); }
-            if let Ok(logger) = crate::internal::<Function>(lua, "__host_log") { logger.call::<()>((if matches!(op, Op::Print) { "info" } else { "warn" }, strings.join("\t")))?; }
+            for (index, value) in args.iter().enumerate() {
+                if index > 0 { bytes.push(b'\t'); }
+                let text = tostring.call::<mlua::LuaString>(value.clone())?;
+                bytes.extend_from_slice(&text.as_bytes());
+                strings.push(text);
+            }
+            if let Ok(logger) = crate::internal::<Function>(lua, "__host_log") {
+                let _capture = crate::console::stage(lua, &args, &strings);
+                logger.call::<()>((if matches!(op, Op::Print) { "info" } else { "warn" }, lua.create_string(&bytes)?))?;
+            }
             Ok(empty())
         }
         Op::Time | Op::Tick => Ok(returned(Value::Number(shared(lua)?.borrow().now + if matches!(op, Op::Tick) { 1700000000.0 } else { 0.0 }))),

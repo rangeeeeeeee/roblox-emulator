@@ -7,6 +7,11 @@
 !/ui/
 /ui/*
 !/ui/index.html
+!/ui/editor.js
+!/ui/editor.bundle.js
+!/ui/build.mjs
+!/ui/package.json
+!/ui/package-lock.json
 
 !/src/
 /src/*
@@ -44,3 +49,8 @@
 !/vendor/mlua-0.12.2/docs/chunk.md
 !/vendor/mlua-0.12.2/docs/UserData.md
 !/vendor/mlua-0.12.2/docs/lua_module.md
+
+!/vendor/luau-lint-0.740/
+/vendor/luau-lint-0.740/*
+!/vendor/luau-lint-0.740/LinterAst.cpp
+!/vendor/luau-lint-0.740/LICENSE.txt

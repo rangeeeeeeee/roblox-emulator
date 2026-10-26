@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -69,8 +69,20 @@
     .history { flex: 1; min-width: 140px; font-size: 12px; }
     .editor-wrap { flex: 1; display: flex; min-height: 140px; background: var(--editor); position: relative; }
     .editor-wrap:focus-within { box-shadow: inset 3px 0 0 var(--accent); }
-    #source { resize: none; flex: 1; width: 100%; min-height: 0; border: 0; border-radius: 0; background: transparent; color: #dce8f7; padding: 17px 18px; font: 14px/1.65 ui-monospace, "Cascadia Code", Consolas, monospace; tab-size: 4; overflow: auto; white-space: pre; }
-    #source::selection { background: #3c5472; }
+    #source { flex: 1; width: 100%; min-height: 0; overflow: hidden; }
+    .editor-doc-tooltip { max-width: 460px; padding: 9px 12px; font: 12px/1.6 system-ui, sans-serif; }
+    .editor-doc-tooltip strong { display: block; font-family: ui-monospace, Consolas, monospace; }
+    #lintStatus { color: var(--muted); margin-left: auto; }
+    .log-arguments { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; margin-top: 4px; font: 12px/1.6 ui-monospace, Consolas, monospace; }
+    .log-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .value-string { color: #b5d69d; }
+    .value-number, .value-boolean { color: #edbf8f; }
+    .value-nil, .value-note { color: var(--muted); }
+    .value-table { max-width: 100%; min-width: 0; }
+    .value-table summary { color: #9dc5f5; cursor: pointer; overflow-wrap: anywhere; }
+    .value-entries { border-left: 1px solid #3b4b5f; padding-left: 12px; margin: 4px 0 4px 5px; }
+    .value-entry { display: flex; align-items: flex-start; gap: 5px; padding: 2px 0; }
+    .value-key { color: #b7c9df; white-space: pre-wrap; overflow-wrap: anywhere; }
     .example-tools { padding: 9px 12px; border-top: 1px solid var(--line); }
     .example-tools select { flex: 1; font-size: 12px; }
     .example-hint { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 11px; min-height: 24px; }
@@ -137,131 +149,129 @@
   <header class="top">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">&gt;_</div>
-      <div><h1>Roblox Emulator</h1><p class="subtitle">Локальный интерпретатор Luau · offline emulator</p></div>
+      <div><h1>Roblox Emulator</h1></div>
     </div>
-    <div class="metrics" aria-label="Состояние сессии">
-      <span id="connectionState" class="connection" data-state="connecting">Подключение…</span>
-      <span class="metric">Время <strong id="virtualTime">—</strong></span>
-      <span class="metric">Сообщений в очереди <strong id="pendingMessages">—</strong></span>
-      <span id="limitsStatus" class="metric" tabindex="0" hidden>Лимиты сессии ⓘ</span>
-      <button id="refreshButton" class="plain small" type="button" title="Получить актуальное состояние">Обновить</button>
+    <div class="metrics" aria-label="Session status">
+      <span id="connectionState" class="connection" data-state="connecting">Connecting…</span>
+      <span class="metric">Time <strong id="virtualTime">—</strong></span>
+      <span class="metric">Queued messages <strong id="pendingMessages">—</strong></span>
+      <span id="limitsStatus" class="metric" tabindex="0" hidden>Session limits ⓘ</span>
+      <button id="refreshButton" class="plain small" type="button" title="Refresh session state">Refresh</button>
     </div>
   </header>
 
-  <section class="runtime" aria-label="Управление сессией">
+  <section class="runtime" aria-label="Runtime controls">
     <div class="runtime-actions">
-      <button id="runningButton" type="button" disabled>▶ Продолжить</button>
-      <button id="stepButton" type="button" title="Продвинуть виртуальное время на 1/60 секунды" disabled>Шаг 1/60 с</button>
-      <button id="secondButton" type="button" title="Продвинуть виртуальное время на одну секунду" disabled>+1 с</button>
-      <span class="runtime-note">VM сохраняют состояние между запусками.</span>
+      <button id="runningButton" type="button" disabled>▶ Play</button>
+      <button id="stepButton" type="button" title="Advance by 1/60 second" disabled>Step 1/60 s</button>
+      <button id="secondButton" type="button" title="Advance by one second" disabled>+1 s</button>
     </div>
     <div class="profile-controls">
-      <label for="budgetSelect">Лимит выполнения</label>
-      <select id="budgetSelect" title="Лимит непрерывного выполнения кода. Не исправляет бесконечные циклы и ссылки таблиц на самих себя." disabled><option value="">—</option></select>
-      <label for="profileSelect">Профиль сброса</label>
+      <label for="budgetSelect">Execution limit</label>
+      <select id="budgetSelect" title="Continuous execution limit. It interrupts long-running code; it does not fix loops or cyclic tables." disabled><option value="">—</option></select>
+      <label for="profileSelect">Reset profile</label>
       <select id="profileSelect"><option value="generic">generic</option><option value="macsploit-744.2">macsploit-744.2</option></select>
-      <button id="resetButton" class="danger" type="button" disabled>Сбросить VM…</button>
+      <button id="resetButton" class="danger" type="button" disabled>Reset VMs…</button>
     </div>
   </section>
 
   <div id="errorBanner" class="error-banner" role="alert" hidden>
-    <div class="error-content"><div id="errorTitle" class="error-title">Ошибка</div><div id="errorText" class="error-text"></div></div>
-    <button id="dismissError" class="dismiss" type="button" aria-label="Скрыть сообщение об ошибке">×</button>
+    <div class="error-content"><div id="errorTitle" class="error-title">Error</div><div id="errorText" class="error-text"></div></div>
+    <button id="dismissError" class="dismiss" type="button" aria-label="Dismiss error">×</button>
   </div>
 
-  <section class="target-bar" aria-label="Контекст выполнения">
-    <div class="modes" role="group" aria-label="Режим интерпретатора">
-      <button class="mode" data-mode="server" type="button" aria-pressed="true">Сервер</button>
-      <button class="mode" data-mode="client" type="button" aria-pressed="false">Клиент</button>
-      <button class="mode" data-mode="executor" type="button" aria-pressed="false">Executor (чит)</button>
+  <section class="target-bar" aria-label="Execution context">
+    <div class="modes" role="group" aria-label="Execution mode">
+      <button class="mode" data-mode="server" type="button" aria-pressed="true">Server</button>
+      <button class="mode" data-mode="client" type="button" aria-pressed="false">Client</button>
+      <button class="mode" data-mode="executor" type="button" aria-pressed="false">Executor</button>
     </div>
-    <div id="clientField" class="field" hidden><label for="clientSelect">Клиент</label><select id="clientSelect" disabled></select></div>
+    <div id="clientField" class="field" hidden><label for="clientSelect">Client</label><select id="clientSelect" disabled></select></div>
     <div class="field"><label for="actorSelect">Actor</label><select id="actorSelect" disabled></select></div>
-    <div class="field vm-field"><label for="realmSelect">Виртуальная машина</label><select id="realmSelect" disabled><option>Ожидание состояния…</option></select></div>
-    <p id="targetNote" class="target-note">Обычное серверное окружение.</p>
+    <div class="field vm-field"><label for="realmSelect">Virtual machine</label><select id="realmSelect" disabled><option>Waiting for state…</option></select></div>
   </section>
 
   <main class="workspace">
     <section class="panel editor-panel" aria-labelledby="editorTitle">
       <div class="panel-heading">
-        <div class="panel-title"><h2 id="editorTitle">Редактор</h2><span id="documentName" class="document-name">server.luau</span></div>
+        <div class="panel-title"><h2 id="editorTitle">Editor</h2><span id="documentName" class="document-name">server.luau</span></div>
         <span class="document-name">Luau</span>
       </div>
       <div class="editor-tools">
-        <button id="openButton" class="small" type="button">Открыть файл</button>
+        <button id="openButton" class="small" type="button">Open file</button>
         <input id="fileInput" type="file" accept=".lua,.luau" hidden>
-        <button id="downloadButton" class="small" type="button">Скачать код</button>
-        <label class="sr-only" for="historySelect">История запусков текущего режима</label>
-        <select id="historySelect" class="history"><option value="">История этого режима</option></select>
+        <button id="downloadButton" class="small" type="button">Download</button>
+        <label class="sr-only" for="historySelect">Run history for this mode</label>
+        <select id="historySelect" class="history"><option value="">Mode history</option></select>
       </div>
       <div class="editor-wrap">
-        <label class="sr-only" for="source">Код Luau</label>
-        <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-describedby="editorHelp"></textarea>
+        <div id="source" aria-describedby="editorHelp"></div>
       </div>
       <div class="example-tools">
-        <label class="sr-only" for="exampleSelect">Пример кода</label>
+        <label class="sr-only" for="exampleSelect">Code example</label>
         <select id="exampleSelect">
-          <option value="basic">Печать и GetService</option>
-          <option value="remoteServer">Remotes · 1. Сервер</option>
-          <option value="remoteClient">Remotes · 2. Клиент</option>
-          <option value="executor">Executor · identifyexecutor и getgc</option>
-          <option value="gcPreview">Executor · GC: таблицы (preview)</option>
-          <option value="hookClient">Hook · 1. Функция на клиенте</option>
-          <option value="hookExecutor">Hook · 2. Перехват из Executor</option>
-          <option value="restoreExecutor">Hook · 3. Восстановить функцию</option>
+          <option value="basic">Print and GetService</option>
+          <option value="tables">Print tables and references</option>
+          <option value="remoteServer">Remotes · 1. Server</option>
+          <option value="remoteClient">Remotes · 2. Client</option>
+          <option value="executor">Executor · identifyexecutor and getgc</option>
+          <option value="gcPreview">Executor · GC: tables preview</option>
+          <option value="hookClient">Hook · 1. Client target</option>
+          <option value="hookExecutor">Hook · 2. Hook in Executor</option>
+          <option value="restoreExecutor">Hook · 3. Restore function</option>
         </select>
-        <button id="insertExample" class="small" type="button">Вставить пример</button>
+        <button id="insertExample" class="small" type="button">Insert example</button>
       </div>
-      <p id="exampleHint" class="example-hint">Пример вставляется в редактор и не запускается автоматически.</p>
       <div class="editor-footer">
-        <div id="editorHelp" class="editor-help"><span id="cursorPosition">Строка 1, столбец 1</span><span>Tab — отступ · Shift+Tab — убрать · Esc — выйти</span></div>
-        <button id="runButton" class="run" type="button" disabled>Запустить <span class="shortcut">Ctrl+Enter</span></button>
+        <div id="editorHelp" class="editor-help"><span id="cursorPosition">Ln 1, Col 1</span><span>Tab indent · Ctrl+Space complete</span></div>
+        <button id="lintStatus" class="plain small" type="button" title="Show diagnostics (Ctrl+Shift+M)">Checking…</button>
+        <button id="runButton" class="run" type="button" disabled>Run <span class="shortcut">Ctrl+Enter</span></button>
       </div>
     </section>
 
     <section class="panel output-panel" aria-labelledby="outputTitle">
-      <div class="panel-heading"><h2 id="outputTitle">Вывод</h2><button id="clearButton" class="plain small" type="button" title="Очистить вывод всех режимов, сохранив состояние VM" disabled>Очистить вывод</button></div>
+      <div class="panel-heading"><h2 id="outputTitle">Output</h2><button id="clearButton" class="plain small" type="button" title="Clear output without resetting VM state" disabled>Clear output</button></div>
       <div class="console-tools">
-        <label class="sr-only" for="contextFilter">Контекст вывода</label><select id="contextFilter"><option value="">Все контексты</option><option value="server">Сервер</option><option value="client">Клиент</option><option value="executor">Executor</option></select>
-        <label class="sr-only" for="realmFilter">VM в выводе</label><select id="realmFilter"><option value="">Все VM</option></select>
-        <label class="sr-only" for="levelFilter">Уровень сообщений</label><select id="levelFilter"><option value="">Все уровни</option><option value="info">Инфо</option><option value="warn">Предупреждения</option><option value="error">Ошибки</option><option value="debug">Отладка</option></select>
-        <label class="sr-only" for="logSearch">Поиск в выводе</label><input id="logSearch" class="search" type="search" placeholder="Поиск по сообщению, VM или контексту…" autocomplete="off">
+        <label class="sr-only" for="contextFilter">Output context</label><select id="contextFilter"><option value="">All contexts</option><option value="server">Server</option><option value="client">Client</option><option value="executor">Executor</option></select>
+        <label class="sr-only" for="realmFilter">Output VM</label><select id="realmFilter"><option value="">All VMs</option></select>
+        <label class="sr-only" for="levelFilter">Log level</label><select id="levelFilter"><option value="">All levels</option><option value="info">Info</option><option value="warn">Warnings</option><option value="error">Errors</option><option value="debug">Debug</option></select>
+        <label class="sr-only" for="logSearch">Search output</label><input id="logSearch" class="search" type="search" placeholder="Search messages, VM or context…" autocomplete="off">
       </div>
-      <div id="logScroller" class="log-scroller" tabindex="0" role="region" aria-label="Сообщения эмулятора">
-        <div id="emptyOutput" class="empty-output">Вывод появится здесь после запуска.</div>
-        <div id="logList" role="log" aria-live="off" aria-label="Журнал"></div>
+      <div id="logScroller" class="log-scroller" tabindex="0" role="region" aria-label="Emulator output">
+        <div id="emptyOutput" class="empty-output">No output yet.</div>
+        <div id="logList" role="log" aria-live="off" aria-label="Log"></div>
       </div>
-      <div class="output-footer"><span id="logCount">0 сообщений</span><label class="check-label"><input id="autoscroll" type="checkbox" checked>Автоскролл</label></div>
+      <div class="output-footer"><span id="logCount">0 messages</span><label class="check-label"><input id="autoscroll" type="checkbox">Autoscroll</label></div>
     </section>
   </main>
 
   <footer class="statusbar">
-    <div class="status-left"><span id="statusText" role="status" aria-live="polite">Ожидание сессии</span><span id="lastCommand" class="last-command"></span><span id="unsupportedStatus" class="unsupported" tabindex="0" hidden></span></div>
-    <span id="memoryStatus">Изолированные Luau VM · доступность API определяется эмулятором</span>
+    <div class="status-left"><span id="statusText" role="status" aria-live="polite">Waiting for session</span><span id="lastCommand" class="last-command"></span><span id="unsupportedStatus" class="unsupported" tabindex="0" hidden></span></div>
+    <span id="memoryStatus"></span>
   </footer>
 
   <dialog id="resetDialog" aria-labelledby="resetTitle" aria-describedby="resetDescription">
-    <h2 id="resetTitle">Сбросить состояние VM?</h2>
-    <p id="resetDescription">Все VM будут созданы заново. Объекты, переменные, подключения и запланированные задачи будут удалены. Код в редакторе и локальная история останутся.</p>
-    <p>Профиль новой сессии: <strong id="resetProfileName"></strong></p>
-    <div class="dialog-actions"><button id="cancelReset" type="button" autofocus>Отмена</button><button id="confirmReset" class="danger" type="button">Сбросить VM</button></div>
+    <h2 id="resetTitle">Reset VM state?</h2>
+    <p id="resetDescription">Objects, variables, connections and scheduled tasks will be lost. Editor code and history will be kept.</p>
+    <p>New session profile: <strong id="resetProfileName"></strong></p>
+    <div class="dialog-actions"><button id="cancelReset" type="button" autofocus>Cancel</button><button id="confirmReset" class="danger" type="button">Reset VMs</button></div>
   </dialog>
 
+  <script src="/assets/editor.js"></script>
   <script>
     'use strict';
     const $ = id => document.getElementById(id);
     const modes = ['server', 'client', 'executor'];
-    const titles = {server: 'Сервер', client: 'Клиент', executor: 'Executor'};
-    const descriptions = {server: 'Обычное серверное окружение.', client: 'Обычное клиентское окружение.', executor: 'Executor API в выбранной VM.'};
+    const titles = {server: 'Server', client: 'Client', executor: 'Executor'};
     const storageKey = 'roblox-emulator.editor.v1';
     const tokenKey = 'roblox-emulator.token';
     let storageAvailable = true;
     let stored = {};
     try { stored = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch { storageAvailable = false; }
     const defaults = {
-      server: '-- Сервер: состояние VM сохраняется между запусками.\nlocal storage = game:GetService("ReplicatedStorage")\nprint("Сервер готов", storage:GetFullName())\n',
-      client: '-- Клиент: выберите client и нужную VM сверху.\nlocal players = game:GetService("Players")\nprint("Клиент готов", players.LocalPlayer)\n',
-      executor: '-- Executor API работает внутри выбранной VM эмулятора.\nprint(identifyexecutor())\nprint("Объектов getgc:", #getgc(true))\n'
+      server: '-- Server environment.\nlocal storage = game:GetService("ReplicatedStorage")\nprint("Server ready", storage:GetFullName())\n',
+      client: '-- Client environment.\nlocal players = game:GetService("Players")\nprint("Client ready", players.LocalPlayer)\n',
+      executor: '-- Executor environment for the selected VM.\nprint(identifyexecutor())\nprint("GC objects:", #getgc(true))\n'
     };
     const drafts = {}, filenames = {}, histories = {}, choices = {};
     for (const mode of modes) {
@@ -282,13 +292,19 @@
     let state = null, connected = false, busy = false, refreshTask = null;
     let requestSerial = 0, appliedSerial = 0, pollTimer = null, saveTimer = null;
     let apiError = '', dismissedRuntimeError = '', commandOverride = null;
-    const rows = new Map();
-    $('autoscroll').checked = stored.autoscroll !== false;
+    const rows = new Map(), expanded = new Map(), scrollPositions = new Map();
+    let lastFilter = '';
+    $('autoscroll').checked = stored.version === 2 && stored.autoscroll === true;
     if (['generic', 'macsploit-744.2'].includes(stored.profile)) $('profileSelect').value = stored.profile;
+    const editor = EmulatorEditor.createEditor($('source'), {
+      doc: drafts[mode], context: mode, getToken: () => token, onChange: editChanged, onCursor: cursor,
+      onRun: runCode, onSizeError: showError,
+      onLintStatus(text, detail) { $('lintStatus').textContent = text; $('lintStatus').title = detail || 'Show diagnostics (Ctrl+Shift+M)'; }
+    });
 
     function save() {
-      drafts[mode] = $('source').value;
-      try { localStorage.setItem(storageKey, JSON.stringify({mode, drafts, filenames, histories, choices, profile: $('profileSelect').value, autoscroll: $('autoscroll').checked})); }
+      drafts[mode] = editor.getValue();
+      try { localStorage.setItem(storageKey, JSON.stringify({version: 2, mode, drafts, filenames, histories, choices, profile: $('profileSelect').value, autoscroll: $('autoscroll').checked})); }
       catch { storageAvailable = false; }
     }
     function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 250); }
@@ -304,7 +320,7 @@
       const runtime = typeof state?.runtimeError === 'string' ? state.runtimeError : '';
       const runtimeVisible = runtime && runtime !== dismissedRuntimeError;
       $('errorBanner').hidden = !apiError && !runtimeVisible;
-      const title = apiError ? 'Ошибка запроса' : 'Автопрогон остановлен';
+      const title = apiError ? 'Request error' : 'Runtime paused';
       const text = apiError || (runtimeVisible ? runtime : '');
       if ($('errorTitle').textContent !== title) $('errorTitle').textContent = title;
       if ($('errorText').textContent !== text) $('errorText').textContent = text;
@@ -328,73 +344,71 @@
       const choice = choices[mode];
       $('clientField').hidden = mode === 'server';
       const clients = [...new Set(realms.map(realm => realm.clientId).filter(id => typeof id === 'string' && id))].sort();
-      setOptions($('clientSelect'), [['', 'Все клиенты'], ...clients.map(id => [id, id])], choice.client);
+      setOptions($('clientSelect'), [['', 'All clients'], ...clients.map(id => [id, id])], choice.client);
       choice.client = $('clientSelect').value;
       if (choice.client) realms = realms.filter(realm => realm.clientId === choice.client);
       const actors = [...new Set(realms.map(realm => realm.actorId).filter(id => typeof id === 'string' && id))].sort();
-      setOptions($('actorSelect'), [['', 'Все VM'], ['@main', 'Без Actor'], ...actors.map(id => ['actor:' + id, id])], choice.actor);
+      setOptions($('actorSelect'), [['', 'All VMs'], ['@main', 'Main VM'], ...actors.map(id => ['actor:' + id, id])], choice.actor);
       choice.actor = $('actorSelect').value;
       if (choice.actor === '@main') realms = realms.filter(realm => !realm.actorId);
       else if (choice.actor.startsWith('actor:')) realms = realms.filter(realm => realm.actorId === choice.actor.slice(6));
       const options = realms.map(realm => [realm.id, realm.id + (realm.actorId ? ' · Actor: ' + realm.actorId : '')]);
-      setOptions($('realmSelect'), options.length ? options : [['', state ? 'Нет подходящих VM' : 'Ожидание состояния…']], choice.realm);
+      setOptions($('realmSelect'), options.length ? options : [['', state ? 'No matching VMs' : 'Waiting for state…']], choice.realm);
       choice.realm = $('realmSelect').value;
-      $('targetNote').textContent = realms.length || !state ? descriptions[mode] : 'В сессии нет VM для выбранного режима и фильтров.';
       const realm = selectedRealm();
       const memory = Number.isFinite(realm?.memoryBytes) ? (realm.memoryBytes / 1048576).toFixed(2) + ' MiB' : '—';
       const profile = realm?.executor && realm.executorProfile ? ' · ' + realm.executorProfile : '';
-      $('memoryStatus').textContent = realm ? 'Память VM: ' + memory + profile : 'Изолированные Luau VM · доступность API определяется эмулятором';
+      $('memoryStatus').textContent = realm ? 'VM memory: ' + memory + profile : '';
       updateActions();
     }
     function updateActions() {
       const available = connected && state !== null && !busy;
-      $('runButton').disabled = !available || !$('realmSelect').value || !$('source').value.trim();
+      $('runButton').disabled = !available || !$('realmSelect').value || !editor.getValue().trim();
       for (const id of ['runningButton', 'resetButton', 'clearButton', 'budgetSelect']) $(id).disabled = !available;
       for (const id of ['stepButton', 'secondButton']) $(id).disabled = !available || !!state?.running;
       for (const id of ['clientSelect', 'actorSelect', 'realmSelect']) $(id).disabled = busy || !state;
       for (const button of document.querySelectorAll('.mode')) button.disabled = busy;
       $('profileSelect').disabled = busy;
       $('budgetSelect').disabled = !available || !Number.isFinite(state?.limits?.cpuMs);
-      $('runningButton').textContent = state?.running ? 'Ⅱ Пауза' : '▶ Продолжить';
-      $('runningButton').setAttribute('aria-label', state?.running ? 'Приостановить виртуальное время' : 'Продолжить виртуальное время');
+      $('runningButton').textContent = state?.running ? 'Ⅱ Pause' : '▶ Play';
+      $('runningButton').setAttribute('aria-label', state?.running ? 'Pause virtual time' : 'Resume virtual time');
     }
     function renderHistory() {
-      const items = [['', 'История: ' + titles[mode].toLowerCase()]];
+      const items = [['', 'History: ' + titles[mode].toLowerCase()]];
       histories[mode].forEach((entry, index) => {
         const date = new Date(entry.at);
-        const time = Number.isNaN(date.getTime()) ? '' : date.toLocaleString('ru-RU', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'});
-        const firstLine = entry.source.split('\n').find(line => line.trim()) || '(пусто)';
+        const time = Number.isNaN(date.getTime()) ? '' : date.toLocaleString('en-GB', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'});
+        const firstLine = entry.source.split('\n').find(line => line.trim()) || '(empty)';
         items.push([String(index), time + ' · ' + (entry.realm || '') + ' · ' + firstLine.trim().slice(0, 55)]);
       });
       setOptions($('historySelect'), items, '');
-      $('historySelect').title = storageAvailable ? 'Последние 20 запусков этого режима хранятся в браузере' : 'Хранение браузером недоступно; история сохранится только до закрытия страницы';
+      $('historySelect').title = storageAvailable ? 'Last 20 runs for this mode, stored in this browser' : 'Browser storage is unavailable; history lasts until this page closes';
     }
     function switchMode(next, initial = false) {
       const previousRealm = initial ? null : selectedRealm();
-      if (!initial) drafts[mode] = $('source').value;
+      if (!initial) drafts[mode] = editor.getValue();
       mode = next;
       if (previousRealm && eligibleRealms().some(realm => realm.id === previousRealm.id)) {
         choices[mode] = {realm: previousRealm.id, client: previousRealm.clientId || '', actor: previousRealm.actorId ? 'actor:' + previousRealm.actorId : '@main'};
       }
       document.body.dataset.context = mode;
       for (const button of document.querySelectorAll('.mode')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-      $('source').value = drafts[mode];
+      editor.setContext(mode);
+      if (editor.getValue() !== drafts[mode]) editor.setValue(drafts[mode]);
       $('documentName').textContent = filenames[mode];
       renderHistory(); renderTargets(); cursor();
       if (!initial) save();
     }
     function cursor() {
-      const before = $('source').value.slice(0, $('source').selectionStart);
-      const line = before.split('\n').length;
-      const column = before.length - before.lastIndexOf('\n');
-      $('cursorPosition').textContent = 'Строка ' + line + ', столбец ' + column;
+      const position = editor.position();
+      $('cursorPosition').textContent = 'Ln ' + position.line + ', Col ' + position.column;
     }
-    function editChanged() { drafts[mode] = $('source').value; cursor(); updateActions(); saveSoon(); }
+    function editChanged() { drafts[mode] = editor.getValue(); cursor(); updateActions(); saveSoon(); }
     function renderCommand() {
       const commands = Array.isArray(state?.commands) ? state.commands : [];
       const command = commandOverride || commands[commands.length - 1];
-      const labels = {yielded: 'ожидает продолжения', completed: 'завершён', error: 'ошибка', running: 'выполняется', queued: 'в очереди'};
-      $('lastCommand').textContent = command?.status ? 'Последний запуск: ' + (labels[command.status] || command.status) + (command.realm ? ' · ' + command.realm : '') : '';
+      const labels = {yielded: 'yielded', completed: 'completed', error: 'error', running: 'running', queued: 'queued'};
+      $('lastCommand').textContent = command?.status ? 'Last run: ' + (labels[command.status] || command.status) + (command.realm ? ' · ' + command.realm : '') : '';
     }
     function renderDiagnostics() {
       let count = 0;
@@ -405,31 +419,31 @@
         }
       }
       $('unsupportedStatus').hidden = count === 0;
-      $('unsupportedStatus').textContent = 'Неподдержанных вызовов: ' + count;
+      $('unsupportedStatus').textContent = 'Unsupported calls: ' + count;
       $('unsupportedStatus').title = calls.join('\n');
-      $('unsupportedStatus').setAttribute('aria-label', 'Неподдержанные API: ' + calls.join('; '));
+      $('unsupportedStatus').setAttribute('aria-label', 'Unsupported APIs: ' + calls.join('; '));
       const limits = state?.limits || {}, descriptions = [];
-      for (const [key, label, unit] of [['sourceBytes', 'Максимальный размер кода', ' байт'], ['advanceSeconds', 'Максимальная промотка за запрос', ' с'], ['sessionSeconds', 'Максимальное время сессии', ' с'], ['memoryMb', 'Память VM', ' MiB'], ['cpuMs', 'Бюджет выполнения', ' мс']]) {
+      for (const [key, label, unit] of [['sourceBytes', 'Source limit', ' bytes'], ['advanceSeconds', 'Advance limit', ' s'], ['sessionSeconds', 'Session duration limit', ' s'], ['memoryMb', 'VM memory', ' MiB'], ['cpuMs', 'Execution budget', ' ms']]) {
         if (Number.isFinite(limits[key])) descriptions.push(label + ': ' + limits[key] + unit);
       }
       $('limitsStatus').hidden = descriptions.length === 0;
       $('limitsStatus').title = descriptions.join('\n');
-      $('limitsStatus').setAttribute('aria-label', 'Лимиты сессии. ' + descriptions.join('; '));
+      $('limitsStatus').setAttribute('aria-label', 'Session limits. ' + descriptions.join('; '));
       const budgets = [250, 500, 1000, 2000, 5000, 10000];
       if (Number.isFinite(limits.cpuMs) && !budgets.includes(limits.cpuMs)) budgets.push(limits.cpuMs);
-      const budgetOptions = Number.isFinite(limits.cpuMs) ? budgets.sort((a, b) => a - b).map(value => [String(value), value + ' мс']) : [['', '—']];
+      const budgetOptions = Number.isFinite(limits.cpuMs) ? budgets.sort((a, b) => a - b).map(value => [String(value), value + ' ms']) : [['', '—']];
       setOptions($('budgetSelect'), budgetOptions, String(limits.cpuMs ?? ''));
     }
     function applySnapshot(payload, serial) {
       if (serial < appliedSerial) return;
       const snapshot = payload?.snapshot || payload?.state || payload;
-      if (!snapshot || !Array.isArray(snapshot.realms)) throw new Error('Сервер вернул ответ без списка VM.');
+      if (!snapshot || !Array.isArray(snapshot.realms)) throw new Error('Server response has no VM list.');
       appliedSerial = serial;
       state = snapshot;
       commandOverride = payload.command || null;
-      $('virtualTime').textContent = Number.isFinite(state.time) ? state.time.toFixed(3) + ' с' : '—';
+      $('virtualTime').textContent = Number.isFinite(state.time) ? state.time.toFixed(3) + ' s' : '—';
       $('pendingMessages').textContent = Number.isFinite(state.pendingMessages) ? String(state.pendingMessages) : '—';
-      connection(true, 'Подключено');
+      connection(true, 'Connected');
       renderTargets(); renderLogFilters(); renderLogs(); renderCommand(); renderDiagnostics(); renderError();
     }
     async function request(path, body) {
@@ -443,22 +457,22 @@
           body: body === undefined ? undefined : JSON.stringify(body)
         });
         let payload;
-        try { payload = await response.json(); } catch { throw new Error('Ответ сервера не является JSON (HTTP ' + response.status + ').'); }
+        try { payload = await response.json(); } catch { throw new Error('Server response is not JSON (HTTP ' + response.status + ').'); }
         if (!response.ok) {
           const detail = typeof payload?.error === 'string' ? payload.error : 'HTTP ' + response.status;
-          throw new Error(detail + (response.status === 401 || response.status === 403 ? '\nОткройте ссылку запуска с актуальным токеном из локального сервера.' : ''));
+          throw new Error(detail + (response.status === 401 || response.status === 403 ? '\nOpen the local server URL with its current session token.' : ''));
         }
         applySnapshot(payload, serial);
       } catch (error) {
-        if (error.name === 'AbortError') throw new Error('Сервер не ответил вовремя. Команда могла выполниться; проверьте обновлённое состояние перед повторным запуском.');
+        if (error.name === 'AbortError') throw new Error('Request timed out. The command may have run; check the refreshed state before retrying.');
         throw error;
       } finally { clearTimeout(timeout); }
     }
     function refresh(silent = false, fresh = false) {
       if (refreshTask) return fresh ? refreshTask.then(() => refresh(silent)) : refreshTask;
       refreshTask = (async () => {
-        try { await request('state'); if (!state.runtimeError && !silent && !busy) status('Состояние обновлено'); }
-        catch (error) { connection(false, 'Нет связи'); if (!silent || !state) showError(error.message); }
+        try { await request('state'); if (!state.runtimeError && !silent && !busy) status('State refreshed'); }
+        catch (error) { connection(false, 'Disconnected'); if (!silent || !state) showError(error.message); }
         finally { refreshTask = null; }
       })();
       return refreshTask;
@@ -467,26 +481,27 @@
       if (busy) return;
       busy = true; apiError = ''; renderError(); updateActions(); status(pendingText);
       try { await request(path, body); status(completeText); }
-      catch (error) { showError(error.message); status('Запрос завершился с ошибкой'); await refresh(true, true); }
+      catch (error) { showError(error.message); status('Request failed'); await refresh(true, true); }
       finally { busy = false; updateActions(); }
     }
     async function runCode() {
       if ($('runButton').disabled) return;
-      const realm = $('realmSelect').value, source = $('source').value, context = mode;
+      const realm = $('realmSelect').value, source = editor.getValue(), context = mode;
+      if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) { showError('Source exceeds 256 KiB.'); return; }
       const previous = histories[context][0];
       if (!previous || previous.source !== source || previous.realm !== realm) histories[context].unshift({source, realm, at: Date.now(), filename: filenames[context]});
       histories[context] = histories[context].slice(0, 20);
       renderHistory(); save();
-      await mutate('execute', {realm, context, source}, 'Запуск: ' + titles[context] + ' · ' + realm, 'Команда передана в ' + realm);
+      await mutate('execute', {realm, context, source}, 'Running: ' + titles[context] + ' · ' + realm, 'Submitted to ' + realm);
     }
     function renderLogFilters() {
       const logs = Array.isArray(state?.logs) ? state.logs : [];
       const contexts = [...new Set(logs.map(log => String(log.context || '')).filter(value => value && !modes.includes(value)))].sort();
       const realms = [...new Set([...(state?.realms || []).map(realm => realm.id), ...logs.map(log => log.realm)].filter(Boolean))].sort();
       const levels = [...new Set(logs.map(log => String(log.level || '')).filter(value => value && !['info', 'warn', 'error', 'debug'].includes(value)))].sort();
-      setOptions($('contextFilter'), [['', 'Все контексты'], ...modes.map(value => [value, titles[value]]), ...contexts.map(value => [value, value])], $('contextFilter').value);
-      setOptions($('realmFilter'), [['', 'Все VM'], ...realms.map(value => [value, value])], $('realmFilter').value);
-      setOptions($('levelFilter'), [['', 'Все уровни'], ['info', 'Инфо'], ['warn', 'Предупреждения'], ['error', 'Ошибки'], ['debug', 'Отладка'], ...levels.map(value => [value, value])], $('levelFilter').value);
+      setOptions($('contextFilter'), [['', 'All contexts'], ...modes.map(value => [value, titles[value]]), ...contexts.map(value => [value, value])], $('contextFilter').value);
+      setOptions($('realmFilter'), [['', 'All VMs'], ...realms.map(value => [value, value])], $('realmFilter').value);
+      setOptions($('levelFilter'), [['', 'All levels'], ['info', 'Info'], ['warn', 'Warnings'], ['error', 'Errors'], ['debug', 'Debug'], ...levels.map(value => [value, value])], $('levelFilter').value);
     }
     function element(tag, className, text) {
       const node = document.createElement(tag);
@@ -494,8 +509,87 @@
       if (text !== undefined) node.textContent = text;
       return node;
     }
+    function valueTruncated(node, nested = false) {
+      return !nested && node?.type !== 'table' && typeof node?.display === 'string' ? node.displayTruncated === true : node?.truncated === true;
+    }
+    function valueLabel(node, nested = false) {
+      if (!node || typeof node !== 'object') return String(node ?? 'nil');
+      const type = String(node.type || 'unknown');
+      const suffix = valueTruncated(node, nested) ? '…' : '';
+      const address = node.address ? ' (' + String(node.address) + ')' : '';
+      if (!nested && type !== 'table' && typeof node.display === 'string') {
+        return type === 'Instance' ? String(node.class || type) + ' ' + JSON.stringify(node.display) + suffix + address : node.display + suffix;
+      }
+      if (type === 'nil') return 'nil';
+      if (type === 'string') {
+        const value = String(node.value ?? '');
+        return (nested ? (node.encoding === 'escaped-bytes' ? '"' + value + '"' : JSON.stringify(value)) : value) + suffix;
+      }
+      if (type === 'number' || type === 'boolean') return String(node.value) + suffix;
+      const value = node.value;
+      if (value && typeof value === 'object') {
+        let display;
+        if (value.tag === 'Vector2' || value.tag === 'Vector3') display = value.tag + '(' + (value.tag === 'Vector2' ? [value.x, value.y] : [value.x, value.y, value.z]).join(', ') + ')';
+        else if (value.tag === 'Color3') display = 'Color3(' + [value.r, value.g, value.b].join(', ') + ')';
+        else if (value.tag === 'CFrame' && Array.isArray(value.components)) display = 'CFrame(' + value.components.join(', ') + ')';
+        else if (value.tag === 'EnumItem') display = 'Enum.' + String(value.enum) + '.' + String(value.name);
+        else if (value.tag === 'Ray') display = 'Ray(origin: ' + JSON.stringify(value.origin) + ', direction: ' + JSON.stringify(value.direction) + ')';
+        else display = type + ' ' + JSON.stringify(value);
+        return display + suffix + address;
+      }
+      return type + (node.class ? ' ' + String(node.class) : '') + (node.name ? ' ' + JSON.stringify(node.name) : '') + suffix + address + (node.reference ? ' ↩ reference' : '');
+    }
+    function valueTitle(node, nested = false) {
+      if (!node || typeof node !== 'object') return '';
+      return [node.class && 'Class: ' + node.class, node.name != null && 'Name: ' + node.name, node.address && 'Address: ' + node.address,
+        node.encoding === 'escaped-bytes' && 'Invalid UTF-8 bytes are escaped', Number.isFinite(node.bytes) && node.bytes + ' bytes',
+        valueTruncated(node, nested) && 'Truncated preview'].filter(Boolean).join('\n');
+    }
+    function renderValue(node, opened, path, nested = false) {
+      if (!node || node.type !== 'table' || node.reference) {
+        const span = element('span', 'log-value value-' + (['string', 'number', 'boolean', 'nil'].includes(node?.type) ? node.type : 'object'), valueLabel(node, nested));
+        span.title = valueTitle(node, nested);
+        return span;
+      }
+      const details = element('details', 'value-table');
+      details.append(element('summary', '', valueLabel(node)));
+      let built = false;
+      function populate() {
+        if (built) return;
+        built = true;
+        const body = element('div', 'value-entries');
+        const entries = Array.isArray(node.entries) ? node.entries : [];
+        entries.slice(0, 200).forEach((entry, index) => {
+          const row = element('div', 'value-entry');
+          const key = element('span', 'value-key', '[' + valueLabel(entry.key, true) + '] =');
+          key.title = valueTitle(entry.key, true); row.append(key);
+          row.append(renderValue(entry.value, opened, path + '/' + index, true));
+          body.append(row);
+        });
+        if (!entries.length && !node.truncated) body.append(element('span', 'value-note', '(empty)'));
+        if (node.truncated || entries.length > 200) body.append(element('div', 'value-note', '… snapshot truncated'));
+        details.append(body);
+      }
+      details.open = opened.has(path);
+      if (details.open) populate();
+      details.addEventListener('toggle', () => {
+        if (details.open) { opened.add(path); populate(); } else opened.delete(path);
+      });
+      return details;
+    }
     function renderLogs() {
       const logs = Array.isArray(state?.logs) ? state.logs : [];
+      const scroller = $('logScroller');
+      const filter = JSON.stringify(['contextFilter', 'realmFilter', 'levelFilter', 'logSearch'].map(id => $(id).value));
+      const position = {top: scroller.scrollTop};
+      for (const row of $('logList').children) if (row.offsetTop + row.offsetHeight > scroller.scrollTop) {
+        position.key = row.dataset.seq; position.offset = row.offsetTop - scroller.scrollTop; break;
+      }
+      if (lastFilter) scrollPositions.set(lastFilter, position);
+      if (scrollPositions.size > 50) scrollPositions.delete(scrollPositions.keys().next().value);
+      const restoreScroll = filter !== lastFilter ? (scrollPositions.get(filter) || {top: 0}) : position;
+      const known = new Set(logs.map(log => String(log.seq)));
+      for (const key of expanded.keys()) if (!known.has(key)) expanded.delete(key);
       const query = $('logSearch').value.toLocaleLowerCase();
       const filtered = logs.filter(log =>
         (!$('contextFilter').value || log.context === $('contextFilter').value) &&
@@ -510,36 +604,44 @@
       for (const log of visible) {
         const key = String(log.seq), signature = JSON.stringify(log);
         let row = rows.get(key);
-        if (!row) { row = element('div', 'log-row'); rows.set(key, row); }
+        if (!row) { row = element('div', 'log-row'); row.dataset.seq = key; rows.set(key, row); }
         if (row._signature !== signature) {
           row._signature = signature;
           row.dataset.context = modes.includes(log.context) ? log.context : 'other';
           row.dataset.level = ['error', 'warn', 'info', 'debug'].includes(log.level) ? log.level : 'other';
           const meta = element('div', 'log-meta');
-          meta.append(element('span', 'log-time', Number.isFinite(log.time) ? log.time.toFixed(3) + ' с' : '—'));
-          meta.append(element('span', 'log-context', titles[log.context] || String(log.context || 'Система')));
+          meta.append(element('span', 'log-time', Number.isFinite(log.time) ? log.time.toFixed(3) + ' s' : '—'));
+          meta.append(element('span', 'log-context', titles[log.context] || String(log.context || 'System')));
           meta.append(element('span', 'log-realm', String(log.realm || '')));
           meta.append(element('span', 'log-level', String(log.level || '').toUpperCase()));
-          row.replaceChildren(meta, element('pre', 'log-message', String(log.message ?? '')));
+          if (Array.isArray(log.arguments) && log.arguments.length) {
+            const argumentsView = element('div', 'log-arguments');
+            if (!expanded.has(key)) expanded.set(key, new Set());
+            log.arguments.forEach((argument, index) => argumentsView.append(renderValue(argument, expanded.get(key), String(index))));
+            row.replaceChildren(meta, argumentsView);
+          } else row.replaceChildren(meta, element('pre', 'log-message', String(log.message ?? '')));
         }
         if (row !== next) list.insertBefore(row, next);
         next = row.nextSibling;
       }
       $('emptyOutput').hidden = visible.length > 0;
-      $('emptyOutput').textContent = logs.length ? 'Нет сообщений под выбранными фильтрами.' : 'Вывод появится здесь после запуска.';
-      $('logCount').textContent = 'Показано ' + visible.length + ' из ' + filtered.length + (filtered.length !== logs.length ? ' · всего ' + logs.length : '') + (filtered.length > 1000 ? ' · последние 1000' : '');
-      if ($('autoscroll').checked) $('logScroller').scrollTop = $('logScroller').scrollHeight;
+      $('emptyOutput').textContent = logs.length ? 'No messages match these filters.' : 'No output yet.';
+      $('logCount').textContent = 'Showing ' + visible.length + ' of ' + filtered.length + (filtered.length !== logs.length ? ' · total ' + logs.length : '') + (filtered.length > 1000 ? ' · latest 1000' : '');
+      const anchor = restoreScroll.key ? rows.get(restoreScroll.key) : null;
+      scroller.scrollTop = $('autoscroll').checked ? scroller.scrollHeight : anchor ? anchor.offsetTop - restoreScroll.offset : restoreScroll.top;
+      lastFilter = filter;
     }
 
     const examples = {
-      basic: {hint: 'Печать и доступ к сервису в текущем режиме.', source: 'local runService = game:GetService("RunService")\nprint("Сервер:", runService:IsServer(), "Клиент:", runService:IsClient())\nprint("Workspace:", workspace:GetFullName())\n'},
-      remoteServer: {mode: 'server', hint: '1. Запустите на сервере. Нажмите «Шаг», затем вставьте клиентский пример в клиентскую VM.', source: '-- Шаг 1: выполнить на сервере, затем продвинуть время.\nlocal storage = game:GetService("ReplicatedStorage")\nlocal remote = storage:FindFirstChild("InterpreterPing")\nif not remote then\n    remote = Instance.new("RemoteEvent")\n    remote.Name = "InterpreterPing"\n    remote.Parent = storage\nend\nremote.OnServerEvent:Connect(function(player, message)\n    print("Сервер получил:", player.Name, message)\n    remote:FireClient(player, "Ответ от сервера")\nend)\nprint("RemoteEvent готов. Продвиньте время и выполните клиентский пример.")\n'},
-      remoteClient: {mode: 'client', hint: '2. После серверного примера и шага запустите на клиенте. Продвиньте время для доставки сообщения и ответа.', source: '-- Шаг 2: выполнить на клиенте после серверного примера.\nlocal remote = game:GetService("ReplicatedStorage"):FindFirstChild("InterpreterPing")\nassert(remote, "Сначала запустите серверный пример и нажмите Шаг")\nremote.OnClientEvent:Once(function(message)\n    print("Клиент получил:", message)\nend)\nremote:FireServer("Привет от клиента")\nprint("Сообщение отправлено. Продвиньте время для доставки и ответа.")\n'},
-      executor: {mode: 'executor', hint: 'Executor API выбранной VM. getgc показывает объекты этой изолированной VM.', source: 'local name, version = identifyexecutor()\nprint("Executor:", name, version)\nlocal objects = getgc(true)\nprint("Объектов getgc:", #objects)\nfor index = 1, math.min(5, #objects) do\n    print(index, typeof(objects[index]))\nend\n'},
-      gcPreview: {mode: 'executor', hint: 'Предпросмотр таблиц из GC с ограничениями и распознаванием повторных ссылок. Не полный дамп; raw GC не передаётся в JSONEncode.', source: String.raw`-- Ограниченный просмотр таблиц: getgc сам создаёт список объектов VM.
--- Не меняем таблицы; next обходит их без __iter / __index.
+      tables: {hint: 'Expand values in the output. References retain the same address.', source: 'local value = {name = "Example", items = {10, 20, 30}}\nvalue.self = value\nprint("Snapshot:", value, value.items)\n'},
+      basic: {hint: 'Print and access a service.', source: 'local runService = game:GetService("RunService")\nprint("Server:", runService:IsServer(), "Client:", runService:IsClient())\nprint("Workspace:", workspace:GetFullName())\n'},
+      remoteServer: {mode: 'server', hint: 'Run on the server, step once, then run the client example.', source: '-- Run on the server, then advance time.\nlocal storage = game:GetService("ReplicatedStorage")\nlocal remote = storage:FindFirstChild("InterpreterPing")\nif not remote then\n    remote = Instance.new("RemoteEvent")\n    remote.Name = "InterpreterPing"\n    remote.Parent = storage\nend\nremote.OnServerEvent:Connect(function(player, message)\n    print("Server received:", player.Name, message)\n    remote:FireClient(player, "Server reply")\nend)\nprint("RemoteEvent ready. Step, then run the client example.")\n'},
+      remoteClient: {mode: 'client', hint: 'Run after the server example. Step to deliver the message and reply.', source: '-- Run on the client after the server example.\nlocal remote = game:GetService("ReplicatedStorage"):FindFirstChild("InterpreterPing")\nassert(remote, "Run the server example and step first")\nremote.OnClientEvent:Once(function(message)\n    print("Client received:", message)\nend)\nremote:FireServer("Hello from client")\nprint("Message sent. Step to deliver it and the reply.")\n'},
+      executor: {mode: 'executor', hint: 'Inspect the selected VM executor and GC objects.', source: 'local name, version = identifyexecutor()\nprint("Executor:", name, version)\nlocal objects = getgc(true)\nprint("GC objects:", #objects)\nfor index = 1, math.min(5, #objects) do\n    print(index, typeof(objects[index]))\nend\n'},
+      gcPreview: {mode: 'executor', hint: 'Bounded table preview with cycle detection.', source: String.raw`-- Bounded table preview; getgc creates a snapshot of VM objects.
+-- Use raw next without __iter or __index.
 local MAX_DEPTH, MAX_ENTRIES, MAX_TABLES, MAX_OUTPUT_BYTES = 2, 60, 12, 4096
-local objects = getgc(true) -- Снимок до создания служебных таблиц этого просмотра.
+local objects = getgc(true) -- Snapshot before allocating preview helper tables.
 local seen, lines = {}, {}
 local entries, tables, bytes = 0, 0, 0
 
@@ -560,7 +662,7 @@ local function describe(value)
         local ok, result = pcall(tostring, value)
         return ok and string.sub(result, 1, 80) or "<tostring error>"
     end
-    -- Не вызываем произвольный __tostring у таблиц, ключей и userdata.
+    -- Do not invoke arbitrary __tostring on objects or table keys.
     return "<" .. typeof(value) .. ">"
 end
 
@@ -568,10 +670,10 @@ local function visit(value, path, depth)
     if entries >= MAX_ENTRIES or bytes >= MAX_OUTPUT_BYTES then return end
     entries += 1
     if type(value) ~= "table" then emit(path .. " = " .. describe(value)); return end
-    if seen[value] then emit(path .. " -> " .. seen[value] .. " (повтор/цикл)"); return end
+    if seen[value] then emit(path .. " -> " .. seen[value] .. " (reference/cycle)"); return end
     seen[value] = path
-    if depth >= MAX_DEPTH then emit(path .. " = <table: предел глубины>"); return end
-    if tables >= MAX_TABLES then emit(path .. " = <table: предел таблиц>"); return end
+    if depth >= MAX_DEPTH then emit(path .. " = <table: depth limit>"); return end
+    if tables >= MAX_TABLES then emit(path .. " = <table: table limit>"); return end
     tables += 1
     emit(path .. " = {")
     for key, child in next, value do
@@ -586,83 +688,67 @@ for index = 1, #objects do
     if entries >= MAX_ENTRIES or bytes >= MAX_OUTPUT_BYTES then break end
     if type(objects[index]) == "table" then visit(objects[index], "gc[" .. index .. "]", 0) end
 end
-emit(string.format("-- просмотрено элементов: %d, раскрыто таблиц: %d", entries, tables))
+emit(string.format("-- entries visited: %d, tables expanded: %d", entries, tables))
 print(table.concat(lines, "\n"))
 `},
-      hookClient: {mode: 'client', hint: '1. Запустите на клиенте. После перехвата в той же VM повторный запуск напечатает 110 вместо 11.', source: '-- Сохраняем цель в игровом shared этой клиентской VM.\nshared.demoTarget = shared.demoTarget or function(x)\n    return x + 1\nend\nprint("Клиент:", shared.demoTarget(10))\n'},
-      hookExecutor: {mode: 'executor', hint: '2. Выберите ту же VM клиента. getrenv().shared — игровая таблица; у Executor своя shared.', source: '-- Выполнить в той же VM, где запущен клиентский пример.\nlocal target = getrenv().shared.demoTarget\nassert(type(target) == "function", "Сначала запусти пример на клиенте")\nlocal original = hookfunction(target, function(x)\n    return x + 100\nend)\nprint("Оригинал / перехват:", original(10), target(10))\n'},
-      restoreExecutor: {mode: 'executor', hint: '3. В той же VM восстановите функцию. Клиентский пример снова напечатает 11.', source: 'local target = getrenv().shared.demoTarget\nassert(type(target) == "function", "Сначала запусти пример на клиенте")\nrestorefunction(target)\nprint("Восстановлено:", target(10))\n'}
+      hookClient: {mode: 'client', hint: 'Run on the client. After hooking the same VM, rerun to print 110.', source: '-- Keep the target in the game shared table.\nshared.demoTarget = shared.demoTarget or function(x)\n    return x + 1\nend\nprint("Client:", shared.demoTarget(10))\n'},
+      hookExecutor: {mode: 'executor', hint: 'Use the same client VM; getrenv().shared accesses the game table.', source: '-- Run in the same VM as the client target.\nlocal target = getrenv().shared.demoTarget\nassert(type(target) == "function", "Run the client target example first")\nlocal original = hookfunction(target, function(x)\n    return x + 100\nend)\nprint("Original / hooked:", original(10), target(10))\n'},
+      restoreExecutor: {mode: 'executor', hint: 'Restore in the same VM; the client target prints 11 again.', source: 'local target = getrenv().shared.demoTarget\nassert(type(target) == "function", "Run the client target example first")\nrestorefunction(target)\nprint("Restored:", target(10))\n'}
     };
-    function exampleHint() { $('exampleHint').textContent = examples[$('exampleSelect').value].hint + ' Только вставка, без автозапуска.'; }
+    function exampleHint() { $('insertExample').title = examples[$('exampleSelect').value].hint; }
     function insertExample() {
       const example = examples[$('exampleSelect').value];
       if (example.mode && example.mode !== mode) switchMode(example.mode);
-      const editor = $('source');
-      const prefix = editor.selectionStart > 0 && editor.value[editor.selectionStart - 1] !== '\n' ? '\n' : '';
-      editor.setRangeText(prefix + example.source, editor.selectionStart, editor.selectionEnd, 'end');
-      editor.focus(); editChanged(); status('Пример вставлен; код не запускался');
+      const selection = editor.getSelection(), source = editor.getValue();
+      const prefix = selection.from > 0 && source[selection.from - 1] !== '\n' ? '\n' : '';
+      editor.insert(prefix + example.source); status('Example inserted');
     }
 
     for (const button of document.querySelectorAll('.mode')) button.addEventListener('click', () => switchMode(button.dataset.mode));
     for (const [id, key] of [['clientSelect', 'client'], ['actorSelect', 'actor'], ['realmSelect', 'realm']]) $(id).addEventListener('change', () => { choices[mode][key] = $(id).value; renderTargets(); save(); });
-    $('source').addEventListener('input', editChanged);
-    for (const event of ['click', 'keyup', 'select']) $('source').addEventListener(event, cursor);
-    $('source').addEventListener('keydown', event => {
-      const editor = event.currentTarget;
-      if (event.key === 'Escape') { event.preventDefault(); $('openButton').focus(); return; }
-      if (event.key !== 'Tab') return;
-      event.preventDefault();
-      const start = editor.selectionStart, end = editor.selectionEnd;
-      if (!event.shiftKey && !editor.value.slice(start, end).includes('\n')) editor.setRangeText('    ', start, end, 'end');
-      else {
-        const blockStart = start === 0 ? 0 : editor.value.lastIndexOf('\n', start - 1) + 1;
-        const block = editor.value.slice(blockStart, end), lines = block.split('\n');
-        const changes = lines.map(line => event.shiftKey ? -(line.match(/^( {1,4}|\t)/)?.[0].length || 0) : 4);
-        const result = lines.map((line, index) => event.shiftKey ? line.slice(-changes[index]) : '    ' + line).join('\n');
-        editor.setRangeText(result, blockStart, end, 'preserve');
-        editor.selectionStart = Math.max(blockStart, start + changes[0]);
-        editor.selectionEnd = Math.max(editor.selectionStart, end + changes.reduce((sum, count) => sum + count, 0));
-      }
-      editChanged();
-    });
-    document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('resetDialog').open) { event.preventDefault(); runCode(); } });
+    $('source').addEventListener('editor-escape', () => $('openButton').focus());
+    $('lintStatus').addEventListener('click', () => editor.showDiagnostics());
+    document.addEventListener('keydown', event => { if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('resetDialog').open) { event.preventDefault(); runCode(); } });
     $('runButton').addEventListener('click', runCode);
-    $('runningButton').addEventListener('click', () => { const running = !state.running; mutate('running', {running}, 'Изменение состояния времени…', running ? 'Виртуальное время идёт' : 'Виртуальное время на паузе'); });
-    $('stepButton').addEventListener('click', () => mutate('step', {seconds: 1 / 60}, 'Выполнение шага…', 'Шаг выполнен'));
-    $('secondButton').addEventListener('click', () => mutate('step', {seconds: 1}, 'Продвижение времени…', 'Время продвинуто на 1 с'));
-    $('clearButton').addEventListener('click', () => mutate('clear', {}, 'Очистка вывода…', 'Вывод очищен; состояние VM сохранено'));
+    $('runningButton').addEventListener('click', () => { const running = !state.running; mutate('running', {running}, 'Updating runtime…', running ? 'Runtime playing' : 'Runtime paused'); });
+    $('stepButton').addEventListener('click', () => mutate('step', {seconds: 1 / 60}, 'Stepping…', 'Step complete'));
+    $('secondButton').addEventListener('click', () => mutate('step', {seconds: 1}, 'Advancing…', 'Advanced by 1 s'));
+    $('clearButton').addEventListener('click', () => mutate('clear', {}, 'Clearing output…', 'Output cleared'));
     $('refreshButton').addEventListener('click', () => refresh());
     $('dismissError').addEventListener('click', () => { apiError = ''; dismissedRuntimeError = state?.runtimeError || ''; renderError(); });
     $('resetButton').addEventListener('click', () => { $('resetProfileName').textContent = $('profileSelect').value; $('resetDialog').showModal(); });
     $('cancelReset').addEventListener('click', () => $('resetDialog').close());
-    $('confirmReset').addEventListener('click', () => { $('resetDialog').close(); dismissedRuntimeError = ''; commandOverride = null; mutate('reset', {profile: $('profileSelect').value}, 'Пересоздание VM…', 'VM сброшены; редактор и история сохранены'); });
+    $('confirmReset').addEventListener('click', () => { $('resetDialog').close(); dismissedRuntimeError = ''; commandOverride = null; expanded.clear(); scrollPositions.clear(); mutate('reset', {profile: $('profileSelect').value}, 'Resetting VMs…', 'VMs reset'); });
     $('profileSelect').addEventListener('change', save);
-    $('budgetSelect').addEventListener('change', () => mutate('budget', {cpuMs: Number($('budgetSelect').value)}, 'Изменение лимита выполнения…', 'Лимит непрерывного выполнения обновлён'));
+    $('budgetSelect').addEventListener('change', () => mutate('budget', {cpuMs: Number($('budgetSelect').value)}, 'Updating execution limit…', 'Execution limit updated'));
     $('exampleSelect').addEventListener('change', exampleHint);
     $('insertExample').addEventListener('click', insertExample);
     $('historySelect').addEventListener('change', () => {
       if ($('historySelect').value === '') return;
       const entry = histories[mode][Number($('historySelect').value)];
       if (!entry) return;
-      $('source').value = entry.source;
+      if (!editor.setValue(entry.source)) return;
       if (typeof entry.filename === 'string') filenames[mode] = entry.filename;
       $('documentName').textContent = filenames[mode];
-      $('historySelect').value = ''; editChanged(); status('Код восстановлен из истории; запуск не выполнялся');
+      $('historySelect').value = ''; editChanged(); status('Code restored from history');
     });
     $('openButton').addEventListener('click', () => $('fileInput').click());
     $('fileInput').addEventListener('change', async () => {
       const file = $('fileInput').files[0]; $('fileInput').value = '';
       if (!file) return;
-      if (!/\.(lua|luau)$/i.test(file.name)) { showError('Выберите файл .lua или .luau.'); return; }
+      if (!/\.(lua|luau)$/i.test(file.name)) { showError('Choose a .lua or .luau file.'); return; }
       const targetMode = mode;
       try {
-        const source = await file.text(); drafts[targetMode] = source; filenames[targetMode] = file.name;
-        if (targetMode === mode) { $('source').value = source; $('documentName').textContent = file.name; editChanged(); }
-        save(); status('Открыт ' + file.name + '; код не запускался');
-      } catch (error) { showError('Не удалось прочитать файл: ' + error.message); }
+        if (file.size > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 256 KiB.');
+        const source = await file.text();
+        if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 256 KiB.');
+        drafts[targetMode] = source; filenames[targetMode] = file.name;
+        if (targetMode === mode) { editor.setValue(source); $('documentName').textContent = file.name; }
+        save(); status('Opened ' + file.name + '');
+      } catch (error) { showError('Could not read file: ' + error.message); }
     });
     $('downloadButton').addEventListener('click', () => {
-      const url = URL.createObjectURL(new Blob([$('source').value], {type: 'text/plain;charset=utf-8'}));
+      const url = URL.createObjectURL(new Blob([editor.getValue()], {type: 'text/plain;charset=utf-8'}));
       const link = document.createElement('a'); link.href = url;
       link.download = (filenames[mode] || mode + '.luau').replace(/[\\/:*?"<>|]/g, '_');
       document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -677,8 +763,8 @@ print(table.concat(lines, "\n"))
     }
     switchMode(mode, true); exampleHint();
     if (!token) {
-      connection(false, 'Нет токена');
-      showError('Откройте ссылку, которую вывел локальный сервер эмулятора. Токен из #token=… сохранится только в текущей вкладке и будет убран из адресной строки.');
+      connection(false, 'No token');
+      showError('Open the session URL printed by the local emulator server.');
     } else { refresh().finally(() => { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 1000); }); }
   </script>
 </body>

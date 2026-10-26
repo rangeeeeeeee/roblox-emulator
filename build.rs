@@ -21,12 +21,14 @@ fn luau_source() -> PathBuf {
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(emulator_local_tests)");
-    let tests = ["diagnostics", "executor", "instance", "model", "native", "scheduler", "types", "session", "web"]
+    let tests = ["diagnostics", "console", "lint", "executor", "instance", "model", "native", "scheduler", "types", "session", "web"]
         .map(|name| PathBuf::from(format!("local_tests/{name}.rs")));
     for path in &tests { println!("cargo:rerun-if-changed={}", path.display()); }
     if tests.iter().all(|path| path.is_file()) { println!("cargo:rustc-cfg=emulator_local_tests"); }
     println!("cargo:rerun-if-changed=native/gc.cpp");
     println!("cargo:rerun-if-changed=native/filtergc.cpp");
+    println!("cargo:rerun-if-changed=native/lint.cpp");
+    println!("cargo:rerun-if-changed=vendor/luau-lint-0.740/LinterAst.cpp");
     println!("cargo:rerun-if-env-changed=LUAU_SOURCE_DIR");
     let source = luau_source();
     let mut build = cc::Build::new();
@@ -34,11 +36,15 @@ fn main() {
         .include(source.join("VM/include"))
         .include(source.join("VM/src"))
         .include(source.join("Common/include"))
+        .include(source.join("Ast/include"))
+        .include(source.join("Config/include"))
         .define("LUA_API", "extern \"C\"")
         .define("LUAI_MAXCSTACK", "1000000")
         .define("LUA_VECTOR_SIZE", "3")
         .file("native/gc.cpp")
-        .file("native/filtergc.cpp");
+        .file("native/filtergc.cpp")
+        .file("native/lint.cpp")
+        .file("vendor/luau-lint-0.740/LinterAst.cpp");
     if env::var("DEBUG").as_deref() == Ok("true") {
         build.define("LUAU_ENABLE_ASSERT", None);
     }

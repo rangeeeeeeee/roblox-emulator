@@ -18,7 +18,8 @@ struct Model {
     studio: bool,
     pending: HashMap<String, Thread>,
     modules: HashMap<String, Module>,
-    logs: VecDeque<(String, String, f64)>,
+    logs: VecDeque<(String, Vec<u8>, f64)>,
+    log_bytes: usize,
     children_waiting: Vec<ChildWait>,
     invokes_waiting: Vec<(String, Thread, MultiValue)>,
     unsupported: BTreeMap<String, u64>,
@@ -487,9 +488,21 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
     for (name,_) in UNSUPPORTED {let method=*name;instance::register_method(m,*name,move|lua,this,_:MultiValue|Err::<Value,_>(unsupported(lua,&format!("{}.{method}",this.0.borrow().class))));}
 }
 
-fn log_history(lua:&Lua)->Result<Table>{let out=lua.create_table()?;for(i,(level,message,time))in required(lua)?.borrow().logs.iter().enumerate(){let row=lua.create_table()?;row.set("message",message.as_str())?;row.set("messageType",message_type(lua,level)?)?;row.set("timestamp",*time)?;out.raw_set(i+1,row)?;}Ok(out)}
+fn log_history(lua:&Lua)->Result<Table>{let out=lua.create_table()?;for(i,(level,message,time))in required(lua)?.borrow().logs.iter().enumerate(){let row=lua.create_table()?;row.set("message",lua.create_string(message)?)?;row.set("messageType",message_type(lua,level)?)?;row.set("timestamp",*time)?;out.raw_set(i+1,row)?;}Ok(out)}
 fn message_type(lua:&Lua,level:&str)->Result<Value>{let name=match level{"warn"=>"MessageWarning","error"=>"MessageError",_=>"MessageOutput"};crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"MessageType","name":name}))?.ok_or_else(||Error::runtime("MessageType unavailable"))}
-pub(crate) fn log(lua:&Lua,level:&str,message:&str)->Result<()>{let s=required(lua)?;{let mut s=s.borrow_mut();s.logs.push_back((level.into(),message.into(),now(lua)));if s.logs.len()>1000{s.logs.pop_front();}}if let Some(n)=lookup(lua,"LogService"){fire(lua,&n,"MessageOut",args([str_value(lua,message)?,message_type(lua,level)?]))?;}Ok(())}
+pub(crate) fn log(lua:&Lua,level:&str,message:&[u8])->Result<()>{
+    let s=required(lua)?;
+    {
+        let mut s=s.borrow_mut();
+        s.log_bytes+=message.len();
+        s.logs.push_back((level.into(),message.into(),now(lua)));
+        while s.logs.len()>1000||s.log_bytes>8*1024*1024 {
+            if let Some((_,removed,_))=s.logs.pop_front(){s.log_bytes-=removed.len();}else{break;}
+        }
+    }
+    if let Some(n)=lookup(lua,"LogService"){fire(lua,&n,"MessageOut",args([Value::String(lua.create_string(message)?),message_type(lua,level)?]))?;}
+    Ok(())
+}
 pub(crate) fn script_error(lua:&Lua,message:&str,thread:&Thread)->Result<()>{
     use std::fmt::Write as _;
     let Some(context)=lookup(lua,"ScriptContext") else{return Ok(())};
@@ -620,7 +633,7 @@ pub fn install(lua:&Lua)->Result<()>{
     model.set("getUnsupportedCalls",lua.create_function(|lua,()|{let table=lua.create_table()?;for(name,count)in unsupported_calls(lua)?{table.set(name,count)?;}table.set_readonly(true);Ok(table)})?)?;
     model.set("getEnvironment",lua.create_function(|lua,u:AnyUserData|env(lua,&u.borrow::<Instance>()?.0))?)?;
     model.set("runScript",lua.create_function(|lua,id:String|run_script(lua,&id))?)?;
-    model.set("log",lua.create_function(|lua,(level,message):(String,String)|log(lua,&level,&message))?)?;
+    model.set("log",lua.create_function(|lua,(level,message):(String,mlua::LuaString)|log(lua,&level,&message.as_bytes()))?)?;
     model.set("encode",lua.create_function(|lua,v:Value|lua.to_value(&encode(lua,v,&mut HashSet::new())?))?)?;
     model.set("decode",lua.create_function(|lua,v:Value|decode(lua,&lua.from_value(v)?))?)?;
     model.set("encodeTuple",lua.create_function(|lua,v:MultiValue|lua.to_value(&encode_args(lua,v)?))?)?;

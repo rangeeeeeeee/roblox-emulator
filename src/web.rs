@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, error::Error, io::{Read, Write}, net::{TcpListener, TcpStream}, path::{Path, PathBuf}, time::{Duration, Instant}};
 
 const PAGE: &str = include_str!("../ui/index.html");
+const EDITOR: &str = include_str!("../ui/editor.bundle.js");
 const MAX_HEADERS: usize = 16 * 1024;
 const MAX_BODY: usize = 512 * 1024;
 
@@ -60,7 +61,7 @@ mod tests;
 fn respond(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
     let label = match status { 200=>"OK", 400=>"Bad Request", 403=>"Forbidden", 404=>"Not Found", 405=>"Method Not Allowed", 422=>"Unprocessable Content", _=>"Internal Server Error" };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let header = format!("HTTP/1.1 {status} {label}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\n\r\n", body.len());
+    let header = format!("HTTP/1.1 {status} {label}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\n\r\n", body.len());
     let _ = stream.write_all(header.as_bytes()).and_then(|_| stream.write_all(body));
 }
 
@@ -113,6 +114,11 @@ impl App {
 
     fn api(&mut self, path: &str, body: Value) -> Result<Value, String> {
         if !body.is_object() { return Err("Expected a JSON object".into()); }
+        if path == "/api/lint" {
+            let source = body.get("source").and_then(Value::as_str).ok_or("Source must be a string")?;
+            let context = body.get("context").and_then(Value::as_str).ok_or("Select a context")?;
+            return serde_json::to_value(crate::lint::analyze(source,context)?).map_err(|error|error.to_string());
+        }
         let mut command = None;
         match path {
             "/api/execute" => {
@@ -181,6 +187,7 @@ pub fn serve(path: Option<&Path>, port: u16, launch_browser: bool) -> Result<(),
                     reply_json(&mut stream,403,json!({"error":"Invalid origin"})); continue;
                 }
                 if request.path == "/" && request.method == "GET" { respond(&mut stream,200,"text/html; charset=utf-8",PAGE.as_bytes()); continue; }
+                if request.path == "/assets/editor.js" && request.method == "GET" { respond(&mut stream,200,"text/javascript; charset=utf-8",EDITOR.as_bytes()); continue; }
                 if !request.path.starts_with("/api/") { reply_json(&mut stream,404,json!({"error":"Not found"})); continue; }
                 if !token_matches(request.headers.get("x-emulator-token"), &token) {
                     reply_json(&mut stream,403,json!({"error":"Open the session URL printed by the emulator"})); continue;
