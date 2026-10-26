@@ -4,6 +4,9 @@
 !/Cargo.lock
 !/build.rs
 !/LICENSE
+!/ui/
+/ui/*
+!/ui/index.html
 
 !/src/
 /src/*

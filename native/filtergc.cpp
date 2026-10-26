@@ -163,8 +163,16 @@ static bool function_members(lua_State* state, Closure* closure, int requested, 
 extern "C" int emu_filtergc(lua_State* state)
 {
     luaL_checktype(state, 1, LUA_TSTRING);
-    luaL_checktype(state, 2, LUA_TTABLE);
-    if (!lua_isnoneornil(state, 3)) luaL_checktype(state, 3, LUA_TBOOLEAN);
+    if (lua_type(state, 2) != LUA_TTABLE)
+    {
+        lua_pushliteral(state, "expected table for argument #2");
+        lua_error(state);
+    }
+    if (!lua_isnoneornil(state, 3) && lua_type(state, 3) != LUA_TBOOLEAN)
+    {
+        lua_pushliteral(state, "expected boolean for argument #3");
+        lua_error(state);
+    }
     const char* kind = lua_tostring(state, 1);
     bool functions = std::strcmp(kind, "function") == 0;
     if (!functions && std::strcmp(kind, "table") != 0)

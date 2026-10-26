@@ -60,6 +60,19 @@ pub(crate) fn unsupported(lua: &Lua, api: &str) -> Error {
     Error::runtime(format!("UnsupportedApi: {api}"))
 }
 pub fn unsupported_calls(lua: &Lua) -> Result<BTreeMap<String, u64>> { Ok(required(lua)?.borrow().unsupported.clone()) }
+pub(crate) fn calling_script(lua:&Lua)->Result<Value>{
+    lua.named_registry_value::<Table>(ENV_OWNERS)?.raw_get(lua.globals())
+}
+pub(crate) fn scripts(lua:&Lua,loaded_only:bool)->Result<Table>{
+    let state=required(lua)?;
+    let nodes={let state=state.borrow();state.nodes.iter().filter_map(|(id,node)|{
+        let node=node.upgrade()?;
+        let present=if loaded_only{matches!(state.modules.get(id),Some(Module::Ready(_)))}
+            else{matches!(node.borrow().class.as_str(),"Script"|"LocalScript"|"ModuleScript")};
+        present.then_some(node)
+    }).collect()};
+    instance::instance_list(lua,nodes)
+}
 pub(crate) fn guard_write(lua: &Lua) -> Result<()> {
     if state(lua).is_some() && crate::scheduler::current_mode(lua) == "parallel" {
         return Err(Error::lua_string("Instance mutation is unavailable in parallel"));
@@ -376,7 +389,7 @@ fn content_id(lua:&Lua,value:Value)->Result<String>{
 }
 
 const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("Preload",c"Preload"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Raycast",c"Raycast"),("Blockcast",c"Blockcast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("GetStyled",c"GetStyled"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
-const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONEncode",c"JSONEncode"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
+const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
 pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).copied().chain([("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("PreloadAsync",c"PreloadAsync"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
 pub(crate) fn method_class(name:&str)->Option<&'static str>{
     Some(match name {
@@ -461,7 +474,6 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
         let event=signal(lua,&this.0,&format!("message:{topic}"))?;crate::scheduler::connect_signal(lua,&event,callback,parallel,false)
     });}
     instance::register_method(m,"GetLogHistory",|lua,_,()|log_history(lua));
-    instance::register_method(m,"JSONEncode",|lua,_,v:Value|serde_json::to_string(&lua.from_value::<Json>(v)?).map_err(Error::external));
     instance::register_method(m,"JSONDecode",|lua,_,v:String|lua.to_value(&serde_json::from_str::<Json>(&v).map_err(Error::external)?));
     instance::register_method(m,"ComputeStringHash",|lua,this,(input,algorithm):(mlua::LuaString,Value)|{
         if this.0.borrow().class!="EncodingService"{return Err(Error::runtime("EncodingService expected"))}
@@ -684,13 +696,16 @@ fn poll_children(lua:&Lua)->Result<()>{
     }Ok(())
 }
 // Runs outside Rust callback guards: dictionary-key __tostring executes in the engine C frame.
-unsafe fn variant_key(state:*mut ffi::lua_State,index:i32){unsafe{
+unsafe fn variant_key(state:*mut ffi::lua_State,index:i32,json_mode:bool){unsafe{
     let index=ffi::lua_absindex(state,index);
     match ffi::lua_type(state,index){
         ffi::LUA_TSTRING=>ffi::lua_pushvalue(state,index),
-        ffi::LUA_TNUMBER|ffi::LUA_TINTEGER=>{ffi::luaL_tolstring_(state,index,std::ptr::null_mut());},
-        ffi::LUA_TTABLE|ffi::LUA_TUSERDATA|ffi::LUA_TVECTOR=>{
-            let kind=match ffi::lua_type(state,index){ffi::LUA_TTABLE=>c"Table".as_ptr(),ffi::LUA_TVECTOR=>c"Vector3".as_ptr(),_=>c"null".as_ptr()};
+        ffi::LUA_TNUMBER|ffi::LUA_TINTEGER=>{
+            if json_mode{ffi::lua_pushinteger64(state,ffi::lua_tonumber(state,index)as i64);ffi::luaL_tolstring_(state,-1,std::ptr::null_mut());ffi::lua_remove(state,-2);}
+            else{ffi::luaL_tolstring_(state,index,std::ptr::null_mut());}
+        },
+        kind if matches!(kind,ffi::LUA_TTABLE|ffi::LUA_TUSERDATA|ffi::LUA_TVECTOR)||(json_mode&&kind==ffi::LUA_TFUNCTION)=>{
+            let kind=match kind{ffi::LUA_TTABLE=>c"Table".as_ptr(),ffi::LUA_TVECTOR=>c"Vector3".as_ptr(),ffi::LUA_TFUNCTION=>c"Function".as_ptr(),_=>c"null".as_ptr()};
             ffi::lua_pushstring(state,kind);
             // mlua's real native userdata uses UTAG_IDTOR. newproxy uses UTAG_PROXY,
             // so a proxy's user-controlled __type cannot impersonate a native datatype.
@@ -705,10 +720,10 @@ unsafe fn variant_key(state:*mut ffi::lua_State,index:i32){unsafe{
         _=>{ffi::lua_pushstring(state,c"Invalid table key type used".as_ptr());ffi::lua_error(state)},
     }
 }}
-unsafe fn copy_variant(state:*mut ffi::lua_State,index:i32,active:i32,depth:usize,count:&mut usize){unsafe{
+unsafe fn copy_variant(state:*mut ffi::lua_State,index:i32,active:i32,depth:usize,count:&mut usize,json_mode:bool){unsafe{
     ffi::luaL_checkstack(state,12,c"variant conversion stack".as_ptr());
     let index=ffi::lua_absindex(state,index);
-    if ffi::lua_type(state,index)==ffi::LUA_TBUFFER{
+    if !json_mode&&ffi::lua_type(state,index)==ffi::LUA_TBUFFER{
         let mut length=0;let source=ffi::lua_tobuffer(state,index,&mut length);
         let target=ffi::lua_newbuffer(state,length);std::ptr::copy_nonoverlapping(source.cast::<u8>(),target.cast::<u8>(),length);return
     }
@@ -718,22 +733,74 @@ unsafe fn copy_variant(state:*mut ffi::lua_State,index:i32,active:i32,depth:usiz
     let cyclic=ffi::lua_toboolean(state,-1)!=0;ffi::lua_pop(state,1);
     if cyclic{ffi::lua_pushstring(state,c"tables cannot be cyclic".as_ptr());ffi::lua_error(state)}
     ffi::lua_pushvalue(state,index);ffi::lua_pushboolean(state,1);ffi::lua_rawset(state,active);
-    ffi::lua_newtable(state);let result=ffi::lua_gettop(state);let length=ffi::lua_objlen(state,index);
+    let length=ffi::lua_objlen(state,index);
+    if length>100_000{ffi::luaL_error(state,c"BudgetExceeded: table conversion entries".as_ptr())}
+    ffi::lua_createtable(state,if json_mode{length as i32}else{0},0);let result=ffi::lua_gettop(state);
     if length>0{
         for i in 1..=length{
             *count+=1;if *count>100_000{ffi::luaL_error(state,c"BudgetExceeded: table conversion entries".as_ptr())}
-            ffi::lua_rawgeti(state,index,i as i64);copy_variant(state,-1,active,depth+1,count);
+            ffi::lua_rawgeti(state,index,i as i64);copy_variant(state,-1,active,depth+1,count,json_mode);
             ffi::lua_rawseti(state,result,i as i64);ffi::lua_pop(state,1);
         }
     }else{
         ffi::lua_pushnil(state);
         while ffi::lua_next(state,index)!=0{
             *count+=1;if *count>100_000{ffi::luaL_error(state,c"BudgetExceeded: table conversion entries".as_ptr())}
-            variant_key(state,-2);copy_variant(state,-2,active,depth+1,count);ffi::lua_rawset(state,result);ffi::lua_pop(state,1);
+            variant_key(state,-2,json_mode);copy_variant(state,-2,active,depth+1,count,json_mode);ffi::lua_rawset(state,result);ffi::lua_pop(state,1);
         }
     }
     ffi::lua_pushvalue(state,index);ffi::lua_pushnil(state);ffi::lua_rawset(state,active);
 }}
+fn json_value(lua:&Lua,input:Value,depth:usize,count:&mut usize,bytes:&mut usize)->Result<Json>{
+    *count+=1;
+    if depth>128||*count>100_000{return Err(Error::runtime("BudgetExceeded: JSON traversal"))}
+    Ok(match input{
+        Value::Nil|Value::UserData(_)|Value::LightUserData(_)|Value::Vector(_)|Value::Function(_)|Value::Thread(_)|Value::Error(_)=>Json::Null,
+        Value::Boolean(value)=>Json::Bool(value),
+        Value::Integer(value)=>json!(value),
+        Value::Number(value)if !value.is_finite()=>json!({"m":null,"t":"numeric","v":if value.is_nan(){"nan"}else if value.is_sign_negative(){"-inf"}else{"inf"}}),
+        Value::Number(value)if value.fract()==0.0&&value>=i64::MIN as f64&&value<(i64::MAX as f64)=>json!(value as i64),
+        Value::Number(value)=>json!(value),
+        Value::String(value)=>{
+            *bytes+=value.as_bytes().len();if *bytes>1024*1024{return Err(Error::runtime("BudgetExceeded: JSON string bytes"))}
+            Json::String(value.to_str().map_err(|_|Error::lua_string("Can't convert to JSON"))?.to_string())
+        },
+        Value::Table(table)=>{
+            let length=table.raw_len();
+            if length>0{
+                let mut out=Vec::with_capacity(length);for i in 1..=length{out.push(json_value(lua,table.raw_get(i)?,depth+1,count,bytes)?);}Json::Array(out)
+            }else{
+                let mut out=serde_json::Map::new();
+                for entry in table.pairs::<mlua::LuaString,Value>(){
+                    let(key,value)=entry?;*bytes+=key.as_bytes().len();if *bytes>1024*1024{return Err(Error::runtime("BudgetExceeded: JSON string bytes"))}
+                    let key=key.to_str().map_err(|_|Error::lua_string("Can't convert to JSON"))?.to_string();
+                    out.insert(key,json_value(lua,value,depth+1,count,bytes)?);
+                }
+                if out.is_empty(){Json::Array(Vec::new())}else{Json::Object(out)}
+            }
+        },
+        Value::Buffer(_)=>return Err(unsupported(lua,"HttpService.JSONEncode buffer encoding")),
+        _=>return Err(unsupported(lua,"HttpService.JSONEncode value type")),
+    })
+}
+unsafe extern "C-unwind" fn raw_json_value(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
+    ffi::lua_settop(state,1);ffi::luaL_checkstack(state,12,c"JSON conversion".as_ptr());
+    ffi::lua_newtable(state);let mut count=0;copy_variant(state,1,2,0,&mut count,true);
+    ffi::lua_replace(state,1);ffi::lua_settop(state,1);
+    Lua::invoke_native_callback(state,|lua,mut values|{
+        let value=json_value(lua,values.pop_front().unwrap_or(Value::Nil),0,&mut 0,&mut 0)?;
+        let output=serde_json::to_string(&value).map_err(Error::external)?;
+        Ok(NativeCall::Return(args([str_value(lua,&output)?])))
+    })
+}}
+unsafe extern "C-unwind" fn raw_json_method_convert(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
+    ffi::lua_settop(state,2);ffi::lua_remove(state,1);raw_json_value(state)
+}}
+unsafe extern "C-unwind" fn raw_json_encode(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|_,mut values|{
+    let node=object_arg(&mut values)?;instance::validate_method(&node.borrow(),"JSONEncode")?;
+    Ok(NativeCall::Dispatch(raw_json_method_convert))
+})}}
+pub(crate) fn json_encode_function(lua:&Lua)->Result<Function>{unsafe{raw_function(lua,raw_json_value,c"JSONEncode")}}
 fn finish_variant(lua:&Lua,input:Value)->Result<Value>{
     Ok(match input{
         Value::Thread(_)=>Value::Nil,
@@ -757,7 +824,7 @@ unsafe extern "C-unwind" fn raw_fire(state:*mut ffi::lua_State)->std::ffi::c_int
 unsafe extern "C-unwind" fn raw_fire_convert(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
     let top=ffi::lua_gettop(state);ffi::luaL_checkstack(state,12,c"Fire conversion".as_ptr());
     ffi::lua_newtable(state);let active=ffi::lua_gettop(state);let mut count=0;
-    for index in 2..=top{copy_variant(state,index,active,0,&mut count);ffi::lua_replace(state,index);}
+    for index in 2..=top{copy_variant(state,index,active,0,&mut count,false);ffi::lua_replace(state,index);}
     ffi::lua_settop(state,top);raw_fire_impl(state)
 }}
 unsafe extern "C-unwind" fn raw_fire_impl(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
@@ -768,7 +835,7 @@ unsafe extern "C-unwind" fn raw_fire_impl(state:*mut ffi::lua_State)->std::ffi::
 unsafe extern "C-unwind" fn raw_wait_convert(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
     let top=ffi::lua_gettop(state);ffi::luaL_checkstack(state,8,c"WaitForChild conversion".as_ptr());
     match ffi::lua_type(state,2){
-        ffi::LUA_TTABLE=>{ffi::lua_newtable(state);let active=ffi::lua_gettop(state);let mut count=0;copy_variant(state,2,active,0,&mut count);ffi::lua_settop(state,top);ffi::lua_pushstring(state,c"{}".as_ptr());ffi::lua_replace(state,2);},
+        ffi::LUA_TTABLE=>{ffi::lua_newtable(state);let active=ffi::lua_gettop(state);let mut count=0;copy_variant(state,2,active,0,&mut count,false);ffi::lua_settop(state,top);ffi::lua_pushstring(state,c"{}".as_ptr());ffi::lua_replace(state,2);},
         ffi::LUA_TBOOLEAN=>{ffi::lua_pushstring(state,if ffi::lua_toboolean(state,2)!=0{c"true".as_ptr()}else{c"false".as_ptr()});ffi::lua_replace(state,2);},
         ffi::LUA_TNUMBER|ffi::LUA_TINTEGER=>{ffi::lua_tolstring(state,2,std::ptr::null_mut());},
         ffi::LUA_TFUNCTION=>{ffi::lua_pushstring(state,c"function".as_ptr());ffi::lua_replace(state,2);},
@@ -848,12 +915,12 @@ unsafe extern "C-unwind" fn raw_namecall(state:*mut ffi::lua_State)->std::ffi::c
         if name.is_null(){return Err(Error::lua_string("attempt to call an unknown method"))}
         let name=CStr::from_ptr(name).to_str().map_err(Error::external)?;
         let node=object_arg(&mut values)?;instance::validate_method(&node.borrow(),name)?;
-        let callback=match name{"Fire"=>raw_fire,"WaitForChild"=>raw_wait_for_child,"Invoke"=>raw_invoke,"InvokeServer"=>raw_invoke_server,"InvokeClient"=>raw_invoke_client,_=>callback};
+        let callback=match name{"JSONEncode"=>raw_json_encode,"Fire"=>raw_fire,"WaitForChild"=>raw_wait_for_child,"Invoke"=>raw_invoke,"InvokeServer"=>raw_invoke_server,"InvokeClient"=>raw_invoke_client,_=>callback};
         Ok(NativeCall::Dispatch(callback))
     })
 }}
 pub(crate) fn install_yielding_methods(lua:&Lua,game:&AnyUserData,methods:&Table)->Result<()>{unsafe{
-    for(name,cname,callback)in[("Fire",c"Fire",raw_fire as ffi::lua_CFunction),("WaitForChild",c"WaitForChild",raw_wait_for_child),("Invoke",c"Invoke",raw_invoke),("InvokeServer",c"InvokeServer",raw_invoke_server),("InvokeClient",c"InvokeClient",raw_invoke_client)]{methods.raw_set(name,raw_function(lua,callback,cname)?)?;}
+    for(name,cname,callback)in[("JSONEncode",c"JSONEncode",raw_json_encode as ffi::lua_CFunction),("Fire",c"Fire",raw_fire),("WaitForChild",c"WaitForChild",raw_wait_for_child),("Invoke",c"Invoke",raw_invoke),("InvokeServer",c"InvokeServer",raw_invoke_server),("InvokeClient",c"InvokeClient",raw_invoke_client)]{methods.raw_set(name,raw_function(lua,callback,cname)?)?;}
     let original:Function=game.metatable()?.get("__namecall")?;
     let replacement:Function=lua.exec_raw(original,|state|{ffi::lua_getupvalue(state,1,1);ffi::lua_pushvalue(state,1);ffi::lua_pushcclosurek(state,raw_namecall,std::ptr::null(),2,None);ffi::lua_remove(state,1);})?;
     lua.exec_raw::<()>((game.clone(),replacement),|state|{ffi::lua_getmetatable(state,1);ffi::lua_pushvalue(state,2);ffi::lua_rawsetfield(state,-2,c"__namecall".as_ptr());ffi::lua_settop(state,0);})?;Ok(())

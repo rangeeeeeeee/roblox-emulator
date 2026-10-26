@@ -435,6 +435,12 @@ pub(crate) unsafe fn init_error_registry(state: *mut ffi::lua_State) -> Result<(
 
             let mut err_buf = String::new();
             match get_internal_userdata::<WrappedFailure>(state, -1, ptr::null()).as_ref() {
+                #[cfg(feature = "luau")]
+                Some(WrappedFailure::None) => {
+                    let pointer = ffi::lua_topointer(state, -1) as usize;
+                    let encoded = ffi::lua_encodepointer(state, pointer) as u64;
+                    let _ = write!(&mut err_buf, "userdata: 0x{encoded:016x}");
+                }
                 Some(WrappedFailure::Error(error)) => {
                     // Depending on how the API is used and what error types scripts are given, it
                     // may be possible to make this consume arbitrary amounts of

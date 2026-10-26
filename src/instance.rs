@@ -293,7 +293,7 @@ impl UserData for Instance {
         });
         methods.add_meta_method(MetaMethod::ToString, |_, this, ()| Ok(this.0.borrow().name.clone()));
         methods.add_meta_method(MetaMethod::Eq, |_, this, other: AnyUserData| {
-            Ok(other.borrow::<Instance>().is_ok_and(|other| Rc::ptr_eq(&this.0, &other.0)))
+            Ok(other.borrow::<Instance>().is_ok_and(|other| std::ptr::eq(this, &*other)))
         });
         register_method(methods,"IsA", |_, this, class: Value| {
             match class {

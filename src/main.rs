@@ -10,6 +10,8 @@ mod scheduler;
 mod model;
 mod executor;
 mod diagnostics;
+mod session;
+mod web;
 
 pub(crate) fn internal<T: mlua::FromLua>(lua:&Lua,name:&str)->LuaResult<T> {
     if let Ok(table)=lua.named_registry_value::<Table>("emulator.internal") { table.get(name) } else {lua.globals().get(name)}
@@ -74,19 +76,24 @@ fn default_executor_profile() -> String { "generic".into() }
 fn default_signal_behavior() -> String { "deferred".into() }
 
 #[derive(Clone)]
-struct Message { from: String, kind: String, payload: Json, at: f64 }
+struct Message { from: String, kind: String, payload: Json, at: f64, bytes: usize }
 struct Realm { config: RealmConfig, lua: Lua, deadline: Rc<Cell<Instant>>, wall_time_exceeded: Rc<Cell<bool>>, native: bool }
 struct Host {
     messages: Rc<RefCell<VecDeque<Message>>>,
     logs: Rc<RefCell<Vec<Json>>>,
     clock: Rc<Cell<f64>>,
     emitted: Rc<Cell<usize>>,
+    pending_bytes: Rc<Cell<usize>>,
+    log_sequence: Rc<Cell<u64>>,
+    interactive: bool,
 }
 
 impl Host {
     fn new() -> Self {
-        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default() }
+        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), interactive: false }
     }
+
+    fn interactive() -> Self { Self { interactive: true, ..Self::new() } }
 
     fn realm(&self, cfg: &RealmConfig, scenario: &Scenario) -> LuaResult<Realm> {
         let lua = Lua::new();
@@ -111,27 +118,39 @@ impl Host {
         let clock = self.clock.clone();
         let realm_id = cfg.id.clone();
         let native_mode=scenario.engine=="native";
+        let log_sequence = self.log_sequence.clone();
+        let interactive = self.interactive;
+        let side = cfg.side.clone();
         globals.set("__host_log", lua.create_function(move |lua, (level, message): (String, String)| {
-            if logs.borrow().len() >= 4000 { return Err(LuaError::runtime("BudgetExceeded: console log limit")); }
+            if logs.borrow().len() >= 4000 {
+                if interactive { logs.borrow_mut().drain(..2000); }
+                else { return Err(LuaError::runtime("BudgetExceeded: console log limit")); }
+            }
             let text: String = message.chars().take(4096).collect();
-            println!("[{:.3}][{}][{}] {}", clock.get(), realm_id, level, text);
-            logs.borrow_mut().push(json!({"time":clock.get(),"realm":realm_id,"level":level,"message":text}));
+            if !interactive { println!("[{:.3}][{}][{}] {}", clock.get(), realm_id, level, text); }
+            log_sequence.set(log_sequence.get().saturating_add(1));
+            let context = if native_mode && scheduler::current_origin(lua)=="executor" { "executor" } else { side.as_str() };
+            logs.borrow_mut().push(json!({"seq":log_sequence.get(),"time":clock.get(),"realm":realm_id,"context":context,"level":level,"message":text}));
             if native_mode { model::log(lua,&level,&text)?; }
             Ok(())
         })?)?;
         let messages = self.messages.clone();
         let emitted = self.emitted.clone();
+        let pending_bytes = self.pending_bytes.clone();
         let clock = self.clock.clone();
         let realm_id = cfg.id.clone();
         let latency = scenario.latency;
         let emit=Rc::new(move |kind:String,payload:Json| -> LuaResult<()> {
-            if serde_json::to_vec(&payload).map_err(LuaError::external)?.len() > 1024 * 1024 {
+            let bytes = serde_json::to_vec(&payload).map_err(LuaError::external)?.len();
+            if bytes > 1024 * 1024 {
                 return Err(LuaError::runtime("BudgetExceeded: message size"));
             }
-            if emitted.get() >= 20000 { return Err(LuaError::runtime("BudgetExceeded: message count")); }
-            emitted.set(emitted.get() + 1);
+            if (!interactive && emitted.get() >= 20000) || messages.borrow().len() >= 20000 { return Err(LuaError::runtime("BudgetExceeded: message count")); }
+            if pending_bytes.get().saturating_add(bytes) > 32 * 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: pending message bytes")); }
+            emitted.set(emitted.get().saturating_add(1));
+            pending_bytes.set(pending_bytes.get() + bytes);
             let delay = if kind.starts_with("remote_") { latency } else { 0.0 };
-            messages.borrow_mut().push_back(Message { from: realm_id.clone(), kind, payload, at: clock.get() + delay });
+            messages.borrow_mut().push_back(Message { from: realm_id.clone(), kind, payload, at: clock.get() + delay, bytes });
             Ok(())
         });
         if native_mode {lua.set_app_data(model::MessageSink(emit.clone()));}
@@ -145,10 +164,7 @@ impl Host {
             if raw.unwrap_or(false) { lua.create_string(hash) }
             else { lua.create_string(hash.iter().map(|b| format!("{b:02x}")).collect::<String>()) }
         })?)?;
-        globals.set("__host_json_encode", lua.create_function(|lua, value: Value| {
-            let value: Json = lua.from_value(value)?;
-            serde_json::to_string(&value).map_err(LuaError::external)
-        })?)?;
+        globals.set("__host_json_encode", model::json_encode_function(&lua)?)?;
         globals.set("__host_json_decode", lua.create_function(|lua, value: String| {
             if value.len() > 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: JSON size")); }
             let value: Json = serde_json::from_str(&value).map_err(LuaError::external)?;
@@ -256,6 +272,7 @@ fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
     for _ in 0..count {
         let Some(mut msg) = host.messages.borrow_mut().pop_front() else { break };
         if msg.at > host.clock.get() { host.messages.borrow_mut().push_back(msg); continue; }
+        host.pending_bytes.set(host.pending_bytes.get().saturating_sub(msg.bytes));
         let Some(from) = realms.iter().find(|r| r.config.id == msg.from) else { continue };
         msg.payload["sourceRealm"] = json!(msg.from);
         msg.payload["clientId"] = json!(from.config.client_id);
@@ -423,12 +440,33 @@ fn main() {
         if Lua::set_fflag(flag, true).is_err() { eprintln!("Required {flag} flag is unavailable"); std::process::exit(2); }
     }
     let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.is_empty() || args[0] == "--ui" {
+        let mut path = None;
+        let mut port = 0;
+        let mut open_browser = true;
+        let mut options = args.iter().skip(1);
+        while let Some(option) = options.next() {
+            if option == "--no-browser" { open_browser = false; }
+            else if option == "--port" {
+                let Some(value) = options.next().and_then(|s|s.to_str()).and_then(|s|s.parse::<u16>().ok()) else {
+                    eprintln!("--port requires an integer from 0 to 65535"); std::process::exit(2);
+                };
+                port = value;
+            } else if !option.to_string_lossy().starts_with("--") && path.is_none() { path = Some(PathBuf::from(option)); }
+            else { eprintln!("Usage: roblox-emulator --ui [scenario.json] [--port N] [--no-browser]"); std::process::exit(2); }
+        }
+        if let Err(error) = web::serve(path.as_deref(), port, open_browser) { eprintln!("FAIL: {error}"); std::process::exit(1); }
+        return;
+    }
     if args.first().is_some_and(|s| s == "--native-probe" || s == "--runtime-probe") {
         let result = if args.len() == 3 { native_probe(Path::new(&args[1]), Path::new(&args[2]),args[0]=="--runtime-probe") } else { Err("Usage: --native-probe|--runtime-probe <probe.luau> <studio-reference.json>".into()) };
         match result { Ok(true) => (), Ok(false) => std::process::exit(1), Err(e) => { eprintln!("FAIL: {e}"); std::process::exit(1); } }
         return;
     }
-    if args.is_empty() { eprintln!("Usage: roblox-emulator <scenario.json> [--report <report.json>]"); std::process::exit(2); }
+    if args[0] == "--help" || args[0] == "-h" {
+        println!("roblox-emulator --ui [scenario.json] [--port N] [--no-browser]\nroblox-emulator <scenario.json> [--report <report.json>]\nWith no arguments, opens the interactive UI.");
+        return;
+    }
     let path = PathBuf::from(&args[0]);
     let report = if args.len()==3 && args[1]=="--report" { Some(PathBuf::from(&args[2])) } else if args.len()==1 { None } else { eprintln!("Invalid arguments"); std::process::exit(2); };
     match run(&path, report.as_deref()) {

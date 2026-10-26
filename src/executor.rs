@@ -4,6 +4,10 @@ use std::{cell::RefCell,collections::{BTreeMap,BTreeSet},ffi::CString,rc::Rc};
 #[derive(Default)]
 struct VirtualIo {files:BTreeMap<String,String>,folders:BTreeSet<String>,clipboard:String}
 type Io=Rc<RefCell<VirtualIo>>;
+fn instance_arg(value:Value,name:&str,index:usize)->Result<crate::instance::Link>{
+    if let Value::UserData(value)=value{if let Ok(instance)=value.borrow::<crate::instance::Instance>(){return Ok(instance.0.clone())}}
+    Err(Error::lua_string(format!("invalid argument #{index} to '{name}' (Instance expected)")))
+}
 pub fn unsupported_calls(lua:&Lua)->Result<BTreeMap<String,u64>> {
     let entries:Table=crate::internal::<Table>(lua,"__emu")?.get("unsupported")?;
     let mut calls=BTreeMap::new();
@@ -34,6 +38,12 @@ pub fn install(lua:&Lua)->Result<()> {
     set(lua,&env,"identifyexecutor",|_,()|Ok(("RobloxEmulator","0.2.0")))?;
     let rt:Table=game.get("__rt")?;env.set("getconnections",rt.get::<Function>("getConnections")?)?;
     for (name,target) in [("getinstances","getInstances"),("getnilinstances","getNilInstances"),("getsenv","getEnvironment")]{set(lua,&env,name,move|lua,args:MultiValue|crate::internal::<Table>(lua,"__model")?.get::<Function>(target)?.call::<MultiValue>(args))?;}
+    set(lua,&env,"cloneref",|lua,value:Value|lua.create_userdata(crate::instance::Instance(instance_arg(value,"cloneref",1)?)))?;
+    set(lua,&env,"compareinstances",|_,(left,right):(Value,Value)|Ok(Rc::ptr_eq(&instance_arg(left,"compareinstances",1)?,&instance_arg(right,"compareinstances",2)?)))?;
+    set(lua,&env,"getcallingscript",|lua,()|crate::model::calling_script(lua))?;
+    set(lua,&env,"getscripts",|lua,()|crate::model::scripts(lua,false))?;
+    set(lua,&env,"getloadedmodules",|lua,()|crate::model::scripts(lua,true))?;
+    for name in ["cloneref","compareinstances","getcallingscript","getscripts","getloadedmodules"]{caps.set(name,"native: isolated DataModel and current thread environment")?;}
     for (name,host) in [("getgc","__host_getgc"),("iscclosure","__host_iscclosure"),("islclosure","__host_islclosure"),("newcclosure","__host_newcclosure"),("clonefunction","__host_clonefunction"),("getrawmetatable","__host_getrawmetatable"),("setrawmetatable","__host_setrawmetatable"),("setreadonly","__host_setreadonly"),("isreadonly","__host_isreadonly"),("getnamecallmethod","__host_getnamecallmethod"),("hookfunction","__host_hookfunction"),("restorefunction","__host_restorefunction"),("hookmetamethod","__host_hookmetamethod")]{env.set(name,game.get::<Function>(host)?)?;caps.set(name,"native: isolated Luau VM")?;}
     env.set("filtergc",crate::native::bind_filtergc(lua,&env,&unsupported)?)?;caps.set("filtergc","native: Name, Constants, Upvalues, IgnoreExecutor, Keys, Values, KeyValuePairs, Metatable; Hash unsupported")?;
     let debug=lua.create_table()?;for pair in game.get::<Table>("debug")?.pairs::<Value,Value>(){let(k,v)=pair?;debug.set(k,v)?;}
@@ -53,7 +63,7 @@ pub fn install(lua:&Lua)->Result<()> {
     for(name,level)in[("rconsoleprint","executor"),("rconsolewarn","executor_warn"),("rconsoleerr","executor_error")]{set(lua,&env,name,move|lua,message:Value|{let tostring:Function=lua.globals().get("tostring")?;let message:String=tostring.call(message)?;crate::internal::<Function>(lua,"__host_log")?.call::<()>((level,message))})?;}
     let e=env.clone();set(lua,&env,"loadstring",move|lua,(source,name):(String,Option<String>)|{if source.len()>8*1024*1024{return Err(Error::lua_string("source size limit exceeded"));}e.set_safeenv(false);match lua.load(&source).set_mode(mlua::chunk::ChunkMode::Text).set_name(name.as_deref().unwrap_or("=executor")).set_environment(e.clone()).into_function(){Ok(f)=>{crate::native::mark_executor_function(lua,&f,&e)?;Ok((Value::Function(f),Value::Nil))},Err(e)=>Ok((Value::Nil,Value::String(lua.create_string(e.to_string())?)))}})?;
     let e=env.clone();let s=io.clone();set(lua,&env,"loadfile",move|lua,name:String|{let name=path(&name)?;let data=s.borrow().files.get(&name).cloned().ok_or_else(||Error::lua_string("virtual file does not exist"))?;e.set_safeenv(false);let f=lua.load(data).set_mode(mlua::chunk::ChunkMode::Text).set_name(format!("@virtual/{name}")).set_environment(e.clone()).into_function()?;crate::native::mark_executor_function(lua,&f,&e)?;Ok(f)})?;
-    for name in ["getreg","isexecutorclosure","setnamecallmethod","getthreadidentity","setthreadidentity","gethiddenproperty","sethiddenproperty","cloneref","compareinstances","getscriptbytecode","getscriptclosure","getcallingscript","getloadedmodules","getscripts","request","http_request","queue_on_teleport","firetouchinterest","fireclickdetector","fireproximityprompt","setfpscap","getfpscap","shutdown"] {
+    for name in ["getreg","isexecutorclosure","setnamecallmethod","getthreadidentity","setthreadidentity","gethiddenproperty","sethiddenproperty","getscriptbytecode","getscriptclosure","request","http_request","queue_on_teleport","firetouchinterest","fireclickdetector","fireproximityprompt","setfpscap","getfpscap","shutdown"] {
         let unsupported=unsupported.clone();caps.set(name,"unsupported")?;set(lua,&env,name,move|lua,_:MultiValue|{if unsupported.raw_len()<1000{let event=lua.create_table()?;event.set("api",name)?;unsupported.raw_push(event)?;}Err::<(),_>(Error::lua_string(format!("UnsupportedApi: {name} is not implemented by this emulator")))})?;
     }
     set(lua,&emu,"runExecutor",|lua,(source,name):(String,Option<String>)|run(lua,&source,name.as_deref().unwrap_or("=executor")))?;
@@ -61,3 +71,7 @@ pub fn install(lua:&Lua)->Result<()> {
     for entry in env.pairs::<Value,Value>(){let(_,value)=entry?;if let Value::Function(function)=value{crate::native::mark_executor_function(lua,&function,&env)?;}}
     env.set_safeenv(true);game.set("__emu",emu)
 }
+
+#[cfg(all(test, emulator_local_tests))]
+#[path = "../local_tests/executor.rs"]
+mod tests;

@@ -7,6 +7,7 @@ const MEMORY_ENVIRONMENTS: &str = "emulator.memory.default.environments";
 const MEMORY_THREADS: &str = "emulator.memory.default.threads";
 
 pub type Completion = Rc<dyn Fn(&Lua, std::result::Result<MultiValue, Value>) -> Result<()>>;
+pub type YieldObserver = Rc<dyn Fn(&Lua, MultiValue) -> Result<()>>;
 type Shared = Rc<RefCell<Scheduler>>;
 
 struct Scheduler {
@@ -45,6 +46,7 @@ struct Task {
     parked: bool,
     waiter: Option<Weak<RefCell<SignalData>>>,
     completion: Option<Completion>,
+    yield_observer: Option<YieldObserver>,
     pending_connection: Option<Rc<RefCell<ConnectionData>>>,
 }
 
@@ -232,7 +234,7 @@ fn ensure_task(lua: &Lua, thread: &Thread, mode: Option<&str>, origin: Option<&s
     let mut state = shared.borrow_mut();
     if !state.tasks.contains_key(&key(thread)) {
         if state.tasks.len() >= state.max_tasks { return Err(fail("SchedulerLimit: task limit exceeded")); }
-        state.tasks.insert(key(thread), Task { thread: thread.clone(), mode, origin, parked: false, waiter: None, completion: None, pending_connection: None });
+        state.tasks.insert(key(thread), Task { thread: thread.clone(), mode, origin, parked: false, waiter: None, completion: None, yield_observer: None, pending_connection: None });
     }
     Ok(())
 }
@@ -359,7 +361,11 @@ fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>
     let resumed = resume_raw(lua, &thread, args, error);
     drop(depth_guard);
     match resumed {
-        Ok((true, _)) => Ok(()),
+        Ok((true, Ok(values))) => {
+            let observer = shared(lua)?.borrow().tasks.get(&key(&thread)).and_then(|task| task.yield_observer.clone());
+            if let Some(observer) = observer { observer(lua, values)?; }
+            Ok(())
+        }
         result => {
             let task = shared(lua)?.borrow_mut().tasks.remove(&key(&thread));
             clear_profile(lua, &thread)?;
@@ -384,8 +390,17 @@ pub fn spawn_with(lua: &Lua, callable: Value, args: MultiValue, mode: Option<&st
     Ok(thread)
 }
 pub fn spawn_tracked(lua: &Lua, callable: Value, args: MultiValue, mode: Option<&str>, origin: Option<&str>, completion: Completion) -> Result<Thread> {
+    spawn_observed(lua, callable, args, mode, origin, completion, None)
+}
+pub fn spawn_observed(lua: &Lua, callable: Value, args: MultiValue, mode: Option<&str>, origin: Option<&str>, completion: Completion, observer: Option<YieldObserver>) -> Result<Thread> {
     let thread = to_thread(lua, callable, mode, origin)?;
-    shared(lua)?.borrow_mut().tasks.get_mut(&key(&thread)).unwrap().completion = Some(completion);
+    {
+        let shared = shared(lua)?;
+        let mut state = shared.borrow_mut();
+        let task = state.tasks.get_mut(&key(&thread)).unwrap();
+        task.completion = Some(completion);
+        task.yield_observer = observer;
+    }
     resume_task(lua, thread.clone(), args, None)?;
     Ok(thread)
 }
@@ -418,6 +433,12 @@ pub fn cancel(lua: &Lua, thread: Thread) -> Result<()> {
     Ok(())
 }
 pub fn step(lua: &Lua, now: f64) -> Result<usize> {
+    step_mode(lua, now, true)
+}
+pub fn flush(lua: &Lua, now: f64) -> Result<usize> {
+    step_mode(lua, now, false)
+}
+fn step_mode(lua: &Lua, now: f64, timed_waits: bool) -> Result<usize> {
     let ready = {
         let shared = shared(lua)?;
         let mut state = shared.borrow_mut();
@@ -428,7 +449,7 @@ pub fn step(lua: &Lua, now: f64) -> Result<usize> {
         state.rt.raw_set("now", now)?;
         state.queue.sort_by(|a, b| a.at.total_cmp(&b.at).then(a.sequence.cmp(&b.sequence)));
         let tick = state.tick;
-        let (ready, pending) = std::mem::take(&mut state.queue).into_iter().partition::<Vec<_>, _>(|job| job.at <= now && job.tick <= tick);
+        let (ready, pending) = std::mem::take(&mut state.queue).into_iter().partition::<Vec<_>, _>(|job| job.at <= now && job.tick <= tick && (timed_waits || job.started.is_none()));
         state.queue = pending;
         ready
     };

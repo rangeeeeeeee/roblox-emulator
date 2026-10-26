@@ -21,7 +21,7 @@ fn luau_source() -> PathBuf {
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(emulator_local_tests)");
-    let tests = ["diagnostics", "instance", "model", "native", "scheduler", "types"]
+    let tests = ["diagnostics", "executor", "instance", "model", "native", "scheduler", "types", "session", "web"]
         .map(|name| PathBuf::from(format!("local_tests/{name}.rs")));
     for path in &tests { println!("cargo:rerun-if-changed={}", path.display()); }
     if tests.iter().all(|path| path.is_file()) { println!("cargo:rustc-cfg=emulator_local_tests"); }
