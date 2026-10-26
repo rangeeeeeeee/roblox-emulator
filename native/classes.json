@@ -1,0 +1,4666 @@
+{
+  "Accessory": {
+    "superclass": "Accoutrement",
+    "service": false,
+    "creatable": true
+  },
+  "AccessoryDescription": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AccountService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Accoutrement": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AchievementService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ActivityHistoryEventService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Actor": {
+    "superclass": "Model",
+    "service": false,
+    "creatable": true
+  },
+  "AdGui": {
+    "superclass": "SurfaceGuiBase",
+    "service": false,
+    "creatable": true
+  },
+  "AdPlacement": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AdPortal": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AdService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AdvancedDragger": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AirController": {
+    "superclass": "ControllerBase",
+    "service": false,
+    "creatable": true
+  },
+  "AlignOrientation": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "AlignPosition": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "AnalyticsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AngularVelocity": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "AnimatedImageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Animation": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationClip": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "AnimationClipProvider": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AnimationConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationController": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationFromVideoCreatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AnimationFromVideoCreatorStudioService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AnimationGraphDefinition": {
+    "superclass": "AnimationClip",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "AnimationNode": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "AnimationNodeDefinition": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationPlayer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationRigData": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationStreamTrack": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "AnimationTrack": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "AnimationValueNodeDefinition": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnimationValueOutputDefinition": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Animator": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Annotation": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AnnotationsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AppAgeSignalsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AppHandle": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "AppLifecycleObserverService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AppRatingPromptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AppStorageService": {
+    "superclass": "LocalStorageService",
+    "service": true,
+    "creatable": false
+  },
+  "AppUpdateService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ArcHandles": {
+    "superclass": "HandlesBase",
+    "service": false,
+    "creatable": true
+  },
+  "AssetCounterService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AssetDeliveryProxy": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AssetImportService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AssetImportSession": {
+    "superclass": "ImportSession",
+    "service": false,
+    "creatable": false
+  },
+  "AssetManagerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AssetPatchSettings": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "AssetQualityService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AssetService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AssetSoundEffect": {
+    "superclass": "CustomSoundEffect",
+    "service": false,
+    "creatable": false
+  },
+  "Atmosphere": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AtmosphereSensor": {
+    "superclass": "SensorBase",
+    "service": false,
+    "creatable": true
+  },
+  "Attachment": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioAnalyzer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioChannelMixer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioChannelSplitter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioChorus": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioCompressor": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioDeviceInput": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioDeviceOutput": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioDistortion": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioEcho": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioEmitter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioEqualizer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioFader": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioFilter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioFlanger": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioFocusService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AudioGate": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioLimiter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioListener": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "AudioPitchShifter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioPlayer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioRecorder": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioReverb": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioSearchParams": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioSpeechToText": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioTextToSpeech": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioTremolo": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AudioWindSynthesizer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AuroraScriptObject": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "AuroraScriptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AuroraService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AvatarAbilityRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarAccessoryRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarAnimationRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarBodyRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarChatService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AvatarClothingRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarCollisionRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarCreationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AvatarEditorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AvatarImportService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "AvatarRules": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "AvatarSettings": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BackendReplicatedStorage": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BackendServerScriptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BackendServerStorage": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Backpack": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "BackpackItem": {
+    "superclass": "Model",
+    "service": false,
+    "creatable": false
+  },
+  "BadgeService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BallSocketConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "BanHistoryPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "BaseCoreGuiConfiguration": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "BaseImportData": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "BasePart": {
+    "superclass": "PVInstance",
+    "service": false,
+    "creatable": false
+  },
+  "BasePlayerGui": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "BaseRemoteEvent": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "BaseScript": {
+    "superclass": "LuaSourceContainer",
+    "service": false,
+    "creatable": false
+  },
+  "BaseWrap": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Beam": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "BevelMesh": {
+    "superclass": "DataModelMesh",
+    "service": false,
+    "creatable": false
+  },
+  "BillboardGui": {
+    "superclass": "LayerCollector",
+    "service": false,
+    "creatable": true
+  },
+  "BinaryStringValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "BindableEvent": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "BindableFunction": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "BlockMesh": {
+    "superclass": "BevelMesh",
+    "service": false,
+    "creatable": true
+  },
+  "BloomEffect": {
+    "superclass": "PostEffect",
+    "service": false,
+    "creatable": true
+  },
+  "BlurEffect": {
+    "superclass": "PostEffect",
+    "service": false,
+    "creatable": true
+  },
+  "BodyAngularVelocity": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "BodyColors": {
+    "superclass": "CharacterAppearance",
+    "service": false,
+    "creatable": true
+  },
+  "BodyForce": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "BodyGyro": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "BodyMover": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "BodyPartDescription": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "BodyPosition": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "BodyThrust": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "BodyVelocity": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "Bone": {
+    "superclass": "Attachment",
+    "service": false,
+    "creatable": true
+  },
+  "BoolValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "BoxHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "BranchService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Breakpoint": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "BrickColorValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "BrowserService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BubbleChatConfiguration": {
+    "superclass": "TextChatConfigurations",
+    "service": false,
+    "creatable": false
+  },
+  "BubbleChatMessageProperties": {
+    "superclass": "TextChatMessageProperties",
+    "service": false,
+    "creatable": true
+  },
+  "BugReporterService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BulkImportService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "BuoyancySensor": {
+    "superclass": "SensorBase",
+    "service": false,
+    "creatable": true
+  },
+  "CacheableContentProvider": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CallingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CalloutService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Camera": {
+    "superclass": "PVInstance",
+    "service": false,
+    "creatable": true
+  },
+  "CanvasGroup": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "Capture": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "CaptureService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CapturesPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "CapturesViewConfiguration": {
+    "superclass": "BaseCoreGuiConfiguration",
+    "service": false,
+    "creatable": false
+  },
+  "CatalogPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "CFrameValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "ChangeHistoryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ChangeHistoryStreamingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ChannelSelectorSoundEffect": {
+    "superclass": "CustomSoundEffect",
+    "service": false,
+    "creatable": false
+  },
+  "ChannelTabsConfiguration": {
+    "superclass": "TextChatConfigurations",
+    "service": false,
+    "creatable": false
+  },
+  "CharacterAppearance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "CharacterMesh": {
+    "superclass": "CharacterAppearance",
+    "service": false,
+    "creatable": true
+  },
+  "Chat": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ChatInputBarConfiguration": {
+    "superclass": "TextChatConfigurations",
+    "service": false,
+    "creatable": false
+  },
+  "ChatWindowConfiguration": {
+    "superclass": "TextChatConfigurations",
+    "service": false,
+    "creatable": false
+  },
+  "ChatWindowMessageProperties": {
+    "superclass": "TextChatMessageProperties",
+    "service": false,
+    "creatable": false
+  },
+  "ChorusSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "ClickDetector": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ClientReplicator": {
+    "superclass": "NetworkReplicator",
+    "service": false,
+    "creatable": false
+  },
+  "ClientStorageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ClimbController": {
+    "superclass": "ControllerBase",
+    "service": false,
+    "creatable": true
+  },
+  "Clothing": {
+    "superclass": "CharacterAppearance",
+    "service": false,
+    "creatable": false
+  },
+  "CloudClientService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CloudCRUDService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CloudExecutionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CloudLocalizationTable": {
+    "superclass": "LocalizationTable",
+    "service": false,
+    "creatable": false
+  },
+  "Clouds": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ClusterPacketCache": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Collaborator": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "CollaboratorsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CollectionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Color3Value": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "ColorCorrectionEffect": {
+    "superclass": "PostEffect",
+    "service": false,
+    "creatable": true
+  },
+  "ColorGradingEffect": {
+    "superclass": "PostEffect",
+    "service": false,
+    "creatable": true
+  },
+  "CommerceService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CompositeValueCurve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "CompressorSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "ConeHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "ConfigService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ConfigSnapshot": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "Configuration": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ConfigureServerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ConnectivityService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Constraint": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ContentProvider": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ContextActionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Controller": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ControllerBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ControllerManager": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ControllerPartSensor": {
+    "superclass": "ControllerSensor",
+    "service": false,
+    "creatable": true
+  },
+  "ControllerSensor": {
+    "superclass": "SensorBase",
+    "service": false,
+    "creatable": false
+  },
+  "ControllerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ControlState": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "CookiesService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CoreGui": {
+    "superclass": "BasePlayerGui",
+    "service": true,
+    "creatable": false
+  },
+  "CoreGuiConfiguration": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CorePackages": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CoreScript": {
+    "superclass": "BaseScript",
+    "service": false,
+    "creatable": false
+  },
+  "CoreScriptDebuggingManagerHelper": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CoreScriptSyncService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CornerWedgePart": {
+    "superclass": "BasePart",
+    "service": false,
+    "creatable": true
+  },
+  "CreationDBService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CreatorStoreService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CrossDMScriptChangeListener": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "CSGDictionaryService": {
+    "superclass": "FlyweightService",
+    "service": true,
+    "creatable": false
+  },
+  "CurveAnimation": {
+    "superclass": "AnimationClip",
+    "service": false,
+    "creatable": true
+  },
+  "CustomEvent": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "CustomEventReceiver": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "CustomLog": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "CustomSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": false
+  },
+  "CylinderHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "CylinderMesh": {
+    "superclass": "BevelMesh",
+    "service": false,
+    "creatable": true
+  },
+  "CylindricalConstraint": {
+    "superclass": "SlidingBallConstraint",
+    "service": false,
+    "creatable": true
+  },
+  "DataModel": {
+    "superclass": "ServiceProvider",
+    "service": false,
+    "creatable": false
+  },
+  "DataModelDiff": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "DataModelMesh": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DataModelSession": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DataStore": {
+    "superclass": "GlobalDataStore",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreGetOptions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DataStoreIncrementOptions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DataStoreInfo": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreKey": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreKeyInfo": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreKeyPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreListingPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreObjectVersionInfo": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreOptions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DataStorePages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "DataStoreService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DataStoreSetOptions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DataStoreVersionPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "Debris": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DebuggablePluginWatcher": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DebuggerBreakpoint": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DebuggerConnection": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DebuggerConnectionManager": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DebuggerLuaResponse": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DebuggerManager": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DebuggerUIService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DebuggerVariable": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DebuggerWatch": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Decal": {
+    "superclass": "FaceInstance",
+    "service": false,
+    "creatable": true
+  },
+  "DeferredAssetManagerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DepthOfFieldEffect": {
+    "superclass": "PostEffect",
+    "service": false,
+    "creatable": true
+  },
+  "DesignFoundationsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DeviceDisplayService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DeviceIdService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Dialog": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DialogChoice": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DigitsRigDescription": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DisplayWakeLock": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "DistortionSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "DockWidgetPluginGui": {
+    "superclass": "PluginGui",
+    "service": false,
+    "creatable": false
+  },
+  "DoubleConstrainedValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "DraftsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DragDetector": {
+    "superclass": "ClickDetector",
+    "service": false,
+    "creatable": true
+  },
+  "Dragger": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "DraggerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "DynamicRotate": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": false
+  },
+  "EchoSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "EditableImage": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "EditableMesh": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "EditableService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "EditorSourceService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "EncodingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "EqualizerSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "EulerRotationCurve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "EventIngestService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExampleV2Service": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExecutedRemoteCommand": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "ExperienceAuthService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExperienceInviteOptions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ExperienceNotificationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExperienceService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExperienceStateCaptureService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExperienceStateRecordingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ExplorerFilter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ExplorerFilterAutocompleter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ExplorerServiceVisibilityService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Explosion": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ExternalIdentityService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FaceAnimatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FaceControls": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "FaceInstance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FacialAgeEstimationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FacialAnimationRecordingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FacialAnimationStreamingServiceStats": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FacialAnimationStreamingServiceV2": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FacialAnimationStreamingSubsessionStats": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FacsImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "Feature": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FeatureMatchingTable": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "FeatureRestrictionManager": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "File": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FileManagerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FileMesh": {
+    "superclass": "DataModelMesh",
+    "service": false,
+    "creatable": true
+  },
+  "FileSyncReplicationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Fire": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Flag": {
+    "superclass": "Tool",
+    "service": false,
+    "creatable": true
+  },
+  "FlagStand": {
+    "superclass": "Part",
+    "service": false,
+    "creatable": true
+  },
+  "FlagStandService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FlangeSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "FloatCurve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "FloorWire": {
+    "superclass": "GuiBase3d",
+    "service": false,
+    "creatable": true
+  },
+  "FluidForceSensor": {
+    "superclass": "SensorBase",
+    "service": false,
+    "creatable": true
+  },
+  "FlyweightService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Folder": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ForceField": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "FormFactorPart": {
+    "superclass": "BasePart",
+    "service": false,
+    "creatable": false
+  },
+  "Frame": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "FriendPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "FriendsCallingInstance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FriendsCallingParticipant": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "FriendsCallingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FriendService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "FunctionalTest": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "GamepadService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GamePassService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GeneratedFolder": {
+    "superclass": "Folder",
+    "service": false,
+    "creatable": true
+  },
+  "GenerationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GenericChallengeService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Geometry": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GeometryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GetTextBoundsParams": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "GlobalDataStore": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Glue": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "GongService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GroundController": {
+    "superclass": "ControllerBase",
+    "service": false,
+    "creatable": true
+  },
+  "GroupImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "GroupService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GuiBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "GuiBase2d": {
+    "superclass": "GuiBase",
+    "service": false,
+    "creatable": false
+  },
+  "GuiBase3d": {
+    "superclass": "GuiBase",
+    "service": false,
+    "creatable": false
+  },
+  "GuiButton": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": false
+  },
+  "GuidRegistryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "GuiLabel": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": false
+  },
+  "GuiMain": {
+    "superclass": "ScreenGui",
+    "service": false,
+    "creatable": true
+  },
+  "GuiObject": {
+    "superclass": "GuiBase2d",
+    "service": false,
+    "creatable": false
+  },
+  "GuiService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HandleAdornment": {
+    "superclass": "PVAdornment",
+    "service": false,
+    "creatable": false
+  },
+  "Handles": {
+    "superclass": "HandlesBase",
+    "service": false,
+    "creatable": true
+  },
+  "HandlesBase": {
+    "superclass": "PartAdornment",
+    "service": false,
+    "creatable": false
+  },
+  "HapticEffect": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "HapticService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HarmonyService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Hat": {
+    "superclass": "Accoutrement",
+    "service": false,
+    "creatable": true
+  },
+  "HeapProfilerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HeatmapQueryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HeatmapService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HeightmapImporterService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HiddenPlayerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HiddenSurfaceRemovalAsset": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Highlight": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "HingeConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "Hint": {
+    "superclass": "Message",
+    "service": false,
+    "creatable": true
+  },
+  "Hole": {
+    "superclass": "Feature",
+    "service": false,
+    "creatable": true
+  },
+  "Hopper": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HopperBin": {
+    "superclass": "BackpackItem",
+    "service": false,
+    "creatable": true
+  },
+  "HSRDataContentProvider": {
+    "superclass": "CacheableContentProvider",
+    "service": true,
+    "creatable": false
+  },
+  "HttpRbxApiService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "HttpRequest": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "HttpService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Humanoid": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "HumanoidController": {
+    "superclass": "Controller",
+    "service": false,
+    "creatable": true
+  },
+  "HumanoidDescription": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "HumanoidRigDescription": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "IKControl": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ILegacyStudioBridge": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ImageButton": {
+    "superclass": "GuiButton",
+    "service": false,
+    "creatable": true
+  },
+  "ImageHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "ImageLabel": {
+    "superclass": "GuiLabel",
+    "service": false,
+    "creatable": true
+  },
+  "ImageScreenCaptureService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ImportSession": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "IncrementalPatchBuilder": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InputAction": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "InputActionLabel": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "InputBinding": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "InputContext": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "InputObject": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "InputReplayService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InsertService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Instance": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "InstanceAdornment": {
+    "superclass": "GuiBase3d",
+    "service": false,
+    "creatable": false
+  },
+  "InstanceExtensionsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InstanceFileSyncService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InstanceRegistryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "IntConstrainedValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "IntentService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InternalMessagingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InternalMessagingServiceVerifier": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "InternalSyncItem": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "InternalSyncService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "IntersectOperation": {
+    "superclass": "PartOperation",
+    "service": false,
+    "creatable": true
+  },
+  "IntValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "InventoryPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "IXPService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "JointImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "JointInstance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "JointsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "KeyboardService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Keyframe": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "KeyframeMarker": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "KeyframeSequence": {
+    "superclass": "AnimationClip",
+    "service": false,
+    "creatable": true
+  },
+  "KeyframeSequenceProvider": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LanguageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LayerCollector": {
+    "superclass": "GuiBase2d",
+    "service": false,
+    "creatable": false
+  },
+  "LegacyStudioBridge": {
+    "superclass": "ILegacyStudioBridge",
+    "service": true,
+    "creatable": false
+  },
+  "Light": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Lighting": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LinearVelocity": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "LineForce": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "LineHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "LinkingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LiveScriptingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LiveSyncService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LocalDebuggerConnection": {
+    "superclass": "DebuggerConnection",
+    "service": false,
+    "creatable": false
+  },
+  "LocalizationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LocalizationTable": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "LocalScript": {
+    "superclass": "Script",
+    "service": false,
+    "creatable": true
+  },
+  "LocalStorageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LodDataEntity": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "LodDataService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Logger": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "LoginService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LogReporterService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LogService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LuaSourceContainer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "LuauExpression": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "LuauExpressionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LuauScriptAnalyzerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "LuaWebService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MakeupDescription": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ManualGlue": {
+    "superclass": "ManualSurfaceJointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "ManualSurfaceJointInstance": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": false
+  },
+  "ManualWeld": {
+    "superclass": "ManualSurfaceJointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "MarkerCurve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "MarketplaceService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MatchmakingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MaterialGenerationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MaterialImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "MaterialService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MaterialVariant": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "MemoryStoreDistributedCounter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MemoryStoreHashMap": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MemoryStoreHashMapPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "MemoryStoreQueue": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MemoryStoreService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MemoryStoreSortedMap": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MemStorageConnection": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MemStorageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MeshContentProvider": {
+    "superclass": "CacheableContentProvider",
+    "service": true,
+    "creatable": false
+  },
+  "MeshImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "MeshPart": {
+    "superclass": "TriangleMeshPart",
+    "service": false,
+    "creatable": true
+  },
+  "Message": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "MessageBusConnection": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MessageBusService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MessagingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MetaBreakpoint": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MetaBreakpointContext": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MetaBreakpointManager": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MicroProfilerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MLModelDeliveryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MLService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MLSession": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "Model": {
+    "superclass": "PVInstance",
+    "service": false,
+    "creatable": true
+  },
+  "ModerationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ModuleScript": {
+    "superclass": "LuaSourceContainer",
+    "service": false,
+    "creatable": true
+  },
+  "MomentsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Motor": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "Motor6D": {
+    "superclass": "Motor",
+    "service": false,
+    "creatable": true
+  },
+  "MotorFeature": {
+    "superclass": "Feature",
+    "service": false,
+    "creatable": true
+  },
+  "Mouse": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "MouseService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "MultipleDocumentInterfaceInstance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "NegateOperation": {
+    "superclass": "PartOperation",
+    "service": false,
+    "creatable": true
+  },
+  "NetworkClient": {
+    "superclass": "NetworkPeer",
+    "service": true,
+    "creatable": false
+  },
+  "NetworkMarker": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "NetworkPeer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "NetworkReplicator": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "NetworkServer": {
+    "superclass": "NetworkPeer",
+    "service": true,
+    "creatable": false
+  },
+  "NoCollisionConstraint": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Noise": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "NonReplicatedCSGDictionaryService": {
+    "superclass": "FlyweightService",
+    "service": true,
+    "creatable": false
+  },
+  "NotificationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "NumberPose": {
+    "superclass": "PoseBase",
+    "service": false,
+    "creatable": true
+  },
+  "NumberValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "Object": {
+    "service": false,
+    "creatable": false
+  },
+  "ObjectValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "OmniRecommendationsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "OpenCloudApiV1": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "OpenCloudService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "OperationGraph": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "OrderedDataStore": {
+    "superclass": "GlobalDataStore",
+    "service": false,
+    "creatable": false
+  },
+  "OutfitPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "OutputLink": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "PackageLink": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Packages": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PackageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PackageUIService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Pages": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Pants": {
+    "superclass": "Clothing",
+    "service": false,
+    "creatable": true
+  },
+  "ParabolaAdornment": {
+    "superclass": "PVAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "Part": {
+    "superclass": "FormFactorPart",
+    "service": false,
+    "creatable": true
+  },
+  "PartAdornment": {
+    "superclass": "GuiBase3d",
+    "service": false,
+    "creatable": false
+  },
+  "ParticipantHandle": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "ParticleEmitter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ParticleEmitter2D": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PartOperation": {
+    "superclass": "TriangleMeshPart",
+    "service": false,
+    "creatable": true
+  },
+  "PartOperationAsset": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PartyEmulatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PatchBundlerFileWatch": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PatchMapping": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Path": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Path2D": {
+    "superclass": "GuiBase",
+    "service": false,
+    "creatable": true
+  },
+  "Path3D": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PathfindingLink": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PathfindingModifier": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PathfindingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PausedState": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PausedStateBreakpoint": {
+    "superclass": "PausedState",
+    "service": false,
+    "creatable": false
+  },
+  "PausedStateException": {
+    "superclass": "PausedState",
+    "service": false,
+    "creatable": false
+  },
+  "PerformanceControlService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PermissionsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PhysicsActivitySensor": {
+    "superclass": "SensorBase",
+    "service": false,
+    "creatable": true
+  },
+  "PhysicsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PinShortcutService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PitchShiftSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "PlaceAssetIdsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlacesService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlaceStatsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Plane": {
+    "superclass": "PlaneConstraint",
+    "service": false,
+    "creatable": true
+  },
+  "PlaneConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "Platform": {
+    "superclass": "Part",
+    "service": false,
+    "creatable": false
+  },
+  "PlatformCloudStorageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlatformFriendsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlatformLibraries": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Player": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PlayerData": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PlayerDataRecord": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PlayerDataRecordConfig": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PlayerDataService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlayerEmulatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlayerGui": {
+    "superclass": "BasePlayerGui",
+    "service": false,
+    "creatable": false
+  },
+  "PlayerHydrationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlayerListConfiguration": {
+    "superclass": "BaseCoreGuiConfiguration",
+    "service": false,
+    "creatable": false
+  },
+  "PlayerMouse": {
+    "superclass": "Mouse",
+    "service": false,
+    "creatable": false
+  },
+  "Players": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PlayerScripts": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PlayerViewService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Plugin": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PluginAction": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PluginCapabilities": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "PluginConnection": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "PluginConnectionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PluginDebugService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PluginDragEvent": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PluginGui": {
+    "superclass": "LayerCollector",
+    "service": false,
+    "creatable": false
+  },
+  "PluginGuiService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PluginManagementService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PluginManager": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PluginManagerInterface": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PluginMenu": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PluginMouse": {
+    "superclass": "Mouse",
+    "service": false,
+    "creatable": false
+  },
+  "PluginPolicyService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PluginToolbar": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PluginToolbarButton": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PointLight": {
+    "superclass": "Light",
+    "service": false,
+    "creatable": true
+  },
+  "PointsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PolicyService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PopLatencyService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Pose": {
+    "superclass": "PoseBase",
+    "service": false,
+    "creatable": true
+  },
+  "PoseBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PostEffect": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Preloaded": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PrismaticConstraint": {
+    "superclass": "SlidingBallConstraint",
+    "service": false,
+    "creatable": true
+  },
+  "ProceduralBehaviorSchedulerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ProceduralModel": {
+    "superclass": "Model",
+    "service": false,
+    "creatable": true
+  },
+  "ProcessInstancePhysicsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ProjectService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ProximityPrompt": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ProximityPromptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PublishService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "PVAdornment": {
+    "superclass": "GuiBase3d",
+    "service": false,
+    "creatable": false
+  },
+  "PVInstance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "PyramidHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "QueueService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "QWidgetPluginGui": {
+    "superclass": "PluginGui",
+    "service": false,
+    "creatable": false
+  },
+  "RayValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "RbxAnalyticsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RealtimeMedia": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "RecommendationPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "RecommendationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ReflectionMetadata": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataCallbacks": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataClass": {
+    "superclass": "ReflectionMetadataItem",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataClasses": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataEnum": {
+    "superclass": "ReflectionMetadataItem",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataEnumItem": {
+    "superclass": "ReflectionMetadataItem",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataEnums": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataEvents": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataFunctions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataItem": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ReflectionMetadataMember": {
+    "superclass": "ReflectionMetadataItem",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataProperties": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionMetadataYieldFunctions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReflectionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RelativeGui": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "RemoteCommandService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RemoteCursorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RemoteDebuggerServer": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RemoteEvent": {
+    "superclass": "BaseRemoteEvent",
+    "service": false,
+    "creatable": true
+  },
+  "RemoteFunction": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "RenderingTest": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "ReplicatedFirst": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ReplicatedStorage": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RequestOrchestratorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ReverbSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "RibbonNotificationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RigidConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "RobloxPluginGuiService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RobloxReplicatedStorage": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RobloxSerializableInstance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "RobloxServerStorage": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RocketPropulsion": {
+    "superclass": "BodyMover",
+    "service": false,
+    "creatable": true
+  },
+  "RodConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "RolloutValidation": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "RolloutValidationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RomarkService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RootImportData": {
+    "superclass": "BaseImportData",
+    "service": false,
+    "creatable": false
+  },
+  "RopeConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "Rotate": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "RotateP": {
+    "superclass": "DynamicRotate",
+    "service": false,
+    "creatable": true
+  },
+  "RotateV": {
+    "superclass": "DynamicRotate",
+    "service": false,
+    "creatable": true
+  },
+  "RotationCurve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "RTAnimationTracker": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "RtMessagingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RunningAverageItemDouble": {
+    "superclass": "StatsItem",
+    "service": false,
+    "creatable": false
+  },
+  "RunningAverageItemInt": {
+    "superclass": "StatsItem",
+    "service": false,
+    "creatable": false
+  },
+  "RunningAverageTimeIntervalItem": {
+    "superclass": "StatsItem",
+    "service": false,
+    "creatable": false
+  },
+  "RunService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RuntimeContentService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "RuntimeScriptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SafetyService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SceneAnalysisService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScreenGui": {
+    "superclass": "LayerCollector",
+    "service": false,
+    "creatable": true
+  },
+  "ScreenshotCapture": {
+    "superclass": "Capture",
+    "service": false,
+    "creatable": false
+  },
+  "ScreenshotHud": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Script": {
+    "superclass": "BaseScript",
+    "service": false,
+    "creatable": true
+  },
+  "ScriptBuilder": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ScriptChangeService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptCloneWatcher": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptCloneWatcherHelper": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptCommitService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptContext": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptDebugger": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ScriptDebuggerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptDocument": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ScriptEditorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptProfilerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptRegistrationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptRuntime": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ScriptScannerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScriptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ScrollingFrame": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "Seat": {
+    "superclass": "Part",
+    "service": false,
+    "creatable": true
+  },
+  "Selection": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SelectionBox": {
+    "superclass": "InstanceAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "SelectionHighlightManager": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SelectionLasso": {
+    "superclass": "GuiBase3d",
+    "service": false,
+    "creatable": false
+  },
+  "SelectionPartLasso": {
+    "superclass": "SelectionLasso",
+    "service": false,
+    "creatable": true
+  },
+  "SelectionPointLasso": {
+    "superclass": "SelectionLasso",
+    "service": false,
+    "creatable": true
+  },
+  "SelectionSphere": {
+    "superclass": "PVAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "SelfViewConfiguration": {
+    "superclass": "BaseCoreGuiConfiguration",
+    "service": false,
+    "creatable": false
+  },
+  "SensorBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "SerializationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ServerReplicator": {
+    "superclass": "NetworkReplicator",
+    "service": false,
+    "creatable": false
+  },
+  "ServerScriptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ServerStorage": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ServiceProvider": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ServiceVisibilityService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SessionCheckService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SessionService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SharedTableRegistry": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Shirt": {
+    "superclass": "Clothing",
+    "service": false,
+    "creatable": true
+  },
+  "ShirtGraphic": {
+    "superclass": "CharacterAppearance",
+    "service": false,
+    "creatable": true
+  },
+  "SkateboardController": {
+    "superclass": "Controller",
+    "service": false,
+    "creatable": true
+  },
+  "SkateboardPlatform": {
+    "superclass": "Part",
+    "service": false,
+    "creatable": true
+  },
+  "Skin": {
+    "superclass": "CharacterAppearance",
+    "service": false,
+    "creatable": true
+  },
+  "Sky": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "SlidingBallConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": false
+  },
+  "SlimAnimationDataEntity": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "SlimAnimationReplicationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SlimContentProvider": {
+    "superclass": "CacheableContentProvider",
+    "service": true,
+    "creatable": false
+  },
+  "SlimDebugSettings": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SlimReplicationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SlimService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Smoke": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "SmoothVoxelsUpgraderService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Snap": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "SocialService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SolidModelContentProvider": {
+    "superclass": "CacheableContentProvider",
+    "service": true,
+    "creatable": false
+  },
+  "Sound": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "SoundEffect": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "SoundGroup": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "SoundService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SoundShimService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Sparkles": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "SpawnerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SpawnLocation": {
+    "superclass": "Part",
+    "service": false,
+    "creatable": true
+  },
+  "SpecialMesh": {
+    "superclass": "FileMesh",
+    "service": false,
+    "creatable": true
+  },
+  "SphereHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "SpotLight": {
+    "superclass": "Light",
+    "service": false,
+    "creatable": true
+  },
+  "SpringConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "StackFrame": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StandalonePluginScripts": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StandardPages": {
+    "superclass": "Pages",
+    "service": false,
+    "creatable": false
+  },
+  "StandardQueue": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StarterCharacterScripts": {
+    "superclass": "StarterPlayerScripts",
+    "service": false,
+    "creatable": false
+  },
+  "StarterGear": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StarterGui": {
+    "superclass": "BasePlayerGui",
+    "service": true,
+    "creatable": false
+  },
+  "StarterPack": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StarterPlayer": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StarterPlayerScripts": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StartPageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StartupMessageService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StateMachineDefinition": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StateMachineTransitionDefinition": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Stats": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StatsItem": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Status": {
+    "superclass": "Model",
+    "service": false,
+    "creatable": false
+  },
+  "StopWatchReporter": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StringValue": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "StudioActionOverride": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "StudioAssetService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioAttachment": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StudioCallout": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StudioCameraService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioCaptureService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioData": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioDeviceEmulatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioDeviceSimulatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioObjectBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StudioPublishService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioScreenshotCapture": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StudioScriptDebugEventListener": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioSdkService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioTestService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioTheme": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StudioUserService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StudioWidget": {
+    "superclass": "StudioObjectBase",
+    "service": false,
+    "creatable": false
+  },
+  "StudioWidgetsService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "StyleBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "StyleDerive": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StyleLink": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StyleQuery": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "StyleRule": {
+    "superclass": "StyleBase",
+    "service": false,
+    "creatable": true
+  },
+  "StyleSheet": {
+    "superclass": "StyleBase",
+    "service": false,
+    "creatable": true
+  },
+  "StylingService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "SunRaysEffect": {
+    "superclass": "PostEffect",
+    "service": false,
+    "creatable": true
+  },
+  "SurfaceAppearance": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "SurfaceGui": {
+    "superclass": "SurfaceGuiBase",
+    "service": false,
+    "creatable": true
+  },
+  "SurfaceGuiBase": {
+    "superclass": "LayerCollector",
+    "service": false,
+    "creatable": false
+  },
+  "SurfaceLight": {
+    "superclass": "Light",
+    "service": false,
+    "creatable": true
+  },
+  "SurfaceSelection": {
+    "superclass": "PartAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "SwimController": {
+    "superclass": "ControllerBase",
+    "service": false,
+    "creatable": true
+  },
+  "SyncScriptBuilder": {
+    "superclass": "ScriptBuilder",
+    "service": false,
+    "creatable": false
+  },
+  "SystemThemeService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Team": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TeamCreateData": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TeamCreatePublishService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TeamCreateService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Teams": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TelemetryService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TeleportAsyncResult": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TeleportOptions": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TeleportService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TemporaryCageMeshProvider": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TemporaryScriptService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Terrain": {
+    "superclass": "BasePart",
+    "service": false,
+    "creatable": false
+  },
+  "TerrainDetail": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TerrainIterateOperation": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TerrainModifyOperation": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TerrainReadOperation": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TerrainRegion": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TerrainWriteOperation": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TestCase": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TestCoordinatorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TestExecutionContext": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TestFailure": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TestResult": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TestRunResult": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TestService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TestSuite": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "TextBox": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "TextBoxService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TextButton": {
+    "superclass": "GuiButton",
+    "service": false,
+    "creatable": true
+  },
+  "TextChannel": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TextChannelWindow": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "TextChatCommand": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TextChatConfigurations": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TextChatMessage": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TextChatMessageProperties": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TextChatService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TextDocument": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TextFilterResult": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TextFilterTranslatedResult": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TextGenerator": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "TextLabel": {
+    "superclass": "GuiLabel",
+    "service": false,
+    "creatable": true
+  },
+  "TextService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TextSource": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "Texture": {
+    "superclass": "Decal",
+    "service": false,
+    "creatable": true
+  },
+  "TextureGenerationPartGroup": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TextureGenerationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TextureGenerationUnwrappingRequest": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ThirdPartyUserService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ThreadState": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TimerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ToastNotificationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Tool": {
+    "superclass": "BackpackItem",
+    "service": false,
+    "creatable": true
+  },
+  "Torque": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "TorsionSpringConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "TotalCountTimeIntervalItem": {
+    "superclass": "StatsItem",
+    "service": false,
+    "creatable": false
+  },
+  "TouchInputService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TouchTransmitter": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TraceRouteService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TracerService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "TrackerLodController": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TrackerStreamAnimation": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Trail": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Translator": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TremoloSoundEffect": {
+    "superclass": "SoundEffect",
+    "service": false,
+    "creatable": true
+  },
+  "TriangleMeshPart": {
+    "superclass": "BasePart",
+    "service": false,
+    "creatable": false
+  },
+  "TrussPart": {
+    "superclass": "BasePart",
+    "service": false,
+    "creatable": true
+  },
+  "TutorialService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Tween": {
+    "superclass": "TweenBase",
+    "service": false,
+    "creatable": true
+  },
+  "TweenBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "TweenService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UGCAvatarService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UGCValidationService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UIAspectRatioConstraint": {
+    "superclass": "UIConstraint",
+    "service": false,
+    "creatable": true
+  },
+  "UIBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "UIBlur": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIComponent": {
+    "superclass": "UIBase",
+    "service": false,
+    "creatable": false
+  },
+  "UIConstraint": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": false
+  },
+  "UICorner": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIDragDetector": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIDragDetectorService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UIFlexItem": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIGradient": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIGridLayout": {
+    "superclass": "UIGridStyleLayout",
+    "service": false,
+    "creatable": true
+  },
+  "UIGridStyleLayout": {
+    "superclass": "UILayout",
+    "service": false,
+    "creatable": false
+  },
+  "UILayout": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": false
+  },
+  "UIListLayout": {
+    "superclass": "UIGridStyleLayout",
+    "service": false,
+    "creatable": true
+  },
+  "UIPadding": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIPageLayout": {
+    "superclass": "UIGridStyleLayout",
+    "service": false,
+    "creatable": true
+  },
+  "UIScale": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UIShadow": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UISizeConstraint": {
+    "superclass": "UIConstraint",
+    "service": false,
+    "creatable": true
+  },
+  "UIStroke": {
+    "superclass": "UIComponent",
+    "service": false,
+    "creatable": true
+  },
+  "UITableLayout": {
+    "superclass": "UIGridStyleLayout",
+    "service": false,
+    "creatable": true
+  },
+  "UITextSizeConstraint": {
+    "superclass": "UIConstraint",
+    "service": false,
+    "creatable": true
+  },
+  "UnionOperation": {
+    "superclass": "PartOperation",
+    "service": false,
+    "creatable": true
+  },
+  "UniqueIdLookupService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UniversalConstraint": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "UnreliableRemoteEvent": {
+    "superclass": "BaseRemoteEvent",
+    "service": false,
+    "creatable": true
+  },
+  "UnvalidatedAssetService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UserInputService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UserService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "UserStorageService": {
+    "superclass": "LocalStorageService",
+    "service": true,
+    "creatable": false
+  },
+  "ValueBase": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "ValueCurve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Vector3Curve": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "Vector3Value": {
+    "superclass": "ValueBase",
+    "service": false,
+    "creatable": true
+  },
+  "VectorForce": {
+    "superclass": "Constraint",
+    "service": false,
+    "creatable": true
+  },
+  "VehicleController": {
+    "superclass": "Controller",
+    "service": false,
+    "creatable": true
+  },
+  "VehicleSeat": {
+    "superclass": "BasePart",
+    "service": false,
+    "creatable": true
+  },
+  "VelocityMotor": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "VersionControlService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VideoCapture": {
+    "superclass": "Capture",
+    "service": false,
+    "creatable": false
+  },
+  "VideoCaptureService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VideoDeviceInput": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "VideoDisplay": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "VideoFrame": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "VideoPlayer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "VideoSampler": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "VideoScreenCaptureService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VideoService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "ViewportCamera": {
+    "superclass": "Camera",
+    "service": false,
+    "creatable": true
+  },
+  "ViewportFrame": {
+    "superclass": "GuiObject",
+    "service": false,
+    "creatable": true
+  },
+  "VirtualInput": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "VirtualInputManager": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VirtualUser": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VisibilityCheckDispatcher": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Visit": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VisualizationMode": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "VisualizationModeCategory": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "VisualizationModeService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VoiceChatInternal": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VoiceChatService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VoxelBuffer": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "VRService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "VRStatusService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "WebSocketClient": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": false
+  },
+  "WebSocketService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "WebStreamClient": {
+    "superclass": "Object",
+    "service": false,
+    "creatable": false
+  },
+  "WebViewService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "WedgePart": {
+    "superclass": "FormFactorPart",
+    "service": false,
+    "creatable": true
+  },
+  "Weld": {
+    "superclass": "JointInstance",
+    "service": false,
+    "creatable": true
+  },
+  "WeldConstraint": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "WindowProtocolService": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "Wire": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  },
+  "WireframeHandleAdornment": {
+    "superclass": "HandleAdornment",
+    "service": false,
+    "creatable": true
+  },
+  "Workspace": {
+    "superclass": "WorldRoot",
+    "service": true,
+    "creatable": false
+  },
+  "WorkspaceAnnotation": {
+    "superclass": "Annotation",
+    "service": false,
+    "creatable": true
+  },
+  "WorldModel": {
+    "superclass": "WorldRoot",
+    "service": false,
+    "creatable": true
+  },
+  "WorldRoot": {
+    "superclass": "Model",
+    "service": false,
+    "creatable": false
+  },
+  "WrapContentProvider": {
+    "superclass": "CacheableContentProvider",
+    "service": true,
+    "creatable": false
+  },
+  "WrapDeformer": {
+    "superclass": "BaseWrap",
+    "service": false,
+    "creatable": true
+  },
+  "WrapDeformMeshProvider": {
+    "superclass": "Instance",
+    "service": true,
+    "creatable": false
+  },
+  "WrapLayer": {
+    "superclass": "BaseWrap",
+    "service": false,
+    "creatable": true
+  },
+  "WrapTarget": {
+    "superclass": "BaseWrap",
+    "service": false,
+    "creatable": true
+  },
+  "WrapTextureTransfer": {
+    "superclass": "Instance",
+    "service": false,
+    "creatable": true
+  }
+}
