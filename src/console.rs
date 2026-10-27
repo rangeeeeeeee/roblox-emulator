@@ -122,6 +122,15 @@ impl Preview<'_> {
                 node["entries"] = json!(entries);
                 node
             }
+            Value::Buffer(buffer) => {
+                use std::io::Read;
+                let size=buffer.len();
+                let mut bytes=vec![0;size.min(64)];
+                let _=buffer.clone().cursor().read_exact(&mut bytes);
+                let (preview,truncated)=render_bytes(&bytes,self.text.min(512));
+                self.text=self.text.saturating_sub(preview.len());
+                json!({"type":"buffer","address":address(self.lua,value),"bytes":size,"preview":preview,"truncated":truncated||size>bytes.len()})
+            }
             Value::UserData(data) => {
                 if let Ok(instance) = data.borrow::<crate::instance::Instance>() {
                     let node = instance.0.borrow();

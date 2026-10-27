@@ -10,6 +10,7 @@ pub(crate) struct Node {
     pub(crate) id: String,
     pub(crate) class: String,
     pub(crate) name: String,
+    pub(crate) raw_name: Option<Vec<u8>>,
     pub(crate) parent: Weak<RefCell<Node>>,
     pub(crate) children: Vec<Link>,
     pub(crate) attributes: HashMap<String, Attribute>,
@@ -52,7 +53,7 @@ pub(crate) fn implemented(class:&str)->bool{
         "Backpack" | "LuaSourceContainer" | "PVInstance" | "UserInputService" | "GuiService" |
         "VRService" | "TextService" | "ContentProvider" | "NetworkClient" | "StarterGui" |
         "StarterPlayer" | "EncodingService" | "CollectionService" | "Stats" | "TweenService" | "Chat" | "ScriptContext" |
-        "StarterPlayerScripts" | "StarterCharacterScripts" | "Humanoid" | "ValueBase" |
+        "StarterPlayerScripts" | "StarterCharacterScripts" | "Humanoid" | "Animator" | "Animation" | "AnimationTrack" | "AnimationController" | "ValueBase" |
         "GuiBase2d" | "StringValue" | "NumberValue" | "IntValue" | "BoolValue" | "ObjectValue" |
         "GuiObject" | "LayerCollector" | "Frame" | "Path2D" | "Tween" | "TextLabel" | "TextButton" | "ImageLabel" |
         "ImageButton" | "ScreenGui" | "UnreliableRemoteEvent" | "DataModel" | "Model" | "BasePart" |
@@ -74,7 +75,7 @@ pub(crate) fn new_node(class: &str) -> Result<Link> {
         return Err(Error::lua_string(format!("Unable to create an Instance of type \"{class}\"")));
     }
     if !implemented(class){return Err(Error::runtime(format!("UnsupportedApi: class {class}")))}
-    Ok(Rc::new(RefCell::new(Node { id: String::new(), class: class.into(), name: class.into(), parent: Weak::new(),
+    Ok(Rc::new(RefCell::new(Node { id: String::new(), class: class.into(), name: class.into(), raw_name: None, parent: Weak::new(),
         children: Vec::new(), attributes: HashMap::new(), archivable: true, destroyed: false,
         linked_source: String::new(), source: String::new(), properties: HashMap::new(), signals: HashMap::new(), callback_environments: HashMap::new() })))
 }
@@ -113,14 +114,29 @@ pub(crate) fn set_parent(node: &Link, target: Option<Link>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn find_child(node: &Link, name: &str, recursive: bool) -> Option<Link> {
+pub(crate) fn name_bytes(node: &Node) -> &[u8] { node.raw_name.as_deref().unwrap_or_else(|| node.name.as_bytes()) }
+pub(crate) fn set_name(node: &mut Node, bytes: &[u8]) -> bool {
+    if name_bytes(node) == bytes { return false; }
+    match std::str::from_utf8(bytes) {
+        Ok(name) => { node.name = name.into(); node.raw_name = None; }
+        Err(_) => {
+            // The display/source label is escaped; Lua identity and lookups use raw_name.
+            node.name = bytes.iter().flat_map(|byte| std::ascii::escape_default(*byte)).map(char::from).collect();
+            node.raw_name = Some(bytes.to_vec());
+        }
+    }
+    true
+}
+
+pub(crate) fn find_child(node: &Link, name: impl AsRef<[u8]>, recursive: bool) -> Option<Link> {
+    let name = name.as_ref();
     let children = node.borrow().children.clone();
-    if let Some(found) = children.iter().find(|child| child.borrow().name == name) { return Some(found.clone()); }
+    if let Some(found) = children.iter().find(|child| name_bytes(&child.borrow()) == name) { return Some(found.clone()); }
     if recursive {
         let mut stack: Vec<Link> = children.into_iter().rev().collect();
         while let Some(current) = stack.pop() {
             let children = current.borrow().children.clone();
-            if let Some(found) = children.iter().find(|child| child.borrow().name == name) { return Some(found.clone()); }
+            if let Some(found) = children.iter().find(|child| name_bytes(&child.borrow()) == name) { return Some(found.clone()); }
             stack.extend(children.into_iter().rev());
         }
     }
@@ -140,6 +156,11 @@ pub(crate) fn full_name(node:&Link)->String{
     let mut names=Vec::new();let mut cursor=Some(node.clone());
     while let Some(node)=cursor{let node=node.borrow();if node.class=="DataModel"{break}names.push(node.name.clone());cursor=node.parent.upgrade();}
     names.reverse();names.join(".")
+}
+fn full_name_bytes(node:&Link)->Vec<u8>{
+    let mut names=Vec::new();let mut cursor=Some(node.clone());
+    while let Some(node)=cursor{let node=node.borrow();if node.class=="DataModel"{break}names.push(name_bytes(&node).to_vec());cursor=node.parent.upgrade();}
+    let mut result=Vec::new();for(index,name)in names.into_iter().rev().enumerate(){if index>0{result.push(b'.');}result.extend(name);}result
 }
 
 pub(crate) fn destroy(node: &Link) -> Result<()> {
@@ -173,13 +194,13 @@ pub(crate) fn read_property(lua: &Lua, this: &Instance, key: &str) -> Result<Val
     if let Some(value) = crate::model::read_property(lua, &this.0, key)? { return Ok(value); }
     let node = this.0.borrow();
     match key {
-        "Name" => Ok(Value::String(lua.create_string(&node.name)?)),
+        "Name" => Ok(Value::String(lua.create_string(name_bytes(&node))?)),
         "ClassName" => Ok(Value::String(lua.create_string(&node.class)?)),
         "Archivable" => Ok(Value::Boolean(node.archivable)),
         "Parent" => match node.parent.upgrade() { Some(parent) => Ok(Value::UserData(wrapper(lua, parent)?)), None => Ok(Value::Nil) },
         "LinkedSource" if is_a(&node, "LuaSourceContainer") => Ok(Value::String(lua.create_string(&node.linked_source)?)),
         _ => {
-            if let Some(child) = node.children.iter().find(|child| child.borrow().name == key) {
+            if let Some(child) = node.children.iter().find(|child| name_bytes(&child.borrow()) == key.as_bytes()) {
                 return Ok(Value::UserData(wrapper(lua, child.clone())?));
             }
             Err(missing_member(&node,key))
@@ -201,7 +222,7 @@ pub(crate) fn method_class(name: &str) -> Option<&'static str> {
     }
 }
 pub(crate) fn validate_method(node: &Node, name: &str) -> Result<()> {
-    if method_class(name).is_some_and(|class|is_a(node,class)){Ok(())}else{Err(missing_member(node,name))}
+    if method_class(name).is_some_and(|class|class.split('|').any(|class|is_a(node,class))){Ok(())}else{Err(missing_member(node,name))}
 }
 fn argument_error(error:Error)->Error{
     fn cast(error:&Error)->Option<String>{match error{
@@ -223,7 +244,8 @@ fn receiver(values:&mut MultiValue,name:&str)->Result<Instance>{
     Err(Error::lua_string(format!("Expected ':' not '.' calling member function {name}")))
 }
 fn property_key(lua:&Lua,value:Value)->Result<String>{
-    lua.coerce_string(value)?.map(|key|key.to_string_lossy()).ok_or_else(||Error::lua_string("invalid argument #2 (string expected)"))
+    let key=lua.coerce_string(value)?.ok_or_else(||Error::lua_string("invalid argument #2 (string expected)"))?;
+    key.to_str().map(|key|key.to_string()).map_err(|_|Error::lua_string("invalid property name"))
 }
 unsafe extern "C-unwind" fn invalid_property_key(state:*mut ffi::lua_State)->std::ffi::c_int{
     unsafe{ffi::luaL_typeerror(state,2,c"string".as_ptr())}
@@ -236,7 +258,12 @@ unsafe extern "C-unwind" fn raw_index(state:*mut ffi::lua_State)->std::ffi::c_in
     Lua::invoke_native_callback(state,|lua,mut values|{
         if !has_instance_self(&values){return Ok(mlua::state::NativeCall::Dispatch(invalid_instance))}
         if !matches!(values.get(1),Some(Value::String(_)|Value::Number(_)|Value::Integer(_))){return Ok(mlua::state::NativeCall::Dispatch(invalid_property_key))}
-        let instance=receiver(&mut values,"__index")?;let key=property_key(lua,values.pop_front().unwrap_or(Value::Nil))?;
+        let instance=receiver(&mut values,"__index")?;
+        let raw=lua.coerce_string(values.pop_front().unwrap_or(Value::Nil))?.ok_or_else(||Error::lua_string("invalid property name"))?;
+        let key=match raw.to_str(){Ok(key)=>key.to_string(),Err(_)=>{
+            let child=find_child(&instance.0,raw.as_bytes(),false).ok_or_else(||missing_member(&instance.0.borrow(),&crate::console::display_bytes(&raw.as_bytes(),512)))?;
+            return Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![Value::UserData(wrapper(lua,child)?)])))
+        }};
         let method:Value=lua.named_registry_value::<Table>(METHODS)?.raw_get(key.as_str())?;
         let value=if !method.is_nil()&&validate_method(&instance.0.borrow(),&key).is_ok(){method}else{read_property(lua,&instance,&key)?};
         Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![value])))
@@ -284,7 +311,7 @@ impl UserData for Instance {
             if crate::model::write_property(lua, &this.0, &key, &value)? { return Ok(()); }
             let mut node = this.0.borrow_mut();
             match (key.as_str(), value) {
-                ("Name", Value::String(value)) => node.name = value.to_str()?.to_string(),
+                ("Name", Value::String(value)) => { set_name(&mut node, &value.as_bytes()); },
                 ("Archivable", Value::Boolean(value)) => node.archivable = value,
                 ("LinkedSource", Value::String(value)) if is_a(&node, "LuaSourceContainer") => node.linked_source = value.to_str()?.to_string(),
                 ("ClassName", _) => return Err(Error::lua_string("Unable to assign property ClassName. Property is read only")),
@@ -292,7 +319,7 @@ impl UserData for Instance {
             }
             Ok(())
         });
-        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| Ok(this.0.borrow().name.clone()));
+        methods.add_meta_method(MetaMethod::ToString, |lua, this, ()| lua.create_string(name_bytes(&this.0.borrow())));
         methods.add_meta_method(MetaMethod::Eq, |_, this, other: AnyUserData| {
             Ok(other.borrow::<Instance>().is_ok_and(|other| std::ptr::eq(this, &*other)))
         });
@@ -304,8 +331,8 @@ impl UserData for Instance {
         });
         register_method(methods,"GetChildren", |lua, this, ()| instance_list(lua, this.0.borrow().children.clone()));
         register_method(methods,"GetDescendants", |lua, this, ()| instance_list(lua, descendants(&this.0)));
-        register_method(methods,"FindFirstChild", |lua, this, (name, recursive): (String, Option<bool>)| {
-            find_child(&this.0, &name, recursive.unwrap_or(false)).map(|node| wrapper(lua, node)).transpose()
+        register_method(methods,"FindFirstChild", |lua, this, (name, recursive): (mlua::LuaString, Option<bool>)| {
+            find_child(&this.0, name.as_bytes(), recursive.unwrap_or(false)).map(|node| wrapper(lua, node)).transpose()
         });
         register_method(methods,"FindFirstChildOfClass", |lua, this, class: String| {
             this.0.borrow().children.iter().find(|child| child.borrow().class == class)
@@ -316,17 +343,17 @@ impl UserData for Instance {
             nodes.into_iter().find(|node| is_a(&node.borrow(), &class)).map(|node| wrapper(lua, node)).transpose()
         });
         for method in ["FindFirstAncestor", "FindFirstAncestorOfClass", "FindFirstAncestorWhichIsA"] {
-            register_method(methods,method,move|lua,this,query:String| {
+            register_method(methods,method,move|lua,this,query:mlua::LuaString| {
                 let mut ancestor=this.0.borrow().parent.upgrade();
                 while let Some(node)=ancestor {
-                    let found={let n=node.borrow();match method {"FindFirstAncestor"=>n.name==query,"FindFirstAncestorOfClass"=>n.class==query,_=>is_a(&n,&query)}};
+                    let found={let n=node.borrow();match method {"FindFirstAncestor"=>name_bytes(&n)==query.as_bytes().as_ref(),"FindFirstAncestorOfClass"=>n.class.as_bytes()==query.as_bytes().as_ref(),_=>query.to_str().is_ok_and(|query|is_a(&n,&query))}};
                     if found{return wrapper(lua,node).map(Some)}
                     ancestor=node.borrow().parent.upgrade();
                 }
                 Ok(None)
             });
         }
-        register_method(methods,"GetFullName", |_, this, ()| Ok(full_name(&this.0)));
+        register_method(methods,"GetFullName", |lua, this, ()| lua.create_string(full_name_bytes(&this.0)));
         register_method(methods,"GetActor", |lua, this, ()| {
             let mut cursor = this.0.borrow().parent.upgrade();
             while let Some(node) = cursor {
@@ -401,6 +428,7 @@ pub fn install(lua: &Lua) -> Result<()> {
     let instance = lua.create_table()?;
     let constructor = lua.create_function(|lua, values:MultiValue| {
         let (class,parent)=<(String,Option<AnyUserData>)as mlua::FromLuaMulti>::from_lua_args(values,1,Some("new"),lua).map_err(argument_error)?;
+        if class=="AnimationTrack" {return Err(Error::lua_string("Unable to create an Instance of type AnimationTrack"))}
         if class == "GCViewer" && crate::scheduler::current_origin(lua) == "executor" {
             if parent.is_some() { return Err(Error::lua_string("GCViewer is an emulator window and has no DataModel parent")); }
             return crate::inspector::create_viewer(lua);

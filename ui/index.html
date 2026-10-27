@@ -110,6 +110,7 @@
     .gc-row { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #252d37; }
     .gc-index { color: var(--muted); min-width: 36px; font-size: 10px; }
     .gc-value { flex: 1; min-width: 0; }
+    .gc-insert { align-self: flex-start; flex-shrink: 0; }
     .example-tools { padding: 9px 12px; border-top: 1px solid var(--line); }
     .example-tools select { flex: 1; font-size: 12px; }
     .example-hint { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 11px; min-height: 24px; }
@@ -581,6 +582,7 @@
         return type === 'Instance' ? String(node.class || type) + ' ' + JSON.stringify(node.display) + suffix + address : node.display + suffix;
       }
       if (type === 'nil') return 'nil';
+      if (type === 'buffer') return 'buffer [' + node.bytes + ' bytes] ' + JSON.stringify(node.preview || '') + suffix + address;
       if (type === 'string') {
         const value = String(node.value ?? '');
         return (nested ? (node.encoding === 'escaped-bytes' ? '"' + value + '"' : JSON.stringify(value)) : value) + suffix;
@@ -863,17 +865,34 @@
         if (ticket !== gcSerial || gcView !== current || current.generation !== inspectionGeneration) return;
         if (offset === 0) $('gcList').replaceChildren();
         if (page.unavailable) { $('gcList').replaceChildren(element('div', 'inspection-note', 'This GCViewer is no longer available.')); $('gcStatus').textContent = 'Viewer unavailable'; $('gcMore').hidden = true; return; }
+        if (offset > 0 && current.snapshot !== page.snapshot) { loadGcPage(false, 0); return; }
+        current.snapshot = page.snapshot;
         if (page.revision !== undefined) { current.revision = page.revision; viewerSeen.set(current.realm + '/' + current.id, page.revision); }
         for (const value of Array.isArray(page.items) ? page.items : []) {
           const row = element('div', 'gc-row'), content = element('div', 'gc-value');
           const index = current.count++;
           content.append(renderValue(value, current.opened, 'gc/' + index, true, {realm: current.realm, context: 'executor', generation: current.generation}));
-          row.append(element('span', 'gc-index', String(index + 1)), content); $('gcList').append(row);
+          const insert = element('button', 'small gc-insert', 'Insert'); insert.type = 'button';
+          insert.disabled = !!value.insertError;
+          insert.title = value.insertError || 'Insert an expression for this value at the executor editor cursor. Valid until refresh, close, reset or 10 minutes; collected values report an error.';
+          insert.setAttribute('aria-label', 'Insert ' + value.type + ' value ' + (index + 1) + ' into editor');
+          insert.addEventListener('click', () => {
+            if (busy || current.generation !== inspectionGeneration || current.snapshot !== page.snapshot || gcView !== current) { showError('GC snapshot changed. Refresh the viewer and insert again.'); return; }
+            const realm = state?.realms?.find(realm => realm.id === current.realm && realm.executor);
+            if (!realm) { showError('The selected executor VM is no longer available.'); return; }
+            if (mode !== 'executor') switchMode('executor');
+            choices.executor = {realm: current.realm, client: realm.clientId || '', actor: realm.actorId ? 'actor:' + realm.actorId : '@main'};
+            renderTargets();
+            editor.insert('getgcvalue(' + JSON.stringify(current.id) + ', ' + page.snapshot + ', ' + value.snapshotIndex + ')');
+            hideGc(); editor.focus();
+            status('Value expression inserted · Executor · ' + current.realm); save();
+          });
+          row.append(element('span', 'gc-index', String(index + 1)), content, insert); $('gcList').append(row);
         }
         if (!current.count) $('gcList').append(element('div', 'inspection-note', 'No values match these filters.'));
         current.nextOffset = Number.isInteger(page.nextOffset) && page.nextOffset > offset ? page.nextOffset : null;
         $('gcMore').hidden = current.nextOffset === null;
-        $('gcStatus').textContent = 'Showing ' + current.count + (Number.isFinite(page.total) ? ' of ' + page.total : '') + ' values';
+        $('gcStatus').textContent = 'Showing ' + current.count + (Number.isFinite(page.total) ? ' of ' + page.total : '') + ' values · Insert expires on refresh, close, reset or after 10 min';
       } catch (error) {
         if (ticket !== gcSerial || gcView !== current) return;
         if (offset === 0) $('gcList').replaceChildren(element('div', 'inspection-note inspection-error', error.message));

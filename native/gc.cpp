@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 
 extern "C" int emu_is_protected_function(lua_CFunction function);
 extern "C" int emu_is_reference_thread(lua_State* state, lua_State* thread);
@@ -71,6 +72,7 @@ struct Scan
     lua_State* state;
     bool tables;
     bool extended;
+    bool buffers;
     bool fill;
     int count;
     const void* result;
@@ -78,18 +80,23 @@ struct Scan
     const void* inspector_metatable;
     const void* inspector_scan;
     const void* registry;
+    const void* host_tables[10] = {};
+    int host_table_count = 0;
 };
 
 static bool visit(void* context, lua_Page*, GCObject* object)
 {
     Scan& scan = *static_cast<Scan*>(context);
+    for (int i = 0; i < scan.host_table_count; ++i)
+        if (static_cast<const void*>(object) == scan.host_tables[i]) return false;
     if (isdead(scan.state->global, object) || static_cast<const void*>(object) == scan.result
         || static_cast<const void*>(object) == scan.inspector || static_cast<const void*>(object) == scan.inspector_metatable
         || static_cast<const void*>(object) == scan.inspector_scan || static_cast<const void*>(object) == scan.registry)
         return false;
     int type = object->gch.tt;
     if (type != LUA_TFUNCTION && type != LUA_TUSERDATA && !(scan.tables && type == LUA_TTABLE)
-        && !(scan.extended && (type == LUA_TSTRING || type == LUA_TTHREAD)))
+        && !(scan.extended && (type == LUA_TSTRING || type == LUA_TTHREAD))
+        && !(scan.buffers && type == LUA_TBUFFER))
         return false;
     // This host-only thread stores mlua reference slots and cannot be resumed/reset by scripts.
     if (type == LUA_TTHREAD && emu_is_reference_thread(scan.state, gco2th(object)))
@@ -118,8 +125,30 @@ static Scan prepare_scan(lua_State* state, bool tables, bool extended)
     lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
     const void* inspector_scan = lua_topointer(state, -1);
     lua_pop(state, 1);
-    return Scan{state, tables, extended, false, 0, nullptr, inspector, inspector_metatable,
+    Scan scan{state, tables, extended, false, false, 0, nullptr, inspector, inspector_metatable,
         inspector_scan, lua_topointer(state, LUA_REGISTRYINDEX)};
+    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.internal");
+    if (lua_istable(state, -1))
+    {
+        scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
+        for (const char* name : {"__config", "__emu", "__rt", "__model", "__types"})
+        {
+            lua_rawgetfield(state, -1, name);
+            if (lua_istable(state, -1)) scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
+            lua_pop(state, 1);
+        }
+        lua_rawgetfield(state, -1, "__emu");
+        if (lua_istable(state, -1))
+            for (const char* name : {"capabilities", "unsupported"})
+            {
+                lua_rawgetfield(state, -1, name);
+                if (lua_istable(state, -1)) scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
+                lua_pop(state, 1);
+            }
+        lua_pop(state, 1);
+    }
+    lua_pop(state, 1);
+    return scan;
 }
 
 static void scan_objects(Scan& scan)
@@ -152,14 +181,15 @@ extern "C" int emu_getgc(lua_State* state)
 // Host-only snapshot: the inspector clears this reused scratch after serialization.
 extern "C" int emu_inspectgc(lua_State* state)
 {
-    const bool extended = executor_profile(state) == 1;
     lua_settop(state, 0);
     luaL_checkstack(state, 3, "inspectgc");
     lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
     if (!lua_istable(state, -1)) luaL_error(state, "Inspector scan table is not initialized");
     lua_cleartable(state, -1);
     GcPause pause(state);
-    Scan scan = prepare_scan(state, true, extended);
+    // The viewer inspects the actual VM heap, independent of getgc profile filters.
+    Scan scan = prepare_scan(state, true, true);
+    scan.buffers = true;
     scan.result = lua_topointer(state, -1);
     scan.fill = true;
     scan_objects(scan);
@@ -604,6 +634,8 @@ struct ActiveClosure { Closure* target; bool active; };
 static void active_thread(ActiveClosure& check, lua_State* thread)
 {
     if (!thread || !thread->stack || !thread->base_ci || !thread->ci) return;
+    // Failed coroutines keep traceback frames, but cannot resume those calls.
+    if (thread->status != LUA_OK && thread->status != LUA_YIELD && thread->status != LUA_BREAK) return;
     for (CallInfo* frame = thread->base_ci; frame <= thread->ci; ++frame)
         if (ttisfunction(frame->func) && clvalue(frame->func) == check.target) check.active = true;
 }

@@ -201,6 +201,7 @@ impl Session {
         }
         self.pump(self.host.clock.get(), 0.0, false)?;
         let environment = self.environment(index, context)?;
+        environment.table.set_safeenv(false);
         self.next_command += 1;
         let command = Rc::new(RefCell::new(json!({"id":self.next_command,"realm":realm,"context":context,
             "status":"running","time":self.host.clock.get(),"sourceBytes":source.len(),"yieldCount":0})));

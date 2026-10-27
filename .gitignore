@@ -1,5 +1,6 @@
 /*
 !/.gitignore
+!/README.md
 !/Cargo.toml
 !/Cargo.lock
 !/build.rs
@@ -49,6 +50,9 @@
 !/vendor/mlua-0.12.2/docs/chunk.md
 !/vendor/mlua-0.12.2/docs/UserData.md
 !/vendor/mlua-0.12.2/docs/lua_module.md
+
+!/vendor/mlua-0.12.2/PATCH.md
+!/vendor/mlua-sys-0.13.0/PATCH.md
 
 !/vendor/luau-lint-0.740/
 /vendor/luau-lint-0.740/*

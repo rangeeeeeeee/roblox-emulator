@@ -1,9 +1,11 @@
 use mlua::{AnyUserData, Error, Lua, Result, Table, UserData, UserDataFields, UserDataMethods, Value};
 use serde_json::{Value as Json, json};
-use std::{cell::{Cell, RefCell}, collections::{BTreeMap, HashMap}, rc::Rc};
+use std::{cell::{Cell, RefCell}, collections::{BTreeMap, HashMap}, rc::Rc, time::{Duration, Instant}};
 
 const PAGE: usize = 100;
 const VALUES: &str = "emulator.inspector.values";
+const SNAPSHOT_LIFETIME: Duration = Duration::from_secs(600);
+const SNAPSHOT_STRING_BYTES: usize = 16 * 1024 * 1024;
 
 // Weak Lua references: browsing never roots the inspected graph. No snapshot
 // table, pagination state or UI metadata is exposed to scripts through getgc.
@@ -24,6 +26,16 @@ struct Viewer {
     revision: u64,
     captured: Option<u64>,
     items: Vec<Json>,
+    snapshot: u64,
+    created: Option<Instant>,
+    values: Vec<GcValue>,
+}
+
+enum GcValue { Weak(String), Bytes(Vec<u8>), Unavailable }
+
+impl Viewer {
+    fn clear(&mut self) { self.items.clear(); self.values.clear(); self.captured=None; self.created=None; }
+    fn expire(&mut self) { if self.created.is_some_and(|at|at.elapsed()>=SNAPSHOT_LIFETIME) { self.clear(); } }
 }
 
 fn state(lua: &Lua) -> Result<Rc<Inspector>> {
@@ -147,7 +159,7 @@ impl UserData for GcViewer {
         fields.add_field_method_set("Enabled", |_,this,enabled:bool| {
             let mut viewer=this.0.borrow_mut();
             if viewer.destroyed { return Err(Error::runtime("GCViewer is destroyed")); }
-            if viewer.enabled!=enabled { viewer.revision+=1; }
+            if viewer.enabled!=enabled { viewer.revision+=1; viewer.clear(); }
             viewer.enabled=enabled; Ok(())
         });
     }
@@ -155,10 +167,10 @@ impl UserData for GcViewer {
         methods.add_method("Refresh", |_,this,()| {
             let mut viewer=this.0.borrow_mut();
             if viewer.destroyed { return Err(Error::runtime("GCViewer is destroyed")); }
-            viewer.revision+=1; Ok(())
+            viewer.revision+=1; viewer.clear(); Ok(())
         });
         methods.add_method("Destroy", |_,this,()| {
-            let mut viewer=this.0.borrow_mut();viewer.destroyed=true;viewer.enabled=false;viewer.items.clear();Ok(())
+            let mut viewer=this.0.borrow_mut();viewer.destroyed=true;viewer.enabled=false;viewer.clear();Ok(())
         });
     }
 }
@@ -177,7 +189,7 @@ pub(crate) fn create_viewer(lua: &Lua) -> Result<AnyUserData> {
 pub(crate) fn viewers(lua: &Lua, realm: &str) -> Vec<Json> {
     let Ok(inspector)=state(lua) else{return Vec::new()};
     inspector.viewers.borrow().values().map(|value| {
-        let viewer=value.borrow();
+        let mut viewer=value.borrow_mut();viewer.expire();
         json!({"realm":realm,"id":viewer.id,"name":viewer.name,"enabled":viewer.enabled&&!viewer.destroyed,"revision":viewer.revision})
     }).collect()
 }
@@ -188,23 +200,42 @@ fn viewer(lua:&Lua,id:&str)->Result<Rc<RefCell<Viewer>>> {
 
 pub(crate) fn close_viewer(lua:&Lua,id:&str)->Result<Json> {
     let viewer=viewer(lua,id)?;let mut viewer=viewer.borrow_mut();
-    viewer.enabled=false;viewer.items.clear();viewer.captured=None;
+    viewer.enabled=false;viewer.clear();
     Ok(json!({"closed":true}))
 }
 
 pub(crate) fn gc_page(lua:&Lua,id:&str,refresh:bool,offset:usize,query:&str,value_type:&str)->Result<Json> {
     let viewer=viewer(lua,id)?;
+    viewer.borrow_mut().expire();
     let revision={let viewer=viewer.borrow();if viewer.destroyed||!viewer.enabled{return Err(Error::runtime("GCViewer is closed"));}viewer.revision};
     if refresh || viewer.borrow().captured!=Some(revision) {
         // Scan through the unhooked native helper. Clear its reusable scratch
         // before returning; only Rust descriptors and weak handles survive.
+        viewer.borrow_mut().clear();
+        let inspector=state(lua)?;
+        let snapshot=inspector.next();
         let objects=crate::native::gc_snapshot(lua)?;
         struct ClearScan(Table);
         impl Drop for ClearScan { fn drop(&mut self) { let _=self.0.clear(); } }
         let _clear=ClearScan(objects.clone());
         let mut items=Vec::with_capacity(objects.raw_len());
-        for object in objects.sequence_values::<Value>() { items.push(crate::console::describe(lua,&object?)); }
-        let mut viewer=viewer.borrow_mut();viewer.items=items;viewer.captured=Some(revision);
+        let mut values=Vec::with_capacity(objects.raw_len());
+        let mut string_bytes=0;
+        for object in objects.sequence_values::<Value>() {
+            let object=object?;
+            let mut item=crate::console::describe(lua,&object);
+            let reference=if let Value::String(text)=&object {
+                // Luau strings are never weak. Copy immutable bytes outside the VM
+                // with a fixed budget instead of adding a permanent Lua GC root.
+                let bytes=text.as_bytes();
+                if bytes.len()<=SNAPSHOT_STRING_BYTES-string_bytes {
+                    string_bytes+=bytes.len();GcValue::Bytes(bytes.to_vec())
+                } else {item["insertError"]=json!("String exceeds the 16 MiB snapshot string budget");GcValue::Unavailable}
+            } else {GcValue::Weak(inspector.value_handle(&object)?)};
+            item["snapshotIndex"]=json!(values.len()+1);
+            items.push(item);values.push(reference);
+        }
+        let mut viewer=viewer.borrow_mut();viewer.items=items;viewer.values=values;viewer.captured=Some(revision);viewer.snapshot=snapshot;viewer.created=Some(Instant::now());
     }
     let query=query.to_lowercase();
     let viewer=viewer.borrow();
@@ -213,5 +244,22 @@ pub(crate) fn gc_page(lua:&Lua,id:&str,refresh:bool,offset:usize,query:&str,valu
     let total=viewer.items.iter().filter(matches).count();
     let items:Vec<_>=viewer.items.iter().filter(matches).skip(offset).take(PAGE).cloned().collect();
     let next=offset.saturating_add(items.len());
-    Ok(json!({"items":items,"total":total,"nextOffset":if next<total{Some(next)}else{None},"revision":revision}))
+    Ok(json!({"items":items,"total":total,"nextOffset":if next<total{Some(next)}else{None},"revision":revision,"snapshot":viewer.snapshot}))
+}
+
+pub(crate) fn gc_value(lua:&Lua,id:&str,snapshot:u64,index:usize)->Result<Value> {
+    if crate::scheduler::current_origin(lua)!="executor" {return Err(Error::runtime("getgcvalue requires Executor context"));}
+    let inspector=state(lua)?;
+    inspector.key(id)?;
+    let viewer=viewer(lua,id)?;
+    let mut viewer=viewer.borrow_mut();viewer.expire();
+    if !viewer.enabled||viewer.destroyed||viewer.captured!=Some(viewer.revision)||viewer.snapshot!=snapshot {
+        return Err(Error::runtime("GC snapshot expired or changed; refresh the viewer and insert the value again"));
+    }
+    match index.checked_sub(1).and_then(|index|viewer.values.get(index)) {
+        Some(GcValue::Weak(handle))=>inspector.values.raw_get::<Option<Value>>(inspector.key(handle)?)?.ok_or_else(||Error::runtime("GC value was collected; refresh the viewer and insert the value again")),
+        Some(GcValue::Bytes(bytes))=>Ok(Value::String(lua.create_string(bytes)?)),
+        Some(GcValue::Unavailable)=>Err(Error::runtime("String exceeds the 16 MiB snapshot string budget")),
+        None=>Err(Error::runtime("Invalid GC snapshot value index")),
+    }
 }

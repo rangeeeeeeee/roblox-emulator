@@ -36,6 +36,8 @@ pub fn install(lua:&Lua)->Result<()> {
     let game_env=game.clone();set(lua,&env,"getrenv",move|_,()|Ok(game_env.clone()))?;
     set(lua,&env,"checkcaller",|lua,()|Ok(crate::scheduler::current_origin(lua)=="executor"))?;
     set(lua,&env,"identifyexecutor",|_,()|Ok(("RobloxEmulator","0.2.0")))?;
+    set(lua,&env,"getgcvalue",|lua,(viewer,snapshot,index):(String,u64,usize)|crate::inspector::gc_value(lua,&viewer,snapshot,index))?;
+    caps.set("getgcvalue","emulator: current GCViewer snapshot; expires after refresh, close, reset or 10 minutes")?;
     let rt:Table=game.get("__rt")?;env.set("getconnections",rt.get::<Function>("getConnections")?)?;
     for (name,target) in [("getinstances","getInstances"),("getnilinstances","getNilInstances"),("getsenv","getEnvironment")]{set(lua,&env,name,move|lua,args:MultiValue|crate::internal::<Table>(lua,"__model")?.get::<Function>(target)?.call::<MultiValue>(args))?;}
     set(lua,&env,"cloneref",|lua,value:Value|lua.create_userdata(crate::instance::Instance(instance_arg(value,"cloneref",1)?)))?;

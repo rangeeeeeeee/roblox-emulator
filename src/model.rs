@@ -3,6 +3,7 @@ use mlua::{AnyUserData, Error, Function, IntoLua, Lua, LuaSerdeExt, MultiValue, 
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::{cell::{Cell, RefCell}, collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque}, ffi::CStr, rc::{Rc, Weak}};
+#[path = "animation.rs"] mod animation;
 
 #[derive(Default)]
 struct Model {
@@ -29,6 +30,7 @@ struct Model {
     action_order: u64,
     paths: HashMap<String, (Weak<RefCell<instance::Node>>, Vec<crate::types::Path2DControlPoint>)>,
     tweens: HashMap<String, Tween>,
+    animation_tracks: HashMap<String, animation::Track>,
 }
 #[derive(Clone)]
 struct Tween {
@@ -42,7 +44,7 @@ enum AssetFetch { Loading, Failure }
 #[derive(Clone)]
 struct AssetResource { key: String, content: String }
 struct Change { node: Link, keys: Option<BTreeMap<&'static str, BTreeSet<String>>> }
-struct ChildWait { parent: String, name: String, thread: Thread, deadline: Option<f64> }
+struct ChildWait { parent: String, name: Vec<u8>, thread: Thread, deadline: Option<f64> }
 enum Module { Loading { owner: Thread, waiters: Vec<Thread> }, Ready(Value), Failed(Value) }
 type State = Rc<RefCell<Model>>;
 #[derive(Clone)]
@@ -138,6 +140,7 @@ fn mark(lua: &Lua, node: &Link) {
     }
 }
 fn mark_key(lua:&Lua,node:&Link,key:&str,attribute:bool){
+    if node.borrow().class=="AnimationTrack"{return}
     if let Some(state)=state(lua){
         let mut state=state.borrow_mut();if state.applying{return}
         if !attribute&&matches!(key,"OnInvoke"|"OnServerInvoke"|"OnClientInvoke"){return}
@@ -225,6 +228,7 @@ pub(crate) fn parent(lua: &Lua, node: &Link, target: Option<Link>) -> Result<()>
 pub(crate) fn destroy(lua: &Lua, node: &Link) -> Result<()> {
     guard_write(lua)?;
     if node.borrow().destroyed {return Ok(())}
+    if node.borrow().class=="AnimationTrack"&&matches!(animation::read(lua,node,"IsPlaying")?,Some(Value::Boolean(true))){animation::control(lua,node,"Stop",args([Value::Number(0.)]),false)?;}
     fire(lua,node,"Destroying",MultiValue::new())?;
     let children = node.borrow().children.clone();
     for child in children { destroy(lua,&child)?; }
@@ -248,6 +252,7 @@ pub(crate) fn destroy(lua: &Lua, node: &Link) -> Result<()> {
 fn event_class(name: &str) -> Option<&'static str> {
     match name {
         "Completed" => Some("TweenBase"),
+        "AnimationPlayed" => Some("Animator"), "Stopped"|"Ended"|"DidLoop"|"KeyframeReached" => Some("AnimationTrack"),
         "ChildAdded"|"ChildRemoved"|"DescendantAdded"|"DescendantRemoving"|"AncestryChanged"|"Changed"|"Destroying"|"AttributeChanged" => Some("Instance"),
         "Loaded" => Some("DataModel"), "Event" => Some("BindableEvent"), "OnServerEvent"|"OnClientEvent" => Some("BaseRemoteEvent"),
         "PlayerAdded"|"PlayerRemoving" => Some("Players"), "CharacterAdded"|"CharacterRemoving"|"Idled" => Some("Player"),
@@ -272,8 +277,11 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "PlaybackState" if is("TweenBase")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"PlaybackState","name":"Begin"}))?,
         "TweenInfo" if is("Tween")=>Some(crate::types::TweenInfo{time:1.,style:"Quad".into(),direction:"Out".into(),repeat_count:0,reverses:false,delay:0.}.into_lua(lua)?),
         "Character" if is("Player")=>Some(Value::Nil),
+        "AnimationId" if is("Animation")=>Some(str_value(lua,"")?),
+        "Looped" if is("AnimationTrack")=>Some(Value::Boolean(false)),
+        "Priority" if is("AnimationTrack")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"AnimationPriority","name":"Core"}))?,
         "UserId"|"AccountAge" if is("Player")=>Some(Value::Integer(0)),
-        "DisplayName" if is("Player")=>Some(str_value(lua,&n.name)?),
+        "DisplayName" if is("Player")=>Some(Value::String(lua.create_string(instance::name_bytes(&n))?)),
         "CurrentCamera" if is("Workspace")=>Some(Value::Nil),
         "ViewportSize" if is("Camera")=>Some(crate::types::Vector([1.0,1.0]).into_lua(lua)?),
         "NearPlaneZ" if is("Camera")=>Some(Value::Number(-0.5)),
@@ -336,6 +344,7 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
 
 pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
     if state(lua).is_none(){return Ok(None)}
+    if node.borrow().class=="AnimationTrack"{if let Some(value)=animation::read(lua,node,key)?{return Ok(Some(value))}}
     if instance::is_a(&node.borrow(),"BasePart")&&node.borrow().class!="Terrain"{
         match key{"Position"=>return Ok(Some(crate::spatial::position_value(node)?)),"CFrame"|"ExtentsCFrame"=>return Ok(Some(crate::spatial::part_frame(node)?.into_lua(lua)?)),"ExtentsSize"=>return Ok(Some(crate::spatial::extents_value(node)?)),_=>{}}
     }
@@ -356,6 +365,17 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
     if state(lua).is_none(){return Ok(false)}
     guard_write(lua)?;
     if instance::is_a(&node.borrow(),"TweenBase")&&matches!(key,"Instance"|"TweenInfo"|"PlaybackState"){return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only")))}
+    if node.borrow().class=="AnimationTrack"&&animation::write(lua,node,key,new)?{return Ok(true)}
+    if key=="AnimationId"&&node.borrow().class=="Animation"&&!matches!(new,Value::String(_)){return Err(Error::lua_string("AnimationId must be a string"))}
+    if key=="Character"&&node.borrow().class=="Player" {
+        let next=match new{Value::Nil=>None,Value::UserData(value)=>Some(value.borrow::<Instance>().map_err(|_|Error::lua_string("Character must be a Model"))?.0.clone()),_=>return Err(Error::lua_string("Character must be a Model"))};
+        if next.as_ref().is_some_and(|node|!instance::is_a(&node.borrow(),"Model")){return Err(Error::lua_string("Character must be a Model"))}
+        let previous=node.borrow().properties.get("Character").cloned().unwrap_or(Value::Nil);
+        if previous==*new{return Ok(true)}
+        if !previous.is_nil(){fire(lua,node,"CharacterRemoving",args([previous]))?;}
+        node.borrow_mut().properties.insert(key.into(),new.clone());changed(lua,node,key)?;
+        if next.is_some(){fire(lua,node,"CharacterAdded",args([new.clone()]))?;}return Ok(true)
+    }
     let previous=||->Result<Option<Value>>{let stored=node.borrow().properties.get(key).cloned();if stored.is_some(){Ok(stored)}else{default(lua,node,key)}};
     let same=|old:&Value,new:&Value|{
         if old==new{return true}
@@ -430,7 +450,7 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
         if key=="CollisionGroup"{let group=lua.coerce_string(new.clone())?.ok_or_else(||Error::lua_string("Unable to assign property CollisionGroup. String expected"))?;let next=Value::String(group);if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)}
     }
     match key {
-        "Name"=>{if let Value::String(v)=new{let name=v.to_str()?;if node.borrow().name.as_str()==&*name{return Ok(true)}node.borrow_mut().name=name.to_string()}else{return Err(Error::lua_string("Name must be a string"))}},
+        "Name"=>{if let Value::String(v)=new{if !instance::set_name(&mut node.borrow_mut(),&v.as_bytes()){return Ok(true)}}else{return Err(Error::lua_string("Name must be a string"))}},
         "Archivable"=>{if let Value::Boolean(v)=new{if node.borrow().archivable==*v{return Ok(true)}node.borrow_mut().archivable=*v}else{return Err(Error::lua_string("Archivable must be a boolean"))}},
         "LinkedSource" if instance::is_a(&node.borrow(),"LuaSourceContainer")=>{if let Value::String(v)=new{let source=v.to_str()?;if node.borrow().linked_source.as_str()==&*source{return Ok(true)}node.borrow_mut().linked_source=source.to_string()}else{return Err(Error::lua_string("LinkedSource must be a string"))}},
         _=>{
@@ -539,7 +559,7 @@ fn compile(lua:&Lua,node:&Link)->Result<Function>{let n=node.borrow();if n.sourc
 fn clone_node(lua:&Lua,node:&Link)->Result<Option<Link>>{
     if !node.borrow().archivable{return Ok(None)}
     let n=node.borrow();let result=instance::create_node(lua,&n.class)?;created(lua,&result)?;
-    {let mut r=result.borrow_mut();r.name=n.name.clone();r.source=n.source.clone();r.linked_source=n.linked_source.clone();r.attributes=n.attributes.clone();r.properties=n.properties.clone();r.properties.retain(|_,v|!matches!(v,Value::Function(_)));}
+    {let mut r=result.borrow_mut();r.name=n.name.clone();r.raw_name=n.raw_name.clone();r.source=n.source.clone();r.linked_source=n.linked_source.clone();r.attributes=n.attributes.clone();r.properties=n.properties.clone();r.properties.retain(|_,v|!matches!(v,Value::Function(_)));}
     let children=n.children.clone();drop(n);
     let points=required(lua)?.borrow().paths.get(&node.borrow().id).map(|(_,points)|points.clone());
     if let Some(points)=points{set_path_points(lua,&result,points)?;}
@@ -670,7 +690,7 @@ fn preload_async(lua:&Lua,mut values:MultiValue)->Result<NativeCall>{
 
 const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Blockcast",c"Blockcast"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
 const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
-pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).chain(PATH_METHODS.iter()).chain(TWEEN_METHODS.iter()).chain(INPUT_METHODS.iter()).chain(SPATIAL_METHODS.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
+pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).chain(PATH_METHODS.iter()).chain(TWEEN_METHODS.iter()).chain(INPUT_METHODS.iter()).chain(SPATIAL_METHODS.iter()).chain(animation::METHODS.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
 const SPATIAL_METHODS:&[(&str,&CStr)]=&[("Raycast",c"Raycast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("GetPartBoundsInRadius",c"GetPartBoundsInRadius")];
 const PATH_METHODS:&[(&str,&CStr)]=&[("SetControlPoints",c"SetControlPoints"),("GetControlPoints",c"GetControlPoints"),("GetControlPoint",c"GetControlPoint"),("InsertControlPoint",c"InsertControlPoint"),("UpdateControlPoint",c"UpdateControlPoint"),("RemoveControlPoint",c"RemoveControlPoint"),("GetLength",c"GetLength"),("GetPositionOnCurve",c"GetPositionOnCurve"),("GetPositionOnCurveArcLength",c"GetPositionOnCurveArcLength"),("GetTangentOnCurve",c"GetTangentOnCurve"),("GetTangentOnCurveArcLength",c"GetTangentOnCurveArcLength")];
 const TWEEN_METHODS:&[(&str,&CStr)]=&[("Create",c"Create"),("GetValue",c"GetValue"),("Play",c"Play"),("Pause",c"Pause"),("Cancel",c"Cancel")];
@@ -688,7 +708,8 @@ pub(crate) fn method_class(name:&str)->Option<&'static str>{
         "GetLogHistory"=>"LogService","JSONEncode"|"JSONDecode"|"GenerateGUID"=>"HttpService","ComputeStringHash"=>"EncodingService",
         "InspectPlayerFromHumanoidDescription"|"CloseInspectMenu"|"IsTenFootInterface"=>"GuiService",
         "GetFocusedTextBox"|"GetPlatform"|"IsKeyDown"|"IsMouseButtonPressed"|"GetKeysPressed"=>"UserInputService",
-        "Create"|"GetValue"=>"TweenService", "Play"|"Pause"|"Cancel"=>"TweenBase",
+        "Create"|"GetValue"=>"TweenService", "Play"=>"TweenBase|AnimationTrack", "Pause"|"Cancel"=>"TweenBase",
+        "LoadAnimation"|"GetPlayingAnimationTracks"=>"Animator|Humanoid|AnimationController", "Stop"|"AdjustSpeed"=>"AnimationTrack",
         "BindAction"|"BindActionAtPriority"|"UnbindAction"|"UnbindAllActions"|"GetBoundActionInfo"|"GetAllBoundActionInfo"=>"ContextActionService",
         "GetAssetFetchStatusChangedSignal"|"GetAssetFetchStatus"|"PreloadAsync"|"Preload"=>"ContentProvider",
         "GetRealPhysicsFPS"=>"Workspace","Raycast"|"Blockcast"|"GetPartBoundsInBox"|"GetPartBoundsInRadius"=>"WorldRoot",
@@ -910,7 +931,8 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
         let a=values.front().ok_or_else(||Error::lua_string("Argument 1 missing or nil"))?;let alpha=lua.coerce_number(a.clone())?.ok_or_else(||asset_cast(a,"float"))?;
         let style=enum_name(values.get(1).unwrap_or(&Value::Nil),"EasingStyle")?;let direction=enum_name(values.get(2).unwrap_or(&Value::Nil),"EasingDirection")?;Ok(tween_ease(alpha,&style,&direction))
     });
-    for name in ["Play","Pause","Cancel"]{instance::register_method(m,name,move|lua,this,()|tween_control(lua,&this.0,name));}
+    for name in ["Play","Pause","Cancel"]{instance::register_method(m,name,move|lua,this,values:MultiValue|if this.0.borrow().class=="AnimationTrack"{animation::control(lua,&this.0,name,values,false)}else{tween_control(lua,&this.0,name)});}
+    for &(name,_) in animation::METHODS{instance::register_method(m,name,move|lua,this,values:MultiValue|animation::method(lua,&this.0,name,values));}
     instance::register_method(m,"Create",|lua,_,mut values:MultiValue|{
         guard_write(lua)?;let target=object_arg(&mut values)?;let info_value=values.pop_front().unwrap_or(Value::Nil);
         let info=if let Value::UserData(value)=&info_value{value.borrow::<crate::types::TweenInfo>().ok().map(|value|value.clone())}else{None}.ok_or_else(||asset_cast(&info_value,"TweenInfo"))?;
@@ -1129,7 +1151,7 @@ pub(crate) fn script_error(lua:&Lua,message:&str,thread:&Thread)->Result<()>{
     fire(lua,&context,"Error",args([str_value(lua,message)?,str_value(lua,&trace)?,owner]))
 }
 
-fn snapshot(lua:&Lua,node:&Link)->Result<Json>{let n=node.borrow();let props=lua.create_table()?;for(k,v)in &n.properties{if !matches!(v,Value::Function(_)){props.raw_set(k.as_str(),v.clone())?;}}props.raw_set("Archivable",n.archivable)?;let attrs=lua.create_table()?;for(k,v)in &n.attributes{attrs.raw_set(k.as_str(),instance::attribute_value(lua,v)?)?;}Ok(json!({"id":n.id,"class":n.class,"name":n.name,"parent":n.parent.upgrade().map(|p|p.borrow().id.clone()),"source":n.source,"linkedSource":n.linked_source,"destroyed":n.destroyed,"properties":encode(lua,Value::Table(props),&mut HashSet::new())?,"attributes":encode(lua,Value::Table(attrs),&mut HashSet::new())?}))}
+fn snapshot(lua:&Lua,node:&Link)->Result<Json>{let n=node.borrow();let props=lua.create_table()?;for(k,v)in &n.properties{if !matches!(v,Value::Function(_)){props.raw_set(k.as_str(),v.clone())?;}}props.raw_set("Archivable",n.archivable)?;let attrs=lua.create_table()?;for(k,v)in &n.attributes{attrs.raw_set(k.as_str(),instance::attribute_value(lua,v)?)?;}Ok(json!({"id":n.id,"class":n.class,"name":n.name,"nameBytes":n.raw_name,"parent":n.parent.upgrade().map(|p|p.borrow().id.clone()),"source":n.source,"linkedSource":n.linked_source,"destroyed":n.destroyed,"properties":encode(lua,Value::Table(props),&mut HashSet::new())?,"attributes":encode(lua,Value::Table(attrs),&mut HashSet::new())?}))}
 
 // Keep complete host metadata while applying only the writer's changed keys.
 pub(crate) fn merge_replica(previous:Option<&Json>,incoming:&Json)->Json{
@@ -1139,6 +1161,7 @@ pub(crate) fn merge_replica(previous:Option<&Json>,incoming:&Json)->Json{
     for field in ["id","class","name","parent","source","linkedSource","destroyed"]{
         if result.get(field).is_none()||keys["fields"].as_array().is_some_and(|fields|fields.iter().any(|key|key==field)){result[field]=incoming[field].clone();}
     }
+    if previous.get("name").is_none()||selected(incoming,"fields","name"){result["nameBytes"]=incoming["nameBytes"].clone();}
     for group in ["properties","attributes"]{
         // The initial host metadata comes from unencoded scenario nodes.
         if result[group]["tag"]!="table"{result[group]=incoming[group].clone();continue}
@@ -1167,7 +1190,12 @@ fn ensure(lua:&Lua,nodes:&[Json])->Result<Vec<Link>>{
 fn load_nodes(lua:&Lua,nodes:Vec<Json>,wire:bool)->Result<()>{
     if nodes.iter().any(|node|node["source"].as_str().is_some_and(|source|source.len()>MAX_SOURCE)){return Err(Error::runtime("BudgetExceeded: source size"))}
     let held=ensure(lua,&nodes)?;for(node,n)in nodes.iter().zip(&held){
-    if selected(node,"fields","name"){if let Some(name)=node["name"].as_str(){if n.borrow().name!=name{n.borrow_mut().name=name.into();if wire{changed(lua,n,"Name")?;}}}}
+    if selected(node,"fields","name"){
+        let raw=if node["nameBytes"].is_null(){None}else{Some(serde_json::from_value::<Vec<u8>>(node["nameBytes"].clone()).map_err(|_|Error::runtime("Invalid binary Instance name"))?)};
+        if let Some(name)=raw.as_deref().or_else(||node["name"].as_str().map(str::as_bytes)){
+            let renamed=instance::set_name(&mut n.borrow_mut(),name);if renamed&&wire{changed(lua,n,"Name")?;}
+        }
+    }
     if selected(node,"fields","source"){if let Some(source)=node["source"].as_str(){n.borrow_mut().source=source.into();}}
     if selected(node,"fields","linkedSource"){if let Some(source)=node["linkedSource"].as_str(){n.borrow_mut().linked_source=source.into();}}
     if let Some(properties)=node.get("properties"){
@@ -1177,6 +1205,8 @@ fn load_nodes(lua:&Lua,nodes:Vec<Json>,wire:bool)->Result<()>{
             if let Some(changed)=node["$changed"]["properties"].as_array(){keys.extend(changed.iter().filter_map(Json::as_str).map(str::to_owned));}
             else if wire&&node.get("$changed").is_none(){keys.extend(n.borrow().properties.iter().filter(|(_,value)|!matches!(value,Value::Function(_))).map(|(key,_)|key.clone()));}
             for key in keys{if !selected(node,"properties",&key){continue}let mut next:Value=props.raw_get(key.as_str())?;
+                if matches!(key.as_str(),"Character"|"PrimaryPart")&&!wire{if let Some(encoded)=properties.get(&key).filter(|v|v["tag"]=="instance"){next=decode(lua,encoded)?;}}
+                if key=="Character"&&n.borrow().class=="Player"{write_property(lua,n,&key,&next)?;continue}
                 if instance::is_a(&n.borrow(),"BasePart")&&n.borrow().class!="Terrain"&&matches!(key.as_str(),"CFrame"|"Position"|"Size"|"Shape"|"Material"|"CollisionGroup")&&!next.is_nil(){
                     if !wire{if let Some(encoded)=properties.get(&key){if let Some(native)=crate::types::decode_value(lua,encoded)?{next=native;}}}
                     // Host seeds and replicas use the same transform normalization
@@ -1246,8 +1276,10 @@ pub fn run_script(lua:&Lua,id:&str)->Result<Thread>{
     let name=n.borrow().name.clone();crate::scheduler::set_script_category(lua,&thread,&f,&name)?;
     crate::scheduler::spawn_with(lua,Value::Thread(thread),MultiValue::new(),Some("serial"),Some("game"))
 }
-pub fn frame(lua:&Lua,dt:f64)->Result<()>{poll_children(lua)?;advance_tweens(lua)?;let n=lookup(lua,"RunService").ok_or_else(||Error::runtime("RunService unavailable"))?;for event in ["PreSimulation","PostSimulation","Heartbeat"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}fire(lua,&n,"Stepped",args([Value::Number(now(lua)),Value::Number(dt)]))?;if required(lua)?.borrow().side=="client"{for event in ["PreRender","RenderStepped"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}}Ok(())}
+pub fn frame(lua:&Lua,dt:f64)->Result<()>{poll_children(lua)?;advance_tweens(lua)?;animation::frame(lua)?;let n=lookup(lua,"RunService").ok_or_else(||Error::runtime("RunService unavailable"))?;for event in ["PreSimulation","PostSimulation","Heartbeat"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}fire(lua,&n,"Stepped",args([Value::Number(now(lua)),Value::Number(dt)]))?;if required(lua)?.borrow().side=="client"{for event in ["PreRender","RenderStepped"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}}Ok(())}
+pub(crate) fn animation_authorized(lua:&Lua,payload:&Json,client:Option<&str>)->Result<bool>{animation::authorized(lua,payload,client)}
 pub fn deliver(lua:&Lua,kind:&str,payload:Json)->Result<()>{
+    if kind=="animation"{return animation::deliver(lua,&payload)}
     let id=payload[if kind=="actor_message"{"actorId"}else{"remoteId"}].as_str().unwrap_or("");
     if kind=="remote_return"||kind=="bindable_return"{
         let thread=required(lua)?.borrow_mut().pending.remove(payload["requestId"].as_str().unwrap_or(""));
@@ -1292,7 +1324,6 @@ pub fn deliver(lua:&Lua,kind:&str,payload:Json)->Result<()>{
 }
 
 fn object_arg(values:&mut MultiValue)->Result<Link>{match values.pop_front(){Some(Value::UserData(v))if v.is::<Instance>()=>Ok(v.borrow::<Instance>()?.0.clone()),_=>Err(Error::lua_string("Instance expected"))}}
-fn text_arg(values:&mut MultiValue)->Result<String>{match values.pop_front(){Some(Value::String(v))=>Ok(v.to_str()?.to_string()),_=>Err(Error::lua_string("String expected"))}}
 fn finish_waiter(lua:&Lua,thread:Thread,result:std::result::Result<MultiValue,Value>)->Result<()>{match result{Ok(v)=>crate::scheduler::schedule(lua,thread,v,None),Err(e)=>crate::scheduler::schedule_error(lua,thread,e)}}
 fn bindable_error(lua:&Lua,error:Value)->Result<Value>{Ok(Value::String(match lua.coerce_string(error)?{Some(value)=>value,None=>lua.create_string("")?}))}
 fn local_bindable_callback(lua:&Lua,node:&Link)->Result<Option<Function>>{
@@ -1502,7 +1533,7 @@ unsafe extern "C-unwind" fn raw_wait_for_child(state:*mut ffi::lua_State)->std::
     Ok(NativeCall::Dispatch(raw_wait_convert))
 })}}
 unsafe extern "C-unwind" fn raw_wait_impl(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
-    let node=object_arg(&mut values)?;let name=text_arg(&mut values)?;
+    let node=object_arg(&mut values)?;let name=match values.pop_front(){Some(Value::String(name))=>name.as_bytes().to_vec(),_=>return Err(Error::lua_string("String expected"))};
     let timeout=match values.pop_front(){None|Some(Value::Nil)=>None,Some(value)=>Some(lua.coerce_number(value)?.ok_or_else(||Error::lua_string("Invalid timeout"))?)};
     if timeout.is_some_and(|value|!value.is_finite()||value<=0.0){return Err(Error::lua_string("illegal argument #2 (timeOut must be greater than 0)"))}
     if let Some(child)=instance::find_child(&node,&name,false){return Ok(NativeCall::Return(args([value(lua,child)?])))}
@@ -1592,6 +1623,9 @@ const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
     ("BaseScript|LayerCollector", "Enabled", "boolean"), ("BaseScript", "Disabled", "boolean"),
     ("BindableFunction", "OnInvoke", "function | nil"), ("RemoteFunction", "OnServerInvoke OnClientInvoke", "function | nil"),
     ("Model", "PrimaryPart", "BasePart | nil"), ("Player", "Character", "Model | nil"),
+    ("Animation", "AnimationId", "string"), ("AnimationTrack", "Animation", "Animation"),
+    ("AnimationTrack", "IsPlaying Looped", "boolean"), ("AnimationTrack", "Length TimePosition Speed WeightCurrent WeightTarget", "number"),
+    ("AnimationTrack", "Priority", "Enum.AnimationPriority"),
     ("Players", "LocalPlayer", "Player | nil"), ("Player", "UserId AccountAge", "number"), ("Player", "DisplayName", "string"),
     ("Workspace", "CurrentCamera", "Camera | nil"), ("Workspace", "Gravity DistributedGameTime", "number"),
     ("Camera", "ViewportSize", "Vector2"), ("Camera", "NearPlaneZ FieldOfView", "number"),
@@ -1616,7 +1650,7 @@ const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
     ("ContentProvider", "RequestQueueSize", "number"),
     ("Path2D", "Closed Visible", "boolean"), ("Path2D", "Thickness", "number"), ("Path2D", "Color3", "Color3"),
 ];
-const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Completed Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased";
+const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Completed Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased AnimationPlayed Stopped Ended DidLoop KeyframeReached";
 
 fn completion_class(node: &instance::Node, classes: &str) -> bool { classes.split('|').any(|class| instance::is_a(node, class)) }
 fn completion_label(label: &str) -> bool { !label.is_empty() && label.len() <= 256 && !label.contains('\0') }
@@ -1625,7 +1659,7 @@ fn completion_item(label: &str, kind: &str, detail: &str, info: &str) -> Json {
 }
 fn completion_target(model: &Model, node: &Link, key: &str) -> Option<Link> {
     let node = node.borrow();
-    if instance::method_class(key).is_some_and(|class| instance::is_a(&node, class)) { return None; }
+    if instance::method_class(key).is_some_and(|class| class.split('|').any(|class|instance::is_a(&node, class))) { return None; }
     if let Some(value) = node.properties.get(key) {
         return if let Value::UserData(value) = value { value.borrow::<Instance>().ok().map(|value| value.0.clone()) } else { None };
     }
@@ -1634,7 +1668,7 @@ fn completion_target(model: &Model, node: &Link, key: &str) -> Option<Link> {
         return (model.side == "client").then(|| model.nodes.get(&model.client).and_then(Weak::upgrade)).flatten();
     }
     if COMPLETION_PROPERTIES.iter().any(|(classes, names, _)| completion_class(&node, classes) && names.split_whitespace().any(|name|name == key))
-        || event_class(key).is_some_and(|class| instance::is_a(&node, class)) { return None; }
+        || event_class(key).is_some_and(|class| class.split('|').any(|class|instance::is_a(&node, class))) { return None; }
     node.children.iter().take(4096).find(|child| { let child=child.borrow(); !child.destroyed && child.name == key }).cloned()
 }
 
@@ -1661,7 +1695,7 @@ pub(crate) fn completions(lua: &Lua, path: &[String]) -> Result<Vec<Json>> {
         }
     }
     for name in COMPLETION_EVENTS.split_whitespace() {
-        if event_class(name).is_some_and(|class| instance::is_a(&node, class)) {
+        if event_class(name).is_some_and(|class| class.split('|').any(|class|instance::is_a(&node, class))) {
             items.insert(name.to_owned(), completion_item(name,"property","RBXScriptSignal","Instance event; completion does not create the signal"));
         }
     }
@@ -1675,7 +1709,7 @@ pub(crate) fn completions(lua: &Lua, path: &[String]) -> Result<Vec<Json>> {
     for entry in methods.pairs::<Value,Value>().take(512) {
         let (Value::String(name),Value::Function(_)) = entry? else { continue; };
         let Ok(name) = name.to_str() else { continue; };
-        if !completion_label(&name) || !instance::method_class(&name).is_some_and(|class|instance::is_a(&node,class)) { continue; }
+        if !completion_label(&name) || !instance::method_class(&name).is_some_and(|class|class.split('|').any(|class|instance::is_a(&node,class))) { continue; }
         let info = if UNSUPPORTED.iter().any(|(method,_)|*method == &*name) { "Known method; this emulator reports UnsupportedApi" } else { "Native Instance method in the selected VM" };
         items.insert(name.to_string(), completion_item(&name,"method","function",info));
     }

@@ -341,8 +341,13 @@ fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
             };
             target=owner;
         }
+        if msg.kind=="animation" {
+            let Some(server)=realms.iter().find(|realm|realm.config.side=="server")else{continue};
+            if !model::animation_authorized(&server.lua,&msg.payload,if from.config.side=="client"{from.config.client_id.as_deref()}else{None})?{continue;}
+        }
         for to in realms {
             let selected = match msg.kind.as_str() {
+                "animation" => to.config.id!=from.config.id,
                 "actor_message" => same_machine(&from.config, &to.config) && to.config.actor_id.as_deref() == msg.payload.get("actorId").and_then(Json::as_str),
                 "bindable_handler" => same_machine(&from.config,&to.config),
                 "bindable_event" => from.config.id!=to.config.id && same_machine(&from.config,&to.config) && msg.payload["targets"].as_array().is_some_and(|targets|targets.iter().any(|target|target.as_str()==Some(to.config.id.as_str()))),
