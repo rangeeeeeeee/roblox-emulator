@@ -342,6 +342,7 @@ impl Session {
         }
         Ok(json!({"name":self.scenario.name,"interactive":true,"origin":self.origin.as_ref().map(|path|json!({"kind":"scenario","path":path})).unwrap_or_else(||json!({"kind":"default"})),
             "time":self.host.clock.get(),"realms":realms,"logs":*self.host.logs.borrow(),
+            "viewers":self.realms.iter().flat_map(|realm|crate::inspector::viewers(&realm.lua,&realm.config.id)).collect::<Vec<_>>(),
             "pendingMessages":self.host.messages.borrow().len(),"pendingMessageBytes":self.host.pending_bytes.get(),
             "commands":self.commands.iter().map(|command|command.borrow().clone()).collect::<Vec<_>>(),
             "limits":{"sourceBytes":MAX_SOURCE,"advanceSeconds":MAX_ADVANCE,"sessionSeconds":MAX_TIME,"memoryMb":self.scenario.memory_mb,"cpuMs":self.scenario.cpu_ms}}))
@@ -359,6 +360,29 @@ impl Session {
     }
 
     pub fn clear_output(&mut self) { self.host.logs.borrow_mut().clear(); }
+
+    pub fn inspect(&self, body: &Json) -> Result<Json> {
+        let text=|key:&str|->Result<&str>{body.get(key).and_then(Json::as_str).filter(|s|s.len()<=512).ok_or_else(||failure(format!("Invalid inspector {key}")))};
+        let realm_id=text("realm")?;
+        let context=text("context")?;
+        let realm=self.realms.iter().find(|realm|realm.config.id==realm_id).ok_or_else(||failure("Unknown realm"))?;
+        if context != realm.config.side && !(context=="executor" && realm.config.side=="client" && realm.config.executor) {
+            return Err(failure("Context is not available in the selected realm"));
+        }
+        realm.arm(self.scenario.cpu_ms);
+        let offset=match body.get("offset") {None=>0,Some(value)=>value.as_u64().and_then(|n|usize::try_from(n).ok()).ok_or_else(||failure("Invalid inspector offset"))?};
+        match text("kind")? {
+            "table"=>crate::inspector::table_page(&realm.lua,text("handle")?,offset),
+            "function"=>crate::inspector::function_page(&realm.lua,text("handle")?,text("section")?,offset),
+            "tree"=>model::inspect_tree(&realm.lua,match body.get("parent"){None|Some(Json::Null)=>None,_=>Some(text("parent")?)},offset),
+            "instance"=>model::inspect_node(&realm.lua,text("id")?),
+            "gc"|"closeGc" if context!="executor"=>Err(failure("GC Viewer requires Executor context")),
+            "gc"=>crate::inspector::gc_page(&realm.lua,text("viewer")?,body.get("refresh").and_then(Json::as_bool).unwrap_or(false),offset,
+                if body.get("query").is_some(){text("query")?}else{""},if body.get("valueType").is_some(){text("valueType")?}else{""}),
+            "closeGc"=>crate::inspector::close_viewer(&realm.lua,text("viewer")?),
+            _=>Err(failure("Unknown inspector operation")),
+        }
+    }
 
     pub fn set_cpu_budget(&mut self, ms: u64) -> Result<()> {
         if !(10..=10000).contains(&ms) { return Err(failure("CPU budget requires 10..10000 milliseconds")); }

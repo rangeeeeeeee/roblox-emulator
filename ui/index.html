@@ -57,7 +57,7 @@
     .field label { font-size: 11px; color: var(--muted); }
     .field.vm-field { flex: 1; min-width: 180px; max-width: 420px; }
     .target-note { margin: 0 0 8px auto; color: var(--muted); font-size: 12px; max-width: 310px; }
-    .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr); gap: 14px; }
+    .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 245px minmax(300px, 1fr) minmax(340px, 1fr); gap: 14px; }
     .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); overflow: hidden; }
     .editor-panel { border-top: 2px solid var(--accent); }
     .panel-heading { min-height: 48px; padding: 9px 13px; border-bottom: 1px solid var(--line); justify-content: space-between; }
@@ -83,6 +83,33 @@
     .value-entries { border-left: 1px solid #3b4b5f; padding-left: 12px; margin: 4px 0 4px 5px; }
     .value-entry { display: flex; align-items: flex-start; gap: 5px; padding: 2px 0; }
     .value-key { color: #b7c9df; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .value-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; color: var(--muted); font: 11px system-ui, sans-serif; }
+    .value-toolbar button, .load-more { font-size: 11px; min-height: 26px; padding: 3px 7px; }
+    .value-instance { padding: 0; min-height: 0; background: none; border: none; color: #9dc5f5; font: inherit; white-space: pre-wrap; text-align: left; overflow-wrap: anywhere; }
+    .inspection-note { padding: 9px 12px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .inspection-error { color: var(--error); }
+    .tree-scroller { flex: 1; min-height: 120px; overflow: auto; padding: 5px 6px; }
+    .tree-children { padding-left: 14px; }
+    .tree-row { display: flex; align-items: center; gap: 2px; min-height: 29px; }
+    .tree-toggle { width: 22px; min-height: 25px; padding: 0; border: 0; background: transparent; color: var(--muted); flex-shrink: 0; }
+    .tree-name { display: flex; align-items: baseline; gap: 7px; flex: 1; min-width: 0; min-height: 27px; padding: 3px 5px; border: 0; background: transparent; text-align: left; font-size: 12px; }
+    .tree-name > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+    .tree-class { color: var(--muted); font-size: 10px; }
+    .tree-row[data-selected="true"] { background: #263950; border-radius: 5px; }
+    .properties { min-height: 125px; max-height: 46%; flex: 1; overflow: auto; border-top: 1px solid var(--line); padding: 10px 11px; }
+    .properties h3 { margin: 10px 0 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .property-row { display: grid; grid-template-columns: minmax(65px, .8fr) minmax(0, 1.2fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid #252d37; font-size: 11px; }
+    .property-name { color: #b7c9df; overflow-wrap: anywhere; }
+    .property-value { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
+    .gc-dialog { position: fixed; inset: auto 22px 42px auto; margin: 0; width: min(740px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 90px)); padding: 0; z-index: 10; overflow: hidden; }
+    .gc-dialog[open] { display: flex; flex-direction: column; }
+    .gc-dialog h2 { font-size: 15px; }
+    .gc-controls { display: grid; grid-template-columns: minmax(120px, 1fr) 130px; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .gc-controls input { grid-column: 1 / -1; }
+    .gc-list { flex: 1; min-height: 0; overflow: auto; padding: 3px 12px; background: var(--editor); font: 12px/1.6 ui-monospace, Consolas, monospace; }
+    .gc-row { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #252d37; }
+    .gc-index { color: var(--muted); min-width: 36px; font-size: 10px; }
+    .gc-value { flex: 1; min-width: 0; }
     .example-tools { padding: 9px 12px; border-top: 1px solid var(--line); }
     .example-tools select { flex: 1; font-size: 12px; }
     .example-hint { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 11px; min-height: 24px; }
@@ -124,6 +151,7 @@
     dialog h2 { font-size: 18px; }
     dialog p { color: #b9c6d6; font-size: 13px; line-height: 1.6; }
     .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+    @media (max-width: 1200px) { .workspace { grid-template-columns: 210px minmax(280px, 1fr) minmax(300px, 1fr); } }
     @media (max-width: 1080px) { .runtime-note, .target-note { display: none; } body { padding: 16px; } }
     @media (max-width: 820px) {
       body { height: auto; min-height: 100dvh; overflow: auto; padding: 13px; gap: 12px; }
@@ -139,6 +167,7 @@
       .field.vm-field { max-width: none; }
       .workspace { display: flex; flex-direction: column; min-height: 0; }
       .editor-panel { height: 620px; max-height: 90dvh; min-height: 450px; }
+      .explorer-panel { height: 400px; min-height: 300px; }
       .output-panel { height: 540px; max-height: 80dvh; min-height: 400px; }
       .statusbar { padding-bottom: 8px; }
     }
@@ -153,7 +182,7 @@
     </div>
     <div class="metrics" aria-label="Session status">
       <span id="connectionState" class="connection" data-state="connecting">Connecting…</span>
-      <span class="metric">Time <strong id="virtualTime">—</strong></span>
+      <span class="metric" title="Virtual simulation time. RenderStepped uses simulated frames. os.clock also measures real code execution within each task; it excludes time spent paused.">Time <strong id="virtualTime">—</strong></span>
       <span class="metric">Queued messages <strong id="pendingMessages">—</strong></span>
       <span id="limitsStatus" class="metric" tabindex="0" hidden>Session limits ⓘ</span>
       <button id="refreshButton" class="plain small" type="button" title="Refresh session state">Refresh</button>
@@ -189,9 +218,16 @@
     <div id="clientField" class="field" hidden><label for="clientSelect">Client</label><select id="clientSelect" disabled></select></div>
     <div class="field"><label for="actorSelect">Actor</label><select id="actorSelect" disabled></select></div>
     <div class="field vm-field"><label for="realmSelect">Virtual machine</label><select id="realmSelect" disabled><option>Waiting for state…</option></select></div>
+    <button id="openGcButton" class="small" type="button" hidden disabled>GC viewers</button>
   </section>
 
   <main class="workspace">
+    <section class="panel explorer-panel" aria-labelledby="explorerTitle">
+      <div class="panel-heading"><h2 id="explorerTitle">Explorer</h2><button id="refreshExplorer" class="plain small" type="button" disabled>Refresh</button></div>
+      <div id="explorerContext" class="inspection-note">Select a VM.</div>
+      <div id="explorerTree" class="tree-scroller" role="tree" aria-label="Instances in the selected VM"></div>
+      <section id="instanceProperties" class="properties" aria-label="Selected instance properties"><span class="value-note">Select an instance to inspect its properties.</span></section>
+    </section>
     <section class="panel editor-panel" aria-labelledby="editorTitle">
       <div class="panel-heading">
         <div class="panel-title"><h2 id="editorTitle">Editor</h2><span id="documentName" class="document-name">server.luau</span></div>
@@ -216,6 +252,7 @@
           <option value="remoteClient">Remotes · 2. Client</option>
           <option value="executor">Executor · identifyexecutor and getgc</option>
           <option value="gcPreview">Executor · GC: tables preview</option>
+          <option value="gcViewer">Executor · GCViewer</option>
           <option value="hookClient">Hook · 1. Client target</option>
           <option value="hookExecutor">Hook · 2. Hook in Executor</option>
           <option value="restoreExecutor">Hook · 3. Restore function</option>
@@ -257,6 +294,18 @@
     <div class="dialog-actions"><button id="cancelReset" type="button" autofocus>Cancel</button><button id="confirmReset" class="danger" type="button">Reset VMs</button></div>
   </dialog>
 
+  <dialog id="gcDialog" class="gc-dialog" aria-labelledby="gcTitle" aria-describedby="gcContext">
+    <div class="panel-heading"><div class="panel-title"><h2 id="gcTitle">GCViewer</h2></div><div class="editor-tools" style="padding:0;border:0"><button id="refreshGc" class="small" type="button">Refresh</button><button id="closeGc" class="small" type="button">Close</button></div></div>
+    <div id="gcContext" class="inspection-note"></div>
+    <div class="gc-controls">
+      <label class="sr-only" for="gcViewerSelect">GC viewer</label><select id="gcViewerSelect"></select>
+      <label class="sr-only" for="gcType">Value type</label><select id="gcType"><option value="">All types</option><option value="table">Tables</option><option value="function">Functions</option><option value="userdata">Userdata</option><option value="Instance">Instances</option><option value="thread">Threads</option><option value="string">Strings</option><option value="buffer">Buffers</option></select>
+      <label class="sr-only" for="gcSearch">Search GC values</label><input id="gcSearch" type="search" placeholder="Search values…" autocomplete="off">
+    </div>
+    <div id="gcList" class="gc-list" tabindex="0" role="region" aria-label="GC values"></div>
+    <div class="output-footer"><span id="gcStatus" role="status">No values loaded.</span><button id="gcMore" class="load-more" type="button" hidden>Load more</button></div>
+  </dialog>
+
   <script src="/assets/editor.js"></script>
   <script>
     'use strict';
@@ -294,6 +343,9 @@
     let apiError = '', dismissedRuntimeError = '', commandOverride = null;
     const rows = new Map(), expanded = new Map(), scrollPositions = new Map();
     let lastFilter = '';
+    let inspectionGeneration = 0, explorerEpoch = 0, propertySerial = 0, explorerOrigin = null, explorerSelection = '';
+    let gcView = null, gcSerial = 0, gcSearchTimer = null;
+    const viewerSeen = new Map();
     $('autoscroll').checked = stored.version === 2 && stored.autoscroll === true;
     if (['generic', 'macsploit-744.2'].includes(stored.profile)) $('profileSelect').value = stored.profile;
     const editor = EmulatorEditor.createEditor($('source'), {
@@ -362,6 +414,7 @@
       const profile = realm?.executor && realm.executorProfile ? ' · ' + realm.executorProfile : '';
       $('memoryStatus').textContent = realm ? 'VM memory: ' + memory + profile : '';
       updateActions();
+      syncInspectorTarget();
     }
     function updateActions() {
       const available = connected && state !== null && !busy;
@@ -372,6 +425,7 @@
       for (const button of document.querySelectorAll('.mode')) button.disabled = busy;
       $('profileSelect').disabled = busy;
       $('budgetSelect').disabled = !available || !Number.isFinite(state?.limits?.cpuMs);
+      $('refreshExplorer').disabled = !available || !$('realmSelect').value;
       $('runningButton').textContent = state?.running ? 'Ⅱ Pause' : '▶ Play';
       $('runningButton').setAttribute('aria-label', state?.running ? 'Pause virtual time' : 'Resume virtual time');
     }
@@ -440,6 +494,7 @@
       if (serial < appliedSerial) return;
       const snapshot = payload?.snapshot || payload?.state || payload;
       if (!snapshot || !Array.isArray(snapshot.realms)) throw new Error('Server response has no VM list.');
+      if (state && Number.isFinite(snapshot.time) && snapshot.time < state.time) resetInspections();
       appliedSerial = serial;
       state = snapshot;
       commandOverride = payload.command || null;
@@ -448,7 +503,7 @@
       connection(true, 'Connected');
       renderTargets(); renderLogFilters(); renderLogs(); renderCommand(); renderDiagnostics(); renderError();
     }
-    async function request(path, body) {
+    async function request(path, body, updateState = true) {
       const serial = ++requestSerial;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
@@ -464,9 +519,10 @@
           const detail = typeof payload?.error === 'string' ? payload.error : 'HTTP ' + response.status;
           throw new Error(detail + (response.status === 401 || response.status === 403 ? '\nOpen the local server URL with its current session token.' : ''));
         }
-        applySnapshot(payload, serial);
+        if (updateState) applySnapshot(payload, serial);
+        return payload;
       } catch (error) {
-        if (error.name === 'AbortError') throw new Error('Request timed out. The command may have run; check the refreshed state before retrying.');
+        if (error.name === 'AbortError') throw new Error(updateState ? 'Request timed out. The command may have run; check the refreshed state before retrying.' : 'Inspection timed out. Try Refresh.');
         throw error;
       } finally { clearTimeout(timeout); }
     }
@@ -482,7 +538,7 @@
     async function mutate(path, body, pendingText, completeText) {
       if (busy) return;
       busy = true; apiError = ''; renderError(); updateActions(); status(pendingText);
-      try { await request(path, body); status(completeText); }
+      try { await request(path, body); status(completeText); if (['execute', 'step', 'reset'].includes(path)) refreshExplorer(); }
       catch (error) { showError(error.message); status('Request failed'); await refresh(true, true); }
       finally { busy = false; updateActions(); }
     }
@@ -517,8 +573,10 @@
     function valueLabel(node, nested = false) {
       if (!node || typeof node !== 'object') return String(node ?? 'nil');
       const type = String(node.type || 'unknown');
-      const suffix = valueTruncated(node, nested) ? '…' : '';
+      const suffix = valueTruncated(node, nested) && !(type === 'table' && node.handle) ? '…' : '';
       const address = node.address ? ' (' + String(node.address) + ')' : '';
+      if (type === 'userdata') return 'userdata' + (node.typeName ? ' (' + String(node.typeName) + (node.address ? ', ' + String(node.address) : '') + ')' : address);
+      if (type === 'function') return 'function' + (node.name ? ' ' + String(node.name) : '') + (node.what ? ' [' + String(node.what) + ']' : '') + address;
       if (!nested && type !== 'table' && typeof node.display === 'string') {
         return type === 'Instance' ? String(node.class || type) + ' ' + JSON.stringify(node.display) + suffix + address : node.display + suffix;
       }
@@ -543,34 +601,96 @@
     }
     function valueTitle(node, nested = false) {
       if (!node || typeof node !== 'object') return '';
-      return [node.class && 'Class: ' + node.class, node.name != null && 'Name: ' + node.name, node.address && 'Address: ' + node.address,
+      return [node.class && 'Class: ' + node.class, node.typeName && 'Type: ' + node.typeName, node.name != null && 'Name: ' + node.name, node.address && 'Address: ' + node.address,
+        node.what && 'Function: ' + node.what, node.source && 'Source: ' + node.source, Number.isFinite(node.line) && node.line >= 0 && 'Line: ' + node.line,
         node.encoding === 'escaped-bytes' && 'Invalid UTF-8 bytes are escaped', Number.isFinite(node.bytes) && node.bytes + ' bytes',
-        valueTruncated(node, nested) && 'Truncated preview'].filter(Boolean).join('\n');
+        ['table', 'function'].includes(node.type) && node.handle ? 'Expand to inspect the live value' : valueTruncated(node, nested) && 'Truncated preview'].filter(Boolean).join('\n');
     }
-    function renderValue(node, opened, path, nested = false) {
-      if (!node || node.type !== 'table' || node.reference) {
-        const span = element('span', 'log-value value-' + (['string', 'number', 'boolean', 'nil'].includes(node?.type) ? node.type : 'object'), valueLabel(node, nested));
+    function renderValue(node, opened, path, nested = false, origin = null, section = null) {
+      const hasHandle = typeof node?.handle === 'string' && origin?.realm && modes.includes(origin.context);
+      if (node?.type === 'function' && hasHandle && !section) {
+        const details = element('details', 'value-table value-function');
+        const summary = element('summary', '', valueLabel(node, nested)); summary.title = valueTitle(node, nested);
+        details.append(summary);
+        let built = false;
+        function populateFunction() {
+          if (built) return;
+          built = true;
+          const body = element('div', 'value-entries');
+          if (node.what === 'C') body.append(element('div', 'value-note', 'Native C closure'));
+          for (const name of ['upvalues', 'constants']) body.append(renderValue(node, opened, path + '/' + name, true, origin, name));
+          details.append(body);
+        }
+        details.open = opened.has(path);
+        if (details.open) populateFunction();
+        details.addEventListener('toggle', () => {
+          if (details.open) { opened.add(path); populateFunction(); } else opened.delete(path);
+        });
+        return details;
+      }
+      const live = (node?.type === 'table' || section) && hasHandle;
+      if (!node || (node.type !== 'table' && !section) || (node.reference && !live)) {
+        const inspectable = node?.type === 'Instance' && typeof node.id === 'string' && origin?.realm && modes.includes(origin.context);
+        const span = element(inspectable ? 'button' : 'span', inspectable ? 'value-instance' : 'log-value value-' + (['string', 'number', 'boolean', 'nil'].includes(node?.type) ? node.type : 'object'), valueLabel(node, nested));
         span.title = valueTitle(node, nested);
+        if (inspectable) { span.type = 'button'; span.title += '\nOpen in Explorer · ' + origin.realm; span.addEventListener('click', () => revealInstance(node.id, origin)); }
         return span;
       }
       const details = element('details', 'value-table');
-      details.append(element('summary', '', valueLabel(node)));
-      let built = false;
+      const summary = element('summary', '', section ? section === 'upvalues' ? 'Upvalues' : 'Constants' : valueLabel(node));
+      summary.title = valueTitle(node, nested); details.append(summary);
+      const body = element('div', 'value-entries');
+      let built = false, loading = false, serial = 0, count = 0;
+      function appendEntry(entry, index) {
+        const row = element('div', 'value-entry');
+        const key = element('div', 'value-key');
+        key.append(element('span', '', '['), renderValue(entry.key, opened, path + '/k' + index, true, origin), element('span', '', '] ='));
+        row.append(key, renderValue(entry.value, opened, path + '/v' + index, true, origin));
+        body.append(row);
+      }
+      async function loadPage(offset = 0) {
+        if (loading) return;
+        loading = true;
+        const ticket = ++serial;
+        if (offset === 0) {
+          count = 0; body.replaceChildren();
+          const toolbar = element('div', 'value-toolbar');
+          const refreshButton = element('button', 'plain', 'Refresh'); refreshButton.type = 'button';
+          refreshButton.addEventListener('click', () => loadPage(0));
+          toolbar.append(element('span', '', 'Live value'), refreshButton); body.append(toolbar);
+        }
+        const note = element('div', 'value-note', 'Loading…'); body.append(note);
+        try {
+          const query = {realm: origin.realm, context: origin.context, kind: section ? 'function' : 'table', handle: node.handle, offset};
+          if (section) query.section = section;
+          const page = await request('inspect', query, false);
+          if (ticket !== serial || origin.generation !== inspectionGeneration || !details.isConnected) return;
+          note.remove();
+          if (page.unavailable) { body.replaceChildren(element('div', 'value-note', 'This live value is unavailable. It may have been collected or the VM reset.')); return; }
+          if (section && page.native === true) { body.append(element('div', 'value-note', 'Native C closure; no Luau ' + section + '.')); return; }
+          const entries = Array.isArray(page.entries) ? page.entries : [];
+          for (const entry of entries) appendEntry(entry, count++);
+          if (!count) body.append(element('div', 'value-note', '(empty)'));
+          if (Number.isInteger(page.nextOffset) && page.nextOffset > offset) {
+            const more = element('button', 'plain load-more', 'Load more'); more.type = 'button';
+            more.addEventListener('click', () => { more.remove(); loadPage(page.nextOffset); }); body.append(more);
+          }
+        } catch (error) {
+          if (ticket === serial && origin.generation === inspectionGeneration && details.isConnected) {
+            note.textContent = error.message; note.classList.add('inspection-error');
+            const retry = element('button', 'plain load-more', 'Retry'); retry.type = 'button';
+            retry.addEventListener('click', () => { note.remove(); retry.remove(); loadPage(offset); }); body.append(retry);
+          }
+        } finally { if (ticket === serial) loading = false; }
+      }
       function populate() {
         if (built) return;
-        built = true;
-        const body = element('div', 'value-entries');
+        built = true; details.append(body);
+        if (live) { loadPage(); return; }
         const entries = Array.isArray(node.entries) ? node.entries : [];
-        entries.slice(0, 200).forEach((entry, index) => {
-          const row = element('div', 'value-entry');
-          const key = element('span', 'value-key', '[' + valueLabel(entry.key, true) + '] =');
-          key.title = valueTitle(entry.key, true); row.append(key);
-          row.append(renderValue(entry.value, opened, path + '/' + index, true));
-          body.append(row);
-        });
+        entries.forEach(appendEntry);
         if (!entries.length && !node.truncated) body.append(element('span', 'value-note', '(empty)'));
-        if (node.truncated || entries.length > 200) body.append(element('div', 'value-note', '… snapshot truncated'));
-        details.append(body);
+        if (node.truncated) body.append(element('div', 'value-note', 'Preview only. Print this table again to inspect its live value.'));
       }
       details.open = opened.has(path);
       if (details.open) populate();
@@ -579,6 +699,202 @@
       });
       return details;
     }
+    function sameOrigin(a, b) {
+      return !!a && !!b && a.realm === b.realm && a.context === b.context && a.generation === b.generation;
+    }
+    function hideGc() {
+      ++gcSerial; clearTimeout(gcSearchTimer); gcView = null;
+      if ($('gcDialog').open) $('gcDialog').close();
+      $('gcList').replaceChildren();
+    }
+    function resetInspections() {
+      ++inspectionGeneration; ++explorerEpoch; ++propertySerial;
+      explorerOrigin = null; explorerSelection = ''; viewerSeen.clear(); hideGc();
+      rows.clear(); expanded.clear(); $('logList').replaceChildren();
+    }
+    function syncInspectorTarget() {
+      const origin = {realm: $('realmSelect').value, context: mode, generation: inspectionGeneration};
+      const changed = !sameOrigin(origin, explorerOrigin);
+      if (changed) {
+        explorerOrigin = origin; explorerSelection = ''; hideGc();
+        $('explorerContext').textContent = origin.realm ? titles[origin.context] + ' · ' + origin.realm : 'Select a VM.';
+        refreshExplorer();
+      }
+      syncGcViewers(changed);
+    }
+    function refreshExplorer() {
+      const origin = explorerOrigin, epoch = ++explorerEpoch;
+      ++propertySerial;
+      $('explorerTree').replaceChildren();
+      $('instanceProperties').replaceChildren(element('span', 'value-note', 'Select an instance to inspect its properties.'));
+      if (!origin?.realm || !connected) return;
+      loadTreePage($('explorerTree'), null, 0, epoch, origin);
+    }
+    async function loadTreePage(container, parent, offset, epoch, origin) {
+      const note = element('div', 'inspection-note', 'Loading…'); container.append(note);
+      try {
+        const page = await request('inspect', {realm: origin.realm, context: origin.context, kind: 'tree', parent, offset}, false);
+        if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin)) return;
+        note.remove();
+        if (page.unavailable) { container.append(element('div', 'inspection-note', 'This instance is no longer available.')); return; }
+        const items = Array.isArray(page.items) ? page.items : [];
+        for (const item of items) {
+          const branch = element('div', 'tree-branch'); branch.setAttribute('role', 'treeitem');
+          branch.setAttribute('aria-selected', String(explorerSelection === item.id));
+          const row = element('div', 'tree-row'); row.dataset.instance = item.id;
+          row.dataset.selected = String(explorerSelection === item.id);
+          const toggle = element('button', 'tree-toggle', item.hasChildren ? '▸' : ''); toggle.type = 'button';
+          toggle.disabled = !item.hasChildren; toggle.setAttribute('aria-label', 'Expand ' + item.name);
+          const name = element('button', 'tree-name'); name.type = 'button'; name.title = item.name + ' · ' + item.class;
+          name.append(element('span', '', item.name), element('span', 'tree-class', item.class));
+          const children = element('div', 'tree-children'); children.hidden = true; children.setAttribute('role', 'group');
+          let loaded = false;
+          function toggleBranch(force) {
+            if (!item.hasChildren) return;
+            const open = force ?? children.hidden;
+            children.hidden = !open; toggle.textContent = open ? '▾' : '▸';
+            toggle.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + item.name);
+            branch.setAttribute('aria-expanded', String(open));
+            if (open && !loaded) { loaded = true; loadTreePage(children, item.id, 0, epoch, origin); }
+          }
+          if (item.hasChildren) branch.setAttribute('aria-expanded', 'false');
+          toggle.addEventListener('click', () => toggleBranch());
+          name.addEventListener('click', () => selectInstance(item.id, origin));
+          name.addEventListener('keydown', event => {
+            if (event.key === 'ArrowRight') { event.preventDefault(); toggleBranch(true); }
+            else if (event.key === 'ArrowLeft') {
+              event.preventDefault();
+              if (!children.hidden) toggleBranch(false);
+              else branch.parentElement.closest('.tree-branch')?.querySelector('.tree-name')?.focus();
+            } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              const visible = [...$('explorerTree').querySelectorAll('.tree-name')].filter(button => button.offsetParent !== null);
+              visible[visible.indexOf(name) + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
+            }
+          });
+          row.append(toggle, name); branch.append(row, children); container.append(branch);
+        }
+        if (!items.length && offset === 0) container.append(element('div', 'inspection-note', 'No instances.'));
+        if (Number.isInteger(page.nextOffset) && page.nextOffset > offset) {
+          const more = element('button', 'plain load-more', 'Load more'); more.type = 'button';
+          more.addEventListener('click', () => { more.remove(); loadTreePage(container, parent, page.nextOffset, epoch, origin); }); container.append(more);
+        }
+      } catch (error) {
+        if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin)) return;
+        note.textContent = error.message; note.classList.add('inspection-error');
+        const retry = element('button', 'plain load-more', 'Retry'); retry.type = 'button';
+        retry.addEventListener('click', () => { note.remove(); retry.remove(); loadTreePage(container, parent, offset, epoch, origin); }); container.append(retry);
+      }
+    }
+    async function selectInstance(id, origin) {
+      if (!sameOrigin(origin, explorerOrigin)) return;
+      explorerSelection = id;
+      for (const row of $('explorerTree').querySelectorAll('.tree-row')) { row.dataset.selected = String(row.dataset.instance === id); row.parentElement.setAttribute('aria-selected', row.dataset.selected); }
+      const ticket = ++propertySerial, panel = $('instanceProperties');
+      panel.replaceChildren(element('span', 'value-note', 'Loading properties…'));
+      try {
+        const instance = await request('inspect', {realm: origin.realm, context: origin.context, kind: 'instance', id}, false);
+        if (ticket !== propertySerial || !sameOrigin(origin, explorerOrigin)) return;
+        if (instance.unavailable) { panel.replaceChildren(element('span', 'value-note', 'This instance is no longer available.')); return; }
+        panel.replaceChildren(element('strong', '', instance.name + ' · ' + instance.class));
+        const opened = new Set();
+        for (const [field, label] of [['properties', 'Properties'], ['attributes', 'Attributes']]) {
+          panel.append(element('h3', '', label));
+          const entries = Array.isArray(instance[field]) ? instance[field] : [];
+          if (!entries.length) panel.append(element('div', 'value-note', '(none)'));
+          entries.forEach((entry, index) => {
+            const row = element('div', 'property-row'), value = element('div', 'property-value');
+            value.append(renderValue(entry.value, opened, field + '/' + index, true, origin));
+            row.append(element('span', 'property-name', entry.name), value); panel.append(row);
+          });
+        }
+      } catch (error) {
+        if (ticket === propertySerial && sameOrigin(origin, explorerOrigin)) panel.replaceChildren(element('div', 'inspection-error', error.message));
+      }
+    }
+    function revealInstance(id, origin) {
+      if (busy || origin.generation !== inspectionGeneration) return;
+      const realm = (state?.realms || []).find(item => item.id === origin.realm);
+      if (!realm) { showError('The source VM is no longer available.'); return; }
+      if (mode !== origin.context) switchMode(origin.context);
+      choices[mode] = {realm: realm.id, client: realm.clientId || '', actor: realm.actorId ? 'actor:' + realm.actorId : '@main'};
+      renderTargets(); save(); selectInstance(id, explorerOrigin);
+    }
+    function eligibleViewers() {
+      return mode === 'executor' ? (state?.viewers || []).filter(viewer => viewer.realm === $('realmSelect').value && viewer.enabled === true) : [];
+    }
+    function syncGcViewers(targetChanged = false) {
+      const viewers = eligibleViewers();
+      $('openGcButton').hidden = mode !== 'executor';
+      $('openGcButton').disabled = !connected || busy || viewers.length === 0;
+      $('openGcButton').textContent = 'GC viewers' + (viewers.length ? ' (' + viewers.length + ')' : '');
+      setOptions($('gcViewerSelect'), viewers.map(viewer => [viewer.id, viewer.name || 'GCViewer']), gcView?.id);
+      if (gcView && !viewers.some(viewer => viewer.id === gcView.id && viewer.realm === gcView.realm)) hideGc();
+      const changed = viewers.find(viewer => !viewerSeen.has(viewer.realm + '/' + viewer.id) || viewerSeen.get(viewer.realm + '/' + viewer.id) !== viewer.revision);
+      if (changed || (targetChanged && viewers.length)) { openGcViewer(changed || viewers[0]); return; }
+      if (gcView) {
+        const current = viewers.find(viewer => viewer.id === gcView.id);
+        if (current) $('gcTitle').textContent = current.name || 'GCViewer';
+      }
+    }
+    function openGcViewer(viewer, fresh = true) {
+      if (!viewer || viewer.realm !== $('realmSelect').value || mode !== 'executor') return;
+      ++gcSerial; clearTimeout(gcSearchTimer);
+      gcView = {realm: viewer.realm, id: viewer.id, revision: viewer.revision, generation: inspectionGeneration, count: 0, nextOffset: null, opened: new Set()};
+      viewerSeen.set(viewer.realm + '/' + viewer.id, viewer.revision);
+      $('gcTitle').textContent = viewer.name || 'GCViewer';
+      $('gcContext').textContent = 'Executor · ' + viewer.realm;
+      $('gcViewerSelect').value = viewer.id;
+      if (!$('gcDialog').open) $('gcDialog').show();
+      loadGcPage(fresh, 0);
+    }
+    async function loadGcPage(fresh = false, offset = 0) {
+      const current = gcView;
+      if (!current || (offset > 0 && current.loading)) return;
+      const ticket = ++gcSerial; current.loading = true;
+      $('gcStatus').textContent = 'Loading…';
+      $('gcMore').disabled = true; $('refreshGc').disabled = true; $('gcList').setAttribute('aria-busy', 'true');
+      if (offset === 0) {
+        current.count = 0; current.opened = new Set();
+        $('gcList').replaceChildren(element('div', 'inspection-note', 'Loading GC values…')); $('gcMore').hidden = true;
+      }
+      try {
+        const page = await request('inspect', {realm: current.realm, context: 'executor', kind: 'gc', viewer: current.id, refresh: fresh, offset, query: $('gcSearch').value, valueType: $('gcType').value}, false);
+        if (ticket !== gcSerial || gcView !== current || current.generation !== inspectionGeneration) return;
+        if (offset === 0) $('gcList').replaceChildren();
+        if (page.unavailable) { $('gcList').replaceChildren(element('div', 'inspection-note', 'This GCViewer is no longer available.')); $('gcStatus').textContent = 'Viewer unavailable'; $('gcMore').hidden = true; return; }
+        if (page.revision !== undefined) { current.revision = page.revision; viewerSeen.set(current.realm + '/' + current.id, page.revision); }
+        for (const value of Array.isArray(page.items) ? page.items : []) {
+          const row = element('div', 'gc-row'), content = element('div', 'gc-value');
+          const index = current.count++;
+          content.append(renderValue(value, current.opened, 'gc/' + index, true, {realm: current.realm, context: 'executor', generation: current.generation}));
+          row.append(element('span', 'gc-index', String(index + 1)), content); $('gcList').append(row);
+        }
+        if (!current.count) $('gcList').append(element('div', 'inspection-note', 'No values match these filters.'));
+        current.nextOffset = Number.isInteger(page.nextOffset) && page.nextOffset > offset ? page.nextOffset : null;
+        $('gcMore').hidden = current.nextOffset === null;
+        $('gcStatus').textContent = 'Showing ' + current.count + (Number.isFinite(page.total) ? ' of ' + page.total : '') + ' values';
+      } catch (error) {
+        if (ticket !== gcSerial || gcView !== current) return;
+        if (offset === 0) $('gcList').replaceChildren(element('div', 'inspection-note inspection-error', error.message));
+        $('gcStatus').textContent = error.message;
+      } finally {
+        if (ticket === gcSerial && gcView === current) {
+          current.loading = false; $('gcMore').disabled = false; $('refreshGc').disabled = false; $('gcList').setAttribute('aria-busy', 'false');
+        }
+      }
+    }
+    async function closeGcViewer() {
+      const current = gcView; if (!current) return;
+      hideGc();
+      try { await request('inspect', {realm: current.realm, context: 'executor', kind: 'closeGc', viewer: current.id}, false); await refresh(true); }
+      catch (error) { showError(error.message); }
+    }
+    function filterGc() {
+      ++gcSerial; clearTimeout(gcSearchTimer);
+      gcSearchTimer = setTimeout(() => loadGcPage(false, 0), 180);
+    }
+
     function renderLogs() {
       const logs = Array.isArray(state?.logs) ? state.logs : [];
       const scroller = $('logScroller');
@@ -619,7 +935,7 @@
           if (Array.isArray(log.arguments) && log.arguments.length) {
             const argumentsView = element('div', 'log-arguments');
             if (!expanded.has(key)) expanded.set(key, new Set());
-            log.arguments.forEach((argument, index) => argumentsView.append(renderValue(argument, expanded.get(key), String(index))));
+            log.arguments.forEach((argument, index) => argumentsView.append(renderValue(argument, expanded.get(key), String(index), false, {realm: log.realm, context: log.context, generation: inspectionGeneration})));
             row.replaceChildren(meta, argumentsView);
           } else row.replaceChildren(meta, element('pre', 'log-message', String(log.message ?? '')));
         }
@@ -635,6 +951,7 @@
     }
 
     const examples = {
+      gcViewer: {mode: 'executor', hint: 'Open a GCViewer for the selected executor VM.', source: 'local viewer = Instance.new("GCViewer")\n'},
       tables: {hint: 'Expand values in the output. References retain the same address.', source: 'local value = {name = "Example", items = {10, 20, 30}}\nvalue.self = value\nprint("Snapshot:", value, value.items)\n'},
       basic: {hint: 'Print and access a service.', source: 'local runService = game:GetService("RunService")\nprint("Server:", runService:IsServer(), "Client:", runService:IsClient())\nprint("Workspace:", workspace:GetFullName())\n'},
       remoteServer: {mode: 'server', hint: 'Run on the server, step once, then run the client example.', source: '-- Run on the server, then advance time.\nlocal storage = game:GetService("ReplicatedStorage")\nlocal remote = storage:FindFirstChild("InterpreterPing")\nif not remote then\n    remote = Instance.new("RemoteEvent")\n    remote.Name = "InterpreterPing"\n    remote.Parent = storage\nend\nremote.OnServerEvent:Connect(function(player, message)\n    print("Server received:", player.Name, message)\n    remote:FireClient(player, "Server reply")\nend)\nprint("RemoteEvent ready. Step, then run the client example.")\n'},
@@ -707,10 +1024,20 @@ print(table.concat(lines, "\n"))
     }
 
     for (const button of document.querySelectorAll('.mode')) button.addEventListener('click', () => switchMode(button.dataset.mode));
+    $('refreshExplorer').addEventListener('click', refreshExplorer);
+    $('openGcButton').addEventListener('click', () => openGcViewer(eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value) || eligibleViewers()[0], false));
+    $('gcViewerSelect').addEventListener('change', () => openGcViewer(eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value), false));
+    $('refreshGc').addEventListener('click', () => loadGcPage(true, 0));
+    $('gcMore').addEventListener('click', () => { if (gcView?.nextOffset !== null) loadGcPage(false, gcView.nextOffset); });
+    $('gcType').addEventListener('change', filterGc);
+    $('gcSearch').addEventListener('input', filterGc);
+    $('closeGc').addEventListener('click', closeGcViewer);
+    $('gcDialog').addEventListener('cancel', event => { event.preventDefault(); closeGcViewer(); });
+    $('gcDialog').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeGcViewer(); } });
     for (const [id, key] of [['clientSelect', 'client'], ['actorSelect', 'actor'], ['realmSelect', 'realm']]) $(id).addEventListener('change', () => { choices[mode][key] = $(id).value; editor.refreshCompletions(); renderTargets(); save(); });
     $('source').addEventListener('editor-escape', () => $('openButton').focus());
     $('lintStatus').addEventListener('click', () => editor.showDiagnostics());
-    document.addEventListener('keydown', event => { if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('resetDialog').open) { event.preventDefault(); runCode(); } });
+    document.addEventListener('keydown', event => { if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('resetDialog').open && !$('gcDialog').contains(event.target)) { event.preventDefault(); runCode(); } });
     $('runButton').addEventListener('click', runCode);
     $('runningButton').addEventListener('click', () => { const running = !state.running; mutate('running', {running}, 'Updating runtime…', running ? 'Runtime playing' : 'Runtime paused'); });
     $('stepButton').addEventListener('click', () => mutate('step', {seconds: 1 / 60}, 'Stepping…', 'Step complete'));
@@ -720,7 +1047,7 @@ print(table.concat(lines, "\n"))
     $('dismissError').addEventListener('click', () => { apiError = ''; dismissedRuntimeError = state?.runtimeError || ''; renderError(); });
     $('resetButton').addEventListener('click', () => { $('resetProfileName').textContent = $('profileSelect').value; $('resetDialog').showModal(); });
     $('cancelReset').addEventListener('click', () => $('resetDialog').close());
-    $('confirmReset').addEventListener('click', () => { $('resetDialog').close(); dismissedRuntimeError = ''; commandOverride = null; expanded.clear(); scrollPositions.clear(); mutate('reset', {profile: $('profileSelect').value}, 'Resetting VMs…', 'VMs reset'); });
+    $('confirmReset').addEventListener('click', () => { $('resetDialog').close(); dismissedRuntimeError = ''; commandOverride = null; resetInspections(); scrollPositions.clear(); mutate('reset', {profile: $('profileSelect').value}, 'Resetting VMs…', 'VMs reset'); });
     $('profileSelect').addEventListener('change', save);
     $('budgetSelect').addEventListener('change', () => mutate('budget', {cpuMs: Number($('budgetSelect').value)}, 'Updating execution limit…', 'Execution limit updated'));
     $('exampleSelect').addEventListener('change', exampleHint);

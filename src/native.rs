@@ -15,6 +15,7 @@ pub(crate) fn random_bytes(bytes:&mut [u8])->std::io::Result<()> {
 unsafe extern "C-unwind" {
     fn emu_set_executor_profile(state: *mut ffi::lua_State, profile: std::ffi::c_int);
     fn emu_getgc(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_inspectgc(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_filtergc(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_mark_executor(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_iscclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
@@ -22,6 +23,10 @@ unsafe extern "C-unwind" {
     fn emu_getupvalue(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getupvalues(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setupvalue(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getconstant(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getconstants(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_inspectconstants(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_setconstant(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_newcclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_clonefunction(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getrawmetatable(state: *mut ffi::lua_State) -> std::ffi::c_int;
@@ -66,6 +71,14 @@ pub fn bind_filtergc(lua: &Lua, environment: &Table, unsupported: &Table) -> Res
     }
 }
 
+pub(crate) fn inspect_constants(lua:&Lua,function:&Function)->Result<Table>{
+    unsafe{lua.exec_raw(function.clone(),|state|{emu_inspectconstants(state);ffi::lua_replace(state,1);ffi::lua_settop(state,1);})}
+}
+
+pub(crate) fn gc_snapshot(lua:&Lua)->Result<Table>{
+    unsafe{lua.exec_raw((),|state|{emu_inspectgc(state);})}
+}
+
 fn set_function_name(lua: &Lua, function: &Function, name: *const std::ffi::c_char) -> Result<()> {
     unsafe {
         lua.exec_raw(function.clone(), |state| {
@@ -77,7 +90,7 @@ fn set_function_name(lua: &Lua, function: &Function, name: *const std::ffi::c_ch
 
 pub fn install(lua: &Lua) -> Result<()> {
     lua.set_compiler(Compiler::new().set_mutable_globals(["_G", "shared", "script"]));
-    let functions: [(&str, &std::ffi::CStr, ffi::lua_CFunction); 18] = [
+    let functions: [(&str, &std::ffi::CStr, ffi::lua_CFunction); 21] = [
         ("__host_getgc", c"getgc", emu_getgc),
         ("__host_filtergc", c"filtergc", emu_filtergc),
         ("__host_iscclosure", c"iscclosure", emu_iscclosure),
@@ -85,6 +98,9 @@ pub fn install(lua: &Lua) -> Result<()> {
         ("__host_getupvalue", c"getupvalue", emu_getupvalue),
         ("__host_getupvalues", c"getupvalues", emu_getupvalues),
         ("__host_setupvalue", c"setupvalue", emu_setupvalue),
+        ("__host_getconstant", c"getconstant", emu_getconstant),
+        ("__host_getconstants", c"getconstants", emu_getconstants),
+        ("__host_setconstant", c"setconstant", emu_setconstant),
         ("__host_newcclosure", c"newcclosure", emu_newcclosure),
         ("__host_clonefunction", c"clonefunction", emu_clonefunction),
         ("__host_getrawmetatable", c"getrawmetatable", emu_getrawmetatable),

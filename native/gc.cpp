@@ -5,6 +5,9 @@
 #include "lmem.h"
 #include "lstate.h"
 #include "lstring.h"
+#include "Luau/BytecodeUtils.h"
+#include <climits>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -71,12 +74,18 @@ struct Scan
     bool fill;
     int count;
     const void* result;
+    const void* inspector;
+    const void* inspector_metatable;
+    const void* inspector_scan;
+    const void* registry;
 };
 
 static bool visit(void* context, lua_Page*, GCObject* object)
 {
     Scan& scan = *static_cast<Scan*>(context);
-    if (isdead(scan.state->global, object) || static_cast<const void*>(object) == scan.result)
+    if (isdead(scan.state->global, object) || static_cast<const void*>(object) == scan.result
+        || static_cast<const void*>(object) == scan.inspector || static_cast<const void*>(object) == scan.inspector_metatable
+        || static_cast<const void*>(object) == scan.inspector_scan || static_cast<const void*>(object) == scan.registry)
         return false;
     int type = object->gch.tt;
     if (type != LUA_TFUNCTION && type != LUA_TUSERDATA && !(scan.tables && type == LUA_TTABLE)
@@ -98,6 +107,29 @@ static bool visit(void* context, lua_Page*, GCObject* object)
     return false;
 }
 
+static Scan prepare_scan(lua_State* state, bool tables, bool extended)
+{
+    // Only these host bookkeeping tables are excluded; their user values remain visible.
+    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.values");
+    const void* inspector = lua_topointer(state, -1);
+    const void* inspector_metatable = nullptr;
+    if (lua_getmetatable(state, -1)) { inspector_metatable = lua_topointer(state, -1); lua_pop(state, 1); }
+    lua_pop(state, 1);
+    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
+    const void* inspector_scan = lua_topointer(state, -1);
+    lua_pop(state, 1);
+    return Scan{state, tables, extended, false, 0, nullptr, inspector, inspector_metatable,
+        inspector_scan, lua_topointer(state, LUA_REGISTRYINDEX)};
+}
+
+static void scan_objects(Scan& scan)
+{
+    lua_State* state = scan.state;
+    luaM_visitgco(state, &scan, visit);
+    // The real main thread is allocated with global_State, outside collectible pages.
+    if (scan.extended) visit(&scan, nullptr, obj2gco(state->global->mainthread));
+}
+
 extern "C" int emu_getgc(lua_State* state)
 {
     if (!lua_isnoneornil(state, 1))
@@ -107,16 +139,30 @@ extern "C" int emu_getgc(lua_State* state)
     lua_settop(state, 0);
     luaL_checkstack(state, 3, "getgc");
     GcPause pause(state);
-    Scan scan{state, tables, extended, false, 0, nullptr};
-    luaM_visitgco(state, &scan, visit);
-    // The real main thread is allocated with global_State, outside collectible pages.
-    if (extended) visit(&scan, nullptr, obj2gco(state->global->mainthread));
+    Scan scan = prepare_scan(state, tables, extended);
+    scan_objects(scan);
     lua_createtable(state, scan.count, 0);
     scan.result = lua_topointer(state, -1);
     scan.count = 0;
     scan.fill = true;
-    luaM_visitgco(state, &scan, visit);
-    if (extended) visit(&scan, nullptr, obj2gco(state->global->mainthread));
+    scan_objects(scan);
+    return 1;
+}
+
+// Host-only snapshot: the inspector clears this reused scratch after serialization.
+extern "C" int emu_inspectgc(lua_State* state)
+{
+    const bool extended = executor_profile(state) == 1;
+    lua_settop(state, 0);
+    luaL_checkstack(state, 3, "inspectgc");
+    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
+    if (!lua_istable(state, -1)) luaL_error(state, "Inspector scan table is not initialized");
+    lua_cleartable(state, -1);
+    GcPause pause(state);
+    Scan scan = prepare_scan(state, true, extended);
+    scan.result = lua_topointer(state, -1);
+    scan.fill = true;
+    scan_objects(scan);
     return 1;
 }
 
@@ -145,11 +191,21 @@ extern "C" int emu_islclosure(lua_State* state)
     return 1;
 }
 
-static void check_lua_closure(lua_State* state)
+static Closure* check_lua_closure(lua_State* state)
 {
-    luaL_checktype(state, 1, LUA_TFUNCTION);
+    if (lua_type(state, 1) == LUA_TNUMBER)
+    {
+        const double level = lua_tonumber(state, 1);
+        if (!std::isfinite(level) || level < 0 || level > INT_MAX || std::floor(level) != level)
+            luaL_argerror(state, 1, "invalid stack level");
+        lua_Debug info = {};
+        if (!lua_getinfo(state, int(level), "f", &info)) luaL_argerror(state, 1, "stack level out of range");
+        lua_replace(state, 1);
+    }
+    else if (!lua_isfunction(state, 1)) luaL_argerror(state, 1, "function or stack level expected");
     if (!lua_isLfunction(state, 1))
-        luaL_error(state, "UnsupportedApi: inspecting native closure upvalues is unavailable");
+        luaL_error(state, "C closures are not supported");
+    return clvalue(luaA_toobject(state, 1));
 }
 
 extern "C" int emu_getupvalue(lua_State* state)
@@ -179,6 +235,102 @@ extern "C" int emu_setupvalue(lua_State* state)
     lua_pushvalue(state, 3);
     if (index < 1 || !lua_setupvalue(state, 1, index))
         luaL_error(state, "invalid upvalue index");
+    return 0;
+}
+
+static bool visible_constant(const TValue* value)
+{
+    return ttisnil(value) || ttisboolean(value) || ttisnumber(value) || ttisstring(value);
+}
+
+extern "C" int emu_getconstant(lua_State* state)
+{
+    Proto* proto = check_lua_closure(state)->l.p;
+    const int index = luaL_checkinteger(state, 2);
+    if (index < 1 || index > proto->sizek || !visible_constant(&proto->k[index - 1])) lua_pushnil(state);
+    else luaA_pushvalue(state, &proto->k[index - 1]);
+    return 1;
+}
+
+static void fill_constants(lua_State* state, Proto* proto)
+{
+    for (int index = 0; index < proto->sizek; ++index)
+    {
+        if (!visible_constant(&proto->k[index]) || ttisnil(&proto->k[index])) continue;
+        luaA_pushvalue(state, &proto->k[index]);
+        lua_rawseti(state, -2, index + 1);
+    }
+}
+
+extern "C" int emu_getconstants(lua_State* state)
+{
+    Proto* proto = check_lua_closure(state)->l.p;
+    lua_settop(state, 1);
+    lua_createtable(state, proto->sizek, 0);
+    fill_constants(state, proto);
+    return 1;
+}
+
+extern "C" int emu_inspectconstants(lua_State* state)
+{
+    Proto* proto = check_lua_closure(state)->l.p;
+    lua_settop(state, 1);
+    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
+    if (!lua_istable(state, -1)) luaL_error(state, "Inspector scan table is not initialized");
+    lua_cleartable(state, -1);
+    fill_constants(state, proto);
+    return 1;
+}
+
+extern "C" int emu_setconstant(lua_State* state)
+{
+    Proto* proto = check_lua_closure(state)->l.p;
+    const int requested = luaL_checkinteger(state, 2);
+    luaL_checkany(state, 3);
+    if (requested < 1 || requested > proto->sizek) luaL_argerror(state, 2, "constant index out of range");
+    const int index = requested - 1;
+    TValue* previous = &proto->k[index];
+    const TValue* value = luaA_toobject(state, 3);
+    if (!visible_constant(previous)) luaL_argerror(state, 2, "internal table/function constants are not editable");
+    if (!visible_constant(value)) luaL_argerror(state, 3, "number, string, boolean, or nil expected");
+    // Luau opcodes specialize on constant tags (e.g. GETGLOBAL requires a string).
+    if (ttype(previous) != ttype(value)) luaL_error(state, "UnsupportedApi: setconstant currently preserves the constant type");
+    if (proto->execdata) luaL_error(state, "UnsupportedApi: constants in native machine code are not editable");
+    if (luaO_rawequalObj(previous, value)) return 0;
+    setobj2n(state, previous, value);
+    luaC_barrier(state, proto, previous);
+
+    bool importedNameChanged = false;
+    for (int pc = 0; pc < proto->sizecode;)
+    {
+        const Instruction instruction = proto->code[pc];
+        const LuauOpcode op = LuauOpcode(LUAU_INSN_OP(instruction));
+        if (op == LOP_GETIMPORT)
+        {
+            const uint32_t path = proto->code[pc + 1];
+            const unsigned count = path >> 30;
+            if (((path >> 20) & 1023) == unsigned(index) || (count > 1 && ((path >> 10) & 1023) == unsigned(index))
+                || (count > 2 && (path & 1023) == unsigned(index)))
+            {
+                // Cached imports must be resolved again against the changed name.
+                setnilvalue(&proto->k[LUAU_INSN_D(instruction)]);
+                importedNameChanged = true;
+            }
+        }
+        pc += Luau::getOpLength(op);
+    }
+    if (importedNameChanged)
+    {
+        // A specialized builtin may name the old import. Keep its ordinary fallback
+        // bytecode and remove only this prototype's fast-call shortcut, with no wrapper.
+        for (int pc = 0; pc < proto->sizecode;)
+        {
+            const LuauOpcode op = LuauOpcode(LUAU_INSN_OP(proto->code[pc]));
+            const int length = Luau::getOpLength(op);
+            if (Luau::isFastCall(op)) for (int word = 0; word < length; ++word) proto->code[pc + word] = LOP_NOP;
+            pc += length;
+        }
+    }
     return 0;
 }
 

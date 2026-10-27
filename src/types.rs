@@ -5,6 +5,9 @@ use serde_json::{Value as Json, json};
 pub struct UDim { pub scale:f32, pub offset:i32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UDim2 { pub x:UDim, pub y:UDim }
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Path2DControlPoint { pub position:UDim2, pub left:UDim2, pub right:UDim2 }
+impl UserData for Path2DControlPoint { fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type","Path2DControlPoint");} }
 impl UserData for UDim { fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type","UDim");} }
 impl UserData for UDim2 { fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type","UDim2");} }
 fn dimension<const TWO:bool>(value:&Value)->Option<UDim2>{
@@ -16,10 +19,13 @@ fn dimension_name<const TWO:bool>()->&'static str{if TWO {"UDim2"}else{"UDim"}}
 fn dimension_int(value:f64)->i32 {let value=value.trunc();if !value.is_finite()||value<i32::MIN as f64||value>i32::MAX as f64{i32::MIN}else{value as i32}}
 fn dimension_number(lua:&Lua,args:&MultiValue,index:usize)->Result<f64>{Ok(lua.coerce_number(args.get(index).cloned().unwrap_or(Value::Nil))?.unwrap_or(0.))}
 fn float9(value:f32)->String {
+    float_precision(value,9)
+}
+fn float_precision(value:f32,precision:i32)->String {
     if value.is_nan(){return "NAN".into()}if value.is_infinite(){return if value.is_sign_negative(){"-INF"}else{"INF"}.into()}
-    let scientific=format!("{value:.8e}");let (digits,exponent)=scientific.split_once('e').unwrap();let exponent:i32=exponent.parse().unwrap();
+    let scientific=format!("{value:.width$e}",width=(precision-1)as usize);let (digits,exponent)=scientific.split_once('e').unwrap();let exponent:i32=exponent.parse().unwrap();
     let trim=|text:String|if text.contains('.') {text.trim_end_matches('0').trim_end_matches('.').to_owned()}else{text};
-    if !(-4..9).contains(&exponent){format!("{}e{exponent:+03}",trim(digits.into()))}else{trim(format!("{value:.precision$}",precision=(8-exponent).max(0)as usize))}
+    if !(-4..precision).contains(&exponent){format!("{}e{exponent:+03}",trim(digits.into()))}else{trim(format!("{value:.precision$}",precision=(precision-1-exponent).max(0)as usize))}
 }
 fn dimension_text(v:UDim)->String{format!("{}, {}",float9(v.scale),v.offset)}
 unsafe extern "C-unwind" fn dimension_error<const TWO:bool,const ARG:i32>(state:*mut ffi::lua_State)->std::ffi::c_int {unsafe{ffi::luaL_typeerror(state,ARG,if TWO {c"UDim2"}else{c"UDim"}.as_ptr())}}
@@ -73,6 +79,44 @@ fn install_dimensions(lua:&Lua)->Result<()>{
     api.set("fromOffset",named(lua,c"fromOffset",|lua,args:MultiValue|Ok(UDim2{x:UDim{scale:0.,offset:dimension_int(dimension_number(lua,&args,0)?)},y:UDim{scale:0.,offset:dimension_int(dimension_number(lua,&args,1)?)}}))?)?;
     api.set_readonly(true);lua.globals().set("UDim2",api)
 }
+
+unsafe extern "C-unwind" fn point_self_error(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_typeerror(state,1,c"Path2DControlPoint".as_ptr())}}
+unsafe extern "C-unwind" fn point_meta<const OP:u8>(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
+    Lua::invoke_native_callback(state,|lua,args|{
+        use mlua::state::NativeCall::{Dispatch,Return};
+        let read=|value:&Value|if let Value::UserData(value)=value{value.borrow::<Path2DControlPoint>().ok().map(|v|*v)}else{None};
+        let value=if OP==4{
+            if !matches!(args.len(),0|1|3){return Err(Error::lua_string("Trying to create a Path2DControlPoint with wrong number of arguments"))}
+            let mut values=[UDim2::default();3];
+            for(index,value)in args.iter().enumerate(){let Some(value)=dimension::<true>(value)else{return Ok(Dispatch(match index{0=>dimension_error::<true,1>,1=>dimension_error::<true,2>,_=>dimension_error::<true,3>}))};values[index]=value;}
+            Path2DControlPoint{position:values[0],left:values[1],right:values[2]}.into_lua(lua)?
+        }else{
+            let Some(point)=args.front().and_then(read)else{return Ok(Dispatch(point_self_error))};
+            match OP{
+                0|1=>{
+                    let Some(key)=lua.coerce_string(args.get(1).cloned().unwrap_or(Value::Nil))?else{return Ok(Dispatch(enum_key_error))};let key=key.to_string_lossy();
+                    let old=match key.as_str(){"Position"=>point.position,"LeftTangent"=>point.left,"RightTangent"=>point.right,_=>return Err(Error::lua_string(format!("'{key}' is not a valid member of Path2DControlPoint")))};
+                    if OP==0{old.into_lua(lua)?}else{
+                        let Some(next)=args.get(2).and_then(dimension::<true>)else{return Ok(Dispatch(dimension_error::<true,3>))};
+                        let Value::UserData(value)=&args[0]else{unreachable!()};let mut point=value.borrow_mut::<Path2DControlPoint>()?;
+                        match key.as_str(){"Position"=>point.position=next,"LeftTangent"=>point.left=next,_=>point.right=next};return Ok(Return(MultiValue::new()))
+                    }
+                },
+                2=>Value::Boolean(args.get(1).and_then(read).is_some_and(|other|point==other)),
+                _=>{let text=|value:UDim2|format!("{{{}}}, {{{}}}",dimension_text(value.x),dimension_text(value.y));format!("Path2DControlPoint {{ Position = {}, LeftTangent = {}, RightTangent = {} }}",text(point.position),text(point.left),text(point.right)).into_lua(lua)?},
+            }
+        };Ok(Return(MultiValue::from_vec(vec![value])))
+    })
+}}
+fn install_path_point(lua:&Lua)->Result<()>{unsafe{
+    lua.exec_raw::<()>(Path2DControlPoint::default(),|state|{
+        ffi::lua_getmetatable(state,1);
+        for(key,callback)in[(c"__index",point_meta::<0>as ffi::lua_CFunction),(c"__newindex",point_meta::<1>),(c"__eq",point_meta::<2>),(c"__tostring",point_meta::<3>)]{ffi::lua_pushcfunction(state,callback);ffi::lua_rawsetfield(state,-2,key.as_ptr());}
+        ffi::lua_pushstring(state,c"The metatable is locked".as_ptr());ffi::lua_rawsetfield(state,-2,c"__metatable".as_ptr());ffi::lua_settop(state,0);
+    })?;
+    let new:Function=lua.exec_raw((),|state|ffi::lua_pushcfunctiond(state,point_meta::<4>,c"new".as_ptr()))?;
+    let api=lua.create_table()?;api.set("new",new)?;api.set_readonly(true);lua.globals().set("Path2DControlPoint",api)
+}}
 
 #[derive(Clone, Debug)]
 struct Random { state:std::cell::Cell<u64> }
@@ -165,7 +209,7 @@ fn components<const N:usize>(v:&Value)->Result<[f32;N]> {
 }
 fn lookup(lua:&Lua,name:&str,key:&str)->Result<Value> { lua.named_registry_value::<Table>(format!("types.methods.{name}").as_str())?.raw_get(key) }
 fn vector_index<const N:usize>(lua:&Lua,v:&Vector<N>,key:&str)->Result<Value> {
-    if let Some(i)=["X","Y","Z"].iter().position(|x|*x==key) { if i<N { return Ok(Value::Number(v.0[i] as f64)); } }
+    if let Some(i)=[("X","x"),("Y","y"),("Z","z")].iter().position(|(a,b)|*a==key||*b==key) { if i<N { return Ok(Value::Number(v.0[i] as f64)); } }
     match key { "Magnitude"|"magnitude"=>Ok(Value::Number(v.length() as f64)),"Unit"|"unit"=>vector_value(lua,v.unit()),
         _=>{let method=lookup(lua,Vector::<N>::name(),key)?; if !method.is_nil(){Ok(method)} else {Err(Error::lua_string(format!("{key} is not a valid member of {}",Vector::<N>::name())))}}
     }
@@ -264,6 +308,187 @@ impl UserData for Color3 {
     }
 }
 
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct Rect { pub min:Vector2, pub max:Vector2 }
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct NumberRange { pub min:f32, pub max:f32 }
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct NumberSequenceKeypoint { pub time:f32, pub value:f32, pub envelope:f32 }
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct ColorSequenceKeypoint { pub time:f32, pub value:Color3 }
+#[derive(Clone,Debug,PartialEq)]
+pub struct NumberSequence(pub Vec<NumberSequenceKeypoint>);
+#[derive(Clone,Debug,PartialEq)]
+pub struct ColorSequence(pub Vec<ColorSequenceKeypoint>);
+#[derive(Clone,Debug,PartialEq)]
+pub struct TweenInfo { pub time:f64, pub style:String, pub direction:String, pub repeat_count:i32, pub reverses:bool, pub delay:f64 }
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct IntVector<const N:usize>(pub [i16;N]);
+
+fn member_error(name:&str,key:&str)->Error {Error::lua_string(format!("'{key}' is not a valid member of {name}"))}
+fn readonly(name:&str,key:&str)->Error {
+    let valid=match name{"Rect"=>matches!(key,"Min"|"Max"|"Width"|"Height"),"NumberRange"=>matches!(key,"Min"|"Max"),"NumberSequenceKeypoint"=>matches!(key,"Time"|"Value"|"Envelope"),"ColorSequenceKeypoint"=>matches!(key,"Time"|"Value"),"NumberSequence"|"ColorSequence"=>key=="Keypoints","TweenInfo"=>matches!(key,"Time"|"DelayTime"|"RepeatCount"|"Reverses"|"EasingStyle"|"EasingDirection"),"Vector2int16"=>matches!(key,"X"|"x"|"Y"|"y"),"Vector3int16"=>matches!(key,"X"|"x"|"Y"|"y"|"Z"|"z"),_=>false};
+    Error::lua_string(if valid{format!("{key} member of {name} is read-only and cannot be assigned to")}else{format!("{key} is not a valid member of {name}")})
+}
+fn userdata_copy<T:UserData+Clone+'static>(value:&Value)->Option<T>{if let Value::UserData(value)=value{value.borrow::<T>().ok().map(|v|v.clone())}else{None}}
+fn numeric(lua:&Lua,args:&MultiValue,index:usize)->Result<f32>{lua.coerce_number(args.get(index).cloned().unwrap_or(Value::Nil))?.map(|v|v as f32).ok_or_else(||Error::lua_string(format!("invalid argument #{} to 'new' (number expected)",index+1)))}
+fn enumeration(lua:&Lua,family:&str,name:&str)->Result<Value>{lua.named_registry_value::<Table>(&format!("types.enum.{family}"))?.raw_get(name)}
+fn enumeration_name(lua:&Lua,value:&Value,family:&str,numeric:bool)->Result<Option<String>>{
+    if let Some(item)=userdata_copy::<EnumItem>(value){return Ok((item.family==family).then_some(item.name))}
+    if numeric {if let Some(number)=match value{Value::Integer(n)=>Some(*n as f64),Value::Number(n)=>Some(*n),_=>None}{
+        for entry in lua.named_registry_value::<Table>(&format!("types.enumlist.{family}"))?.sequence_values::<AnyUserData>(){
+            let entry=entry?;let item=entry.borrow::<EnumItem>()?;if item.value as f64==number{return Ok(Some(item.name.clone()))}
+        }
+    }}Ok(None)
+}
+macro_rules! immutable_value {
+    ($ty:ty,$name:literal,$index:expr,$text:expr) => {impl UserData for $ty {
+        fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type",$name);Self::add_methods(r);}
+        fn add_methods<M:UserDataMethods<Self>>(m:&mut M){
+            m.add_meta_method(MetaMethod::Index,$index);
+            m.add_meta_method(MetaMethod::NewIndex,|_,_,(key,_):(String,Value)|Err::<(),_>(readonly($name,&key)));
+            m.add_meta_method(MetaMethod::Eq,|_,this,other:Value|Ok(userdata_copy::<Self>(&other).is_some_and(|other|*this==other)));
+            m.add_meta_method(MetaMethod::ToString,$text);
+        }
+    }};
+}
+immutable_value!(Rect,"Rect",|lua,v:&Rect,key:String|match key.as_str(){
+    "Min"=>v.min.into_lua(lua),"Max"=>v.max.into_lua(lua),"Width"=>Ok(Value::Number((v.max.0[0]-v.min.0[0])as f64)),"Height"=>Ok(Value::Number((v.max.0[1]-v.min.0[1])as f64)),_=>Err(member_error("Rect",&key))
+},|_,v:&Rect,()|Ok(v.min.0.into_iter().chain(v.max.0).map(float9).collect::<Vec<_>>().join(", ")));
+immutable_value!(NumberRange,"NumberRange",|_,v:&NumberRange,key:String|match key.as_str(){"Min"=>Ok(Value::Number(v.min as f64)),"Max"=>Ok(Value::Number(v.max as f64)),_=>Err(member_error("NumberRange",&key))},|_,v:&NumberRange,()|Ok(format!("{} {} ",float_precision(v.min,6),float_precision(v.max,6))));
+fn number_key_text(v:&NumberSequenceKeypoint)->String{format!("{} {} {} ",float_precision(v.time,6),float_precision(v.value,6),float_precision(v.envelope,6))}
+fn color_key_text(v:&ColorSequenceKeypoint)->String{format!("{} {} {} {} 0 ",float_precision(v.time,6),float_precision(v.value.0[0],6),float_precision(v.value.0[1],6),float_precision(v.value.0[2],6))}
+immutable_value!(NumberSequenceKeypoint,"NumberSequenceKeypoint",|_,v:&NumberSequenceKeypoint,key:String|match key.as_str(){"Time"=>Ok(Value::Number(v.time as f64)),"Value"=>Ok(Value::Number(v.value as f64)),"Envelope"=>Ok(Value::Number(v.envelope as f64)),_=>Err(member_error("NumberSequenceKeypoint",&key))},|_,v:&NumberSequenceKeypoint,()|Ok(number_key_text(v)));
+immutable_value!(ColorSequenceKeypoint,"ColorSequenceKeypoint",|lua,v:&ColorSequenceKeypoint,key:String|match key.as_str(){"Time"=>Ok(Value::Number(v.time as f64)),"Value"=>v.value.into_lua(lua),_=>Err(member_error("ColorSequenceKeypoint",&key))},|_,v:&ColorSequenceKeypoint,()|Ok(color_key_text(v)));
+immutable_value!(NumberSequence,"NumberSequence",|lua,v:&NumberSequence,key:String|if key=="Keypoints"{Ok(Value::Table(lua.create_sequence_from(v.0.iter().copied())?))}else{Err(member_error("NumberSequence",&key))},|_,v:&NumberSequence,()|Ok(v.0.iter().map(number_key_text).collect::<String>()));
+immutable_value!(ColorSequence,"ColorSequence",|lua,v:&ColorSequence,key:String|if key=="Keypoints"{Ok(Value::Table(lua.create_sequence_from(v.0.iter().copied())?))}else{Err(member_error("ColorSequence",&key))},|_,v:&ColorSequence,()|Ok(v.0.iter().map(color_key_text).collect::<String>()));
+immutable_value!(TweenInfo,"TweenInfo",|lua,v:&TweenInfo,key:String|match key.as_str(){
+    "Time"=>Ok(Value::Number(v.time)),"DelayTime"=>Ok(Value::Number(v.delay)),"RepeatCount"=>Ok(Value::Integer(v.repeat_count as i64)),"Reverses"=>Ok(Value::Boolean(v.reverses)),"EasingStyle"=>enumeration(lua,"EasingStyle",&v.style),"EasingDirection"=>enumeration(lua,"EasingDirection",&v.direction),_=>Err(member_error("TweenInfo",&key))
+},|_,v:&TweenInfo,()|Ok(format!("Time:{} DelayTime:{} RepeatCount:{} Reverses:{} EasingDirection:{} EasingStyle:{}",v.time,v.delay,v.repeat_count,if v.reverses{"True"}else{"False"},v.direction,v.style)));
+
+impl<const N:usize> IntVector<N>{fn name()->&'static str{if N==2{"Vector2int16"}else{"Vector3int16"}}}
+fn int16(value:f64)->i16{dimension_int(value)as i16}
+fn int_vector_binary<const N:usize>(a:Value,b:Value,op:u8)->Result<IntVector<N>>{
+    let vector_a=userdata_copy::<IntVector<N>>(&a);let vector_b=userdata_copy::<IntVector<N>>(&b);
+    let scalar=|v:&Value|match v{Value::Number(v)=>Some(*v),Value::Integer(v)=>Some(*v as f64),_=>None};
+    let (left,right)=if let (Some(a),Some(b))=(vector_a,vector_b){(a.0.map(f64::from),b.0.map(f64::from))}
+        else if op>=2{if let (Some(a),Some(b))=(vector_a,scalar(&b)){(a.0.map(f64::from),[b;N])}else if op==2{if let(Some(a),Some(b))=(scalar(&a),vector_b){([a;N],b.0.map(f64::from))}else{return Err(Error::lua_string(format!("{} expected",IntVector::<N>::name())))}}else{return Err(Error::lua_string("number expected"))}}
+        else{return Err(Error::lua_string(format!("{} expected",IntVector::<N>::name())))};
+    if op==3&&right.contains(&0.){return Err(Error::lua_string("Divide by zero exception"))}
+    Ok(IntVector(std::array::from_fn(|i|int16(match op{0=>left[i]+right[i],1=>left[i]-right[i],2=>left[i]*right[i],_=>left[i]/right[i]}))))
+}
+impl<const N:usize> UserData for IntVector<N>{
+    fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type",Self::name());Self::add_methods(r);}
+    fn add_methods<M:UserDataMethods<Self>>(m:&mut M){
+        m.add_meta_method(MetaMethod::Index,|_,v,key:String|{let index=match key.as_str(){"X"|"x"=>0,"Y"|"y"=>1,"Z"|"z"=>2,_=>N};if index<N{Ok(v.0[index])}else{Err(member_error(Self::name(),&key))}});
+        m.add_meta_method(MetaMethod::NewIndex,|_,_,(key,_):(String,Value)|Err::<(),_>(readonly(Self::name(),&key)));
+        m.add_meta_method(MetaMethod::Eq,|_,v,o:Value|Ok(userdata_copy::<Self>(&o).is_some_and(|o|*v==o)));
+        m.add_meta_method(MetaMethod::ToString,|_,v,()|Ok(v.0.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")));
+        m.add_meta_method(MetaMethod::Unm,|_,v,()|Ok(Self(v.0.map(i16::wrapping_neg))));
+        m.add_meta_function(MetaMethod::Add,|_,(a,b):(Value,Value)|int_vector_binary::<N>(a,b,0));
+        m.add_meta_function(MetaMethod::Sub,|_,(a,b):(Value,Value)|int_vector_binary::<N>(a,b,1));
+        m.add_meta_function(MetaMethod::Mul,|_,(a,b):(Value,Value)|int_vector_binary::<N>(a,b,2));
+        m.add_meta_function(MetaMethod::Div,|_,(a,b):(Value,Value)|int_vector_binary::<N>(a,b,3));
+    }
+}
+
+#[derive(Clone,Default)]
+pub struct QueryParams<const OVERLAP:bool>{
+    pub filter:Vec<crate::instance::Link>,pub exclude:Option<Vec<crate::instance::Link>>,pub include:Option<Vec<crate::instance::Link>>,
+    pub filter_include:bool,pub ignore_water:bool,pub respect_can_collide:bool,pub brute_force:bool,pub collision_group:String,pub max_parts:i32,pub tolerance:f32,
+}
+impl<const O:bool> QueryParams<O>{fn name()->&'static str{if O{"OverlapParams"}else{"RaycastParams"}}fn new()->Self{Self{collision_group:"Default".into(),..Self::default()}}}
+fn instance_filter(value:&Value)->Result<Vec<crate::instance::Link>>{
+    fn append(value:&Value,result:&mut Vec<crate::instance::Link>,seen:&mut std::collections::HashSet<usize>,depth:usize)->Result<()>{
+        if depth>64||result.len()>=4096{return Err(Error::lua_string("FilterLimit: too many nested filter entries"))}
+        if let Value::UserData(v)=value{if let Ok(v)=v.borrow::<crate::instance::Instance>(){result.push(v.0.clone());return Ok(())}}
+        if let Value::Table(table)=value{
+            let pointer=table.to_pointer()as usize;if !seen.insert(pointer){return Err(Error::lua_string("Filter table contains a cycle"))}
+            for value in table.clone().sequence_values::<Value>(){append(&value?,result,seen,depth+1)?;}seen.remove(&pointer);return Ok(())
+        }
+        Err(Error::lua_string("Invalid value type; table must only contain Instances and other tables"))
+    }
+    let mut result=Vec::new();append(value,&mut result,&mut std::collections::HashSet::new(),0)?;Ok(result)
+}
+fn same_links(a:&[crate::instance::Link],b:&[crate::instance::Link])->bool{a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|std::rc::Rc::ptr_eq(a,b))}
+fn same_optional_links(a:&Option<Vec<crate::instance::Link>>,b:&Option<Vec<crate::instance::Link>>)->bool{match(a,b){(Some(a),Some(b))=>same_links(a,b),(None,None)=>true,_=>false}}
+impl<const O:bool> PartialEq for QueryParams<O>{fn eq(&self,b:&Self)->bool{same_links(&self.filter,&b.filter)&&same_optional_links(&self.exclude,&b.exclude)&&same_optional_links(&self.include,&b.include)&&self.filter_include==b.filter_include&&self.ignore_water==b.ignore_water&&self.respect_can_collide==b.respect_can_collide&&self.brute_force==b.brute_force&&self.collision_group==b.collision_group&&self.max_parts==b.max_parts&&self.tolerance==b.tolerance}}
+impl<const O:bool> UserData for QueryParams<O>{
+    fn register(r:&mut UserDataRegistry<Self>){r.add_meta_field("__type",Self::name());Self::add_methods(r);}
+    fn add_methods<M:UserDataMethods<Self>>(m:&mut M){
+        m.add_meta_method(MetaMethod::Index,|lua,v,key:String|match key.as_str(){
+            "FilterDescendantsInstances"=>Ok(Value::Table(crate::instance::instance_list(lua,v.filter.clone())?)),
+            "ExcludeInstances"|"IncludeInstances"=>match if key=="ExcludeInstances"{&v.exclude}else{&v.include}{Some(values)=>Ok(Value::Table(crate::instance::instance_list(lua,values.clone())?)),None=>Ok(Value::Nil)},
+            "FilterType"=>enumeration(lua,"RaycastFilterType",if v.filter_include{"Include"}else{"Exclude"}),
+            "IgnoreWater" if !O=>Ok(Value::Boolean(v.ignore_water)),"RespectCanCollide"=>Ok(Value::Boolean(v.respect_can_collide)),"BruteForceAllSlow"=>Ok(Value::Boolean(v.brute_force)),"CollisionGroup"=>v.collision_group.clone().into_lua(lua),
+            "MaxParts" if O=>Ok(Value::Integer(v.max_parts as i64)),"Tolerance" if O=>Ok(Value::Number(v.tolerance as f64)),
+            "Margin"|"SizeGradient" if !O=>Err(Error::lua_string(format!("{key} is not enabled yet!"))),
+            "AddToFilter"=>lookup(lua,Self::name(),&key),_=>Err(Error::lua_string(format!("{key} is not a valid member of {}",Self::name())))
+        });
+        m.add_meta_method_mut(MetaMethod::NewIndex,|lua,v,(key,value):(String,Value)|{
+            match key.as_str(){
+                "FilterDescendantsInstances"=>{if !matches!(value,Value::Table(_)){return Err(Error::lua_string("Unable to cast value to Objects"))}v.filter=instance_filter(&value)?;},
+                "ExcludeInstances"|"IncludeInstances"=>{let values=if value.is_nil(){None}else{Some(instance_filter(&value)?)};if key=="ExcludeInstances"{v.exclude=values}else{v.include=values}},
+                "FilterType"=>{let name=enumeration_name(lua,&value,"RaycastFilterType",true)?.ok_or_else(||Error::lua_string("Invalid value for enum 'RaycastFilterType'"))?;v.filter_include=matches!(name.as_str(),"Include"|"Whitelist");},
+                "IgnoreWater" if !O=>v.ignore_water=!matches!(value,Value::Nil|Value::Boolean(false)),"RespectCanCollide"=>v.respect_can_collide=!matches!(value,Value::Nil|Value::Boolean(false)),"BruteForceAllSlow"=>v.brute_force=!matches!(value,Value::Nil|Value::Boolean(false)),
+                "CollisionGroup"=>v.collision_group=lua.coerce_string(value)?.ok_or_else(||Error::lua_string("string expected"))?.to_str()?.to_string(),
+                "MaxParts" if O=>v.max_parts=dimension_int(lua.coerce_number(value)?.ok_or_else(||Error::lua_string("number expected"))?),
+                "Tolerance" if O=>{let tolerance=lua.coerce_number(value)?.ok_or_else(||Error::lua_string("number expected"))?as f32;if !(0.0..=0.05f32).contains(&tolerance){return Err(Error::lua_string(format!("Tolerance outside bounds: Expected 0 - 0.050000, got {tolerance:.6}")))}v.tolerance=tolerance;},
+                "Margin"|"SizeGradient" if !O=>return Err(Error::lua_string(format!("{key} is not enabled yet!"))),_=>return Err(Error::lua_string(format!("{key} is not a valid member of {}",Self::name()))),
+            }Ok(())
+        });
+        m.add_meta_method(MetaMethod::Eq,|_,v,o:Value|Ok(userdata_copy::<Self>(&o).is_some_and(|o|*v==o)));
+        m.add_meta_method(MetaMethod::ToString,|_,v,()|Ok(format!("{}{{{}BruteForceAllSlow={}, RespectCanCollide={}, CollisionGroup={}, FilterDescendantsInstances={{{}}}}}",Self::name(),if O{format!("MaxParts={}, Tolerance={}, ",v.max_parts,v.tolerance)}else{format!("IgnoreWater={}, ",v.ignore_water)},v.brute_force,v.respect_can_collide,v.collision_group,v.filter.iter().map(|v|v.borrow().name.clone()).collect::<Vec<_>>().join(", "))));
+        m.add_method_mut("AddToFilter",|_,v,value:Value|{let extra=instance_filter(&value)?;if v.filter.len()+extra.len()>4096{return Err(Error::lua_string("FilterLimit: too many filter entries"))}v.filter.extend(extra);Ok(())});
+    }
+}
+fn install_query_params<const O:bool>(lua:&Lua)->Result<()>{
+    let sample=lock(lua,lua.create_userdata(QueryParams::<O>::new())?)?;
+    let method=sample.get::<Function>("AddToFilter")?;crate::native::name_function(lua,&method,c"AddToFilter")?;
+    let methods=lua.create_table()?;methods.raw_set("AddToFilter",method)?;lua.set_named_registry_value(&format!("types.methods.{}",QueryParams::<O>::name()),methods)?;
+    let api=lua.create_table()?;api.set("new",named(lua,c"new",|_,_:MultiValue|Ok(QueryParams::<O>::new()))?)?;api.set_readonly(true);lua.globals().set(QueryParams::<O>::name(),api)
+}
+fn install_int_vector<const N:usize>(lua:&Lua)->Result<()>{
+    lock(lua,lua.create_userdata(IntVector::<N>([0;N]))?)?;let api=lua.create_table()?;
+    api.set("new",named(lua,c"new",|lua,args:MultiValue|{let mut values=[0;N];for(i,value)in values.iter_mut().enumerate(){*value=int16(dimension_number(lua,&args,i)?);}Ok(IntVector(values))})?)?;
+    api.set_readonly(true);lua.globals().set(IntVector::<N>::name(),api)
+}
+fn sequence_check(name:&str,times:&[f32])->Result<()>{
+    let error=if times.len()<2{Some(format!("{name}: requires at least 2 keypoints"))}else if times.windows(2).any(|pair|pair[0]>pair[1]){Some(format!("{name}: all keypoints must be ordered by time"))}else if times[0]!=0.{Some(format!("{name} must start at time=0.0"))}else if *times.last().unwrap()!=1.{Some(format!("{name} must end at time=1.0"))}else{None};
+    if let Some(error)=error{Err(Error::lua_string(error))}else{Ok(())}
+}
+fn sequence_points<T:UserData+Clone+'static>(table:Table,name:&str)->Result<Vec<T>>{
+    let mut points=Vec::new();for value in table.sequence_values::<Value>(){if points.len()>=20{return Err(Error::lua_string(format!("{name}.new(): table is too long.")))}points.push(userdata_copy::<T>(&value?).ok_or_else(||Error::lua_string(format!("{name}.new(): invalid keypoint type")))?);}Ok(points)
+}
+fn install_value_types(lua:&Lua)->Result<()>{
+    macro_rules! constructor{($name:literal,$sample:expr,$call:expr)=>{{lock(lua,lua.create_userdata($sample)?)?;let api=lua.create_table()?;api.set("new",named(lua,c"new",$call)?)?;api.set_readonly(true);lua.globals().set($name,api)?;}};}
+    constructor!("Rect",Rect{min:Vector([0.;2]),max:Vector([0.;2])},|lua,args:MultiValue|{
+        let(a,b)=if args.is_empty(){(Vector([0.;2]),Vector([0.;2]))}else if args.len()==4{(Vector([numeric(lua,&args,0)?,numeric(lua,&args,1)?]),Vector([numeric(lua,&args,2)?,numeric(lua,&args,3)?]))}else{(vector::<2>(args.front().unwrap_or(&Value::Nil))?,vector::<2>(args.get(1).unwrap_or(&Value::Nil))?)};
+        Ok(Rect{min:Vector(std::array::from_fn(|i|a.0[i].min(b.0[i]))),max:Vector(std::array::from_fn(|i|a.0[i].max(b.0[i])))})
+    });
+    constructor!("NumberRange",NumberRange{min:0.,max:0.},|lua,args:MultiValue|{let min=numeric(lua,&args,0)?;let max=if args.len()>1{numeric(lua,&args,1)?}else{min};if min>max{return Err(Error::lua_string("NumberRange: invalid range"))}Ok(NumberRange{min,max})});
+    constructor!("NumberSequenceKeypoint",NumberSequenceKeypoint{time:0.,value:0.,envelope:0.},|lua,args:MultiValue|Ok(NumberSequenceKeypoint{time:numeric(lua,&args,0)?,value:numeric(lua,&args,1)?,envelope:if args.len()>2{numeric(lua,&args,2)?}else{0.}}));
+    constructor!("ColorSequenceKeypoint",ColorSequenceKeypoint{time:0.,value:Color3([0.;3])},|lua,args:MultiValue|Ok(ColorSequenceKeypoint{time:numeric(lua,&args,0)?,value:args.get(1).and_then(userdata_copy::<Color3>).ok_or_else(||Error::lua_string("could not parse arg #2 to ColorSequenceKeypoint.new(), Color3 expected."))?}));
+    constructor!("NumberSequence",NumberSequence(vec![NumberSequenceKeypoint{time:0.,value:0.,envelope:0.},NumberSequenceKeypoint{time:1.,value:0.,envelope:0.}]),|lua,args:MultiValue|{
+        let points=if let Some(Value::Table(table))=args.front(){sequence_points::<NumberSequenceKeypoint>(table.clone(),"NumberSequence")?}else if let Some(value)=args.front().filter(|v|matches!(v,Value::Integer(_)|Value::Number(_))){let first=number(value)?;let last=if args.len()>1{numeric(lua,&args,1)?}else{first};vec![NumberSequenceKeypoint{time:0.,value:first,envelope:0.},NumberSequenceKeypoint{time:1.,value:last,envelope:0.}]}else{return Err(Error::lua_string("NumberSequence.new(): table of NumberSequenceKeypoints expected."))};
+        sequence_check("NumberSequence",&points.iter().map(|point|point.time).collect::<Vec<_>>())?;Ok(NumberSequence(points))
+    });
+    constructor!("ColorSequence",ColorSequence(vec![ColorSequenceKeypoint{time:0.,value:Color3([0.;3])},ColorSequenceKeypoint{time:1.,value:Color3([0.;3])}]),|_,args:MultiValue|{
+        let points=if let Some(Value::Table(table))=args.front(){sequence_points::<ColorSequenceKeypoint>(table.clone(),"ColorSequence")?}else if let Some(first)=args.front().and_then(userdata_copy::<Color3>){let last=if args.len()>1{args.get(1).and_then(userdata_copy::<Color3>).ok_or_else(||Error::lua_string("Color3 expected"))?}else{first};vec![ColorSequenceKeypoint{time:0.,value:first},ColorSequenceKeypoint{time:1.,value:last}]}else{return Err(Error::lua_string("ColorSequence.new(): table expected."))};
+        sequence_check("ColorSequence",&points.iter().map(|point|point.time).collect::<Vec<_>>())?;Ok(ColorSequence(points))
+    });
+    constructor!("TweenInfo",TweenInfo{time:1.,style:"Quad".into(),direction:"Out".into(),repeat_count:0,reverses:false,delay:0.},|lua,args:MultiValue|{
+        let number=|index:usize,default:f64,message:&str|->Result<f64>{match args.get(index){None=>Ok(default),Some(Value::Integer(v))=>Ok(*v as f32 as f64),Some(Value::Number(v))=>Ok(*v as f32 as f64),_=>Err(Error::lua_string(message))}};
+        let time=number(0,1.,"TweenInfo.new first argument expects a number for time.")?;
+        let style=if let Some(value)=args.get(1){enumeration_name(lua,value,"EasingStyle",true)?.ok_or_else(||Error::lua_string("TweenInfo.new second argument expects Enum.EasingStyle input"))?}else{"Quad".into()};
+        if matches!(style.as_str(),"Spring"|"Bezier"){return Err(Error::lua_string("TweenInfo.new does not support Enum.EasingStyle.Spring or Enum.EasingStyle.Bezier"))}
+        let direction=if let Some(value)=args.get(2){enumeration_name(lua,value,"EasingDirection",true)?.ok_or_else(||Error::lua_string("TweenInfo.new third argument expects Enum.EasingDirection input"))?}else{"Out".into()};
+        let reverses=match args.get(4){None=>false,Some(Value::Boolean(value))=>*value,_=>return Err(Error::lua_string("TweenInfo.new fifth arg should be a boolean for Reverses."))};
+        Ok(TweenInfo{time,style,direction,repeat_count:dimension_int(number(3,0.,"TweenInfo.new fourth argument expects a number for repeat count.")?),reverses,delay:number(5,0.,"TweenInfo.new sixth argument expects a number for delay time.")?})
+    });
+    install_int_vector::<2>(lua)?;install_int_vector::<3>(lua)?;install_query_params::<false>(lua)?;install_query_params::<true>(lua)
+}
+
 fn seal<T:UserData+'static>(lua:&Lua,sample:T,name:&str,names:&[(&str,&'static std::ffi::CStr)],index:Function)->Result<()> {
     let sample=lua.create_userdata(sample)?; let methods=lua.create_table()?;
     for (key,debug_name) in names {let f=sample.get::<Function>(*key)?;crate::native::name_function(lua,&f,debug_name)?;methods.raw_set(*key,f)?;}
@@ -299,8 +524,10 @@ fn install_vector3(lua:&Lua)->Result<()> {
 }
 pub fn install(lua:&Lua)->Result<()> {
     install_enums(lua)?;
-    install_dimensions(lua)?;install_random(lua)?;
+    install_dimensions(lua)?;install_path_point(lua)?;install_random(lua)?;
     install_vector::<2>(lua)?;install_vector3(lua)?;
+    lua.globals().get::<Table>("vector")?.set_readonly(true);
+    install_value_types(lua)?;
     let index=lua.create_function(|lua,(v,k):(AnyUserData,String)|cf_index(lua,&*v.borrow::<CFrame>()?,&k))?;
     seal(lua,CFrame::identity(),"CFrame",&[("Inverse",c"Inverse"),("GetComponents",c"GetComponents"),("ToWorldSpace",c"ToWorldSpace"),("ToObjectSpace",c"ToObjectSpace"),("PointToWorldSpace",c"PointToWorldSpace"),("PointToObjectSpace",c"PointToObjectSpace"),("VectorToWorldSpace",c"VectorToWorldSpace"),("VectorToObjectSpace",c"VectorToObjectSpace"),("ToOrientation",c"ToOrientation")],index)?;
     let api=lua.create_table()?;
@@ -325,6 +552,15 @@ pub fn install(lua:&Lua)->Result<()> {
 pub fn encode_value(v:&Value)->Result<Option<Json>> {
     if let Value::Vector(v)=v{return Ok(Some(json!({"tag":"Vector3","x":v.x(),"y":v.y(),"z":v.z()})));}
     let Value::UserData(v)=v else{return Ok(None)};
+    if let Ok(v)=v.borrow::<Rect>(){return Ok(Some(json!({"tag":"Rect","min":v.min.0,"max":v.max.0})));}
+    if let Ok(v)=v.borrow::<NumberRange>(){return Ok(Some(json!({"tag":"NumberRange","min":v.min,"max":v.max})));}
+    if let Ok(v)=v.borrow::<NumberSequenceKeypoint>(){return Ok(Some(json!({"tag":"NumberSequenceKeypoint","components":[v.time,v.value,v.envelope]})));}
+    if let Ok(v)=v.borrow::<ColorSequenceKeypoint>(){return Ok(Some(json!({"tag":"ColorSequenceKeypoint","components":[v.time,v.value.0[0],v.value.0[1],v.value.0[2]]})));}
+    if let Ok(v)=v.borrow::<NumberSequence>(){return Ok(Some(json!({"tag":"NumberSequence","keypoints":v.0.iter().map(|v|[v.time,v.value,v.envelope]).collect::<Vec<_>>()})));}
+    if let Ok(v)=v.borrow::<ColorSequence>(){return Ok(Some(json!({"tag":"ColorSequence","keypoints":v.0.iter().map(|v|[v.time,v.value.0[0],v.value.0[1],v.value.0[2]]).collect::<Vec<_>>()})));}
+    if let Ok(v)=v.borrow::<TweenInfo>(){return Ok(Some(json!({"tag":"TweenInfo","time":v.time,"style":v.style,"direction":v.direction,"repeatCount":v.repeat_count,"reverses":v.reverses,"delay":v.delay})));}
+    if let Ok(v)=v.borrow::<IntVector<2>>(){return Ok(Some(json!({"tag":"Vector2int16","components":v.0})));}
+    if let Ok(v)=v.borrow::<IntVector<3>>(){return Ok(Some(json!({"tag":"Vector3int16","components":v.0})));}
     if let Ok(v)=v.borrow::<Vector2>(){return Ok(Some(json!({"tag":"Vector2","x":v.0[0],"y":v.0[1]})));}
     if let Ok(v)=v.borrow::<Vector3>(){return Ok(Some(json!({"tag":"Vector3","x":v.0[0],"y":v.0[1],"z":v.0[2]})));}
     if let Ok(v)=v.borrow::<CFrame>(){return Ok(Some(json!({"tag":"CFrame","components":v.components()})));}
@@ -332,10 +568,12 @@ pub fn encode_value(v:&Value)->Result<Option<Json>> {
     if let Ok(v)=v.borrow::<Ray>(){return Ok(Some(json!({"tag":"Ray","origin":v.origin.0,"direction":v.direction.0})));}
     if let Ok(v)=v.borrow::<UDim>(){return Ok(Some(json!({"tag":"UDim","scale":v.scale,"offset":v.offset})));}
     if let Ok(v)=v.borrow::<UDim2>(){return Ok(Some(json!({"tag":"UDim2","xScale":v.x.scale,"xOffset":v.x.offset,"yScale":v.y.scale,"yOffset":v.y.offset})));}
+    if let Ok(v)=v.borrow::<Path2DControlPoint>(){let dim=|v:UDim2|json!({"tag":"UDim2","xScale":v.x.scale,"xOffset":v.x.offset,"yScale":v.y.scale,"yOffset":v.y.offset});return Ok(Some(json!({"tag":"Path2DControlPoint","position":dim(v.position),"leftTangent":dim(v.left),"rightTangent":dim(v.right)})));}
     if let Ok(v)=v.borrow::<EnumItem>(){return Ok(Some(json!({"tag":"EnumItem","enum":v.family,"name":v.name})));}
     Ok(None)
 }
 pub fn decode_value(lua:&Lua,v:&Json)->Result<Option<Value>> {
+    if let Some(value)=decode_value_type(lua,v)?{return Ok(Some(value))}
     let n=|k:&str|v[k].as_f64().unwrap_or(0.) as f32;
     Ok(match v["tag"].as_str().unwrap_or(""){
         "Vector2"=>Some(Vector([n("x"),n("y")]).into_lua(lua)?),"Vector3"=>Some(vector_value(lua,Vector([n("x"),n("y"),n("z")]))?),"Color3"=>Some(Color3([n("r"),n("g"),n("b")]).into_lua(lua)?),
@@ -343,7 +581,40 @@ pub fn decode_value(lua:&Lua,v:&Json)->Result<Option<Value>> {
         "Ray"=>{let read=|key:&str|->Result<Vector3>{let a=v[key].as_array().filter(|a|a.len()==3).ok_or_else(||Error::lua_string("Invalid Ray wire value"))?;Ok(Vector(std::array::from_fn(|i|a[i].as_f64().unwrap_or(0.)as f32)))};Some(Ray{origin:read("origin")?,direction:read("direction")?}.into_lua(lua)?)},
         "UDim"=>Some(UDim{scale:n("scale"),offset:dimension_int(v["offset"].as_f64().unwrap_or(0.))}.into_lua(lua)?),
         "UDim2"=>Some(UDim2{x:UDim{scale:n("xScale"),offset:dimension_int(v["xOffset"].as_f64().unwrap_or(0.))},y:UDim{scale:n("yScale"),offset:dimension_int(v["yOffset"].as_f64().unwrap_or(0.))}}.into_lua(lua)?),
+        "Path2DControlPoint"=>{let dim=|key:&str|->Result<UDim2>{decode_value(lua,&v[key])?.as_ref().and_then(dimension::<true>).ok_or_else(||Error::lua_string("Invalid Path2DControlPoint wire value"))};Some(Path2DControlPoint{position:dim("position")?,left:dim("leftTangent")?,right:dim("rightTangent")?}.into_lua(lua)?)},
         "EnumItem"=>{let family=v["enum"].as_str().unwrap_or("");let name=v["name"].as_str().unwrap_or("");let items:Table=lua.named_registry_value(format!("types.enum.{family}").as_str())?;let item:Value=items.get(name)?;if item.is_nil(){return Err(Error::lua_string("Invalid EnumItem wire value"));}Some(item)},_=>None})
+}
+
+fn wire_numbers<const N:usize>(v:&Json)->Result<[f32;N]>{
+    let array=v.as_array().filter(|v|v.len()==N).ok_or_else(||Error::lua_string("Invalid datatype wire components"))?;
+    let mut values=[0.;N];for(value,source)in values.iter_mut().zip(array){*value=source.as_f64().ok_or_else(||Error::lua_string("Invalid datatype wire number"))?as f32;}Ok(values)
+}
+fn wire_integers<const N:usize>(v:&Json)->Result<[i16;N]>{
+    let array=v.as_array().filter(|v|v.len()==N).ok_or_else(||Error::lua_string("Invalid integer vector wire components"))?;
+    let mut values=[0;N];for(value,source)in values.iter_mut().zip(array){*value=source.as_i64().and_then(|v|i16::try_from(v).ok()).ok_or_else(||Error::lua_string("Invalid integer vector wire component"))?;}Ok(values)
+}
+fn decode_value_type(lua:&Lua,v:&Json)->Result<Option<Value>>{
+    let number=|key:&str|v[key].as_f64().map(|v|v as f32).ok_or_else(||Error::lua_string("Invalid datatype wire number"));
+    let tag=v["tag"].as_str().unwrap_or("");
+    Ok(Some(match tag{
+        "Rect"=>Rect{min:Vector(wire_numbers(&v["min"])?),max:Vector(wire_numbers(&v["max"])?) }.into_lua(lua)?,
+        "NumberRange"=>{let(min,max)=(number("min")?,number("max")?);if min>max{return Err(Error::lua_string("NumberRange: invalid range"))}NumberRange{min,max}.into_lua(lua)?},
+        "NumberSequenceKeypoint"=>{let [time,value,envelope]=wire_numbers(&v["components"])?;NumberSequenceKeypoint{time,value,envelope}.into_lua(lua)?},
+        "ColorSequenceKeypoint"=>{let [time,r,g,b]=wire_numbers(&v["components"])?;ColorSequenceKeypoint{time,value:Color3([r,g,b])}.into_lua(lua)?},
+        "NumberSequence"|"ColorSequence"=>{
+            let points=v["keypoints"].as_array().filter(|p|p.len()<=20).ok_or_else(||Error::lua_string("Invalid sequence wire keypoints"))?;
+            if tag=="NumberSequence"{let points=points.iter().map(|v|{let[time,value,envelope]=wire_numbers(v)?;Ok(NumberSequenceKeypoint{time,value,envelope})}).collect::<Result<Vec<_>>>()?;sequence_check(tag,&points.iter().map(|p|p.time).collect::<Vec<_>>())?;NumberSequence(points).into_lua(lua)?}
+            else{let points=points.iter().map(|v|{let[time,r,g,b]=wire_numbers(v)?;Ok(ColorSequenceKeypoint{time,value:Color3([r,g,b])})}).collect::<Result<Vec<_>>>()?;sequence_check(tag,&points.iter().map(|p|p.time).collect::<Vec<_>>())?;ColorSequence(points).into_lua(lua)?}
+        },
+        "TweenInfo"=>{
+            let style=v["style"].as_str().ok_or_else(||Error::lua_string("Invalid TweenInfo wire style"))?;let direction=v["direction"].as_str().ok_or_else(||Error::lua_string("Invalid TweenInfo wire direction"))?;
+            if matches!(style,"Spring"|"Bezier")||enumeration(lua,"EasingStyle",style)?.is_nil()||enumeration(lua,"EasingDirection",direction)?.is_nil(){return Err(Error::lua_string("Invalid TweenInfo wire enum"))}
+            TweenInfo{time:number("time")?as f64,delay:number("delay")?as f64,style:style.into(),direction:direction.into(),repeat_count:v["repeatCount"].as_i64().and_then(|v|i32::try_from(v).ok()).ok_or_else(||Error::lua_string("Invalid TweenInfo wire repeat count"))?,reverses:v["reverses"].as_bool().ok_or_else(||Error::lua_string("Invalid TweenInfo wire reverses"))?}.into_lua(lua)?
+        },
+        "Vector2int16"=>IntVector::<2>(wire_integers(&v["components"])?).into_lua(lua)?,
+        "Vector3int16"=>IntVector::<3>(wire_integers(&v["components"])?).into_lua(lua)?,
+        _=>return Ok(None),
+    }))
 }
 
 #[derive(Clone)]

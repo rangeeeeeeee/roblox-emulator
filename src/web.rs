@@ -103,6 +103,7 @@ impl App {
 
     fn api(&mut self, path: &str, body: Value) -> Result<Value, String> {
         if !body.is_object() { return Err("Expected a JSON object".into()); }
+        if path == "/api/inspect" { return self.session.inspect(&body).map_err(|error|error.to_string()); }
         if path == "/api/lint" {
             let source = body.get("source").and_then(Value::as_str).ok_or("Source must be a string")?;
             let context = body.get("context").and_then(Value::as_str).ok_or("Select a context")?;

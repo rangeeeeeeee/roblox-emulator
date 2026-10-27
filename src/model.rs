@@ -27,6 +27,14 @@ struct Model {
     pending_assets: usize,
     actions: HashMap<String, BoundAction>,
     action_order: u64,
+    paths: HashMap<String, (Weak<RefCell<instance::Node>>, Vec<crate::types::Path2DControlPoint>)>,
+    tweens: HashMap<String, Tween>,
+}
+#[derive(Clone)]
+struct Tween {
+    owner: Weak<RefCell<instance::Node>>, active: Option<Link>, target: Link,
+    info: crate::types::TweenInfo, goals: Vec<(String, Value)>, initial: Vec<Value>,
+    elapsed: f64, started: f64, playback: &'static str, revision: u64,
 }
 struct BoundAction { _callback:Function, inputs:Vec<Value>, priority:i64, order:u64 }
 #[derive(Clone, Copy, PartialEq)]
@@ -39,6 +47,39 @@ enum Module { Loading { owner: Thread, waiters: Vec<Thread> }, Ready(Value), Fai
 type State = Rc<RefCell<Model>>;
 #[derive(Clone)]
 pub(crate) struct MessageSink(pub Rc<dyn Fn(String,Json)->Result<()>>);
+// Host ownership contains no Lua callback: execution always stays in the registering VM.
+#[derive(Clone,Default)]
+pub(crate) struct BindableRegistry(Rc<RefCell<BindableRecords>>);
+#[derive(Default)]
+struct BindableRecords {
+    owners:HashMap<(String,String,String),(String,Weak<RefCell<instance::Node>>)>,
+    events:HashMap<(String,String,String),BTreeMap<String,Weak<RefCell<instance::Node>>>>,
+}
+fn prune_bindables(records:&mut BindableRecords)->Result<()>{
+    let alive=|node:&Weak<RefCell<instance::Node>>|node.upgrade().is_some_and(|node|!node.borrow().destroyed);
+    records.owners.retain(|_,(_,node)|alive(node));
+    records.events.retain(|_,realms|{realms.retain(|_,node|alive(node));!realms.is_empty()});
+    if records.owners.len()+records.events.len()>=MAX_NODES{return Err(Error::runtime("BudgetExceeded: shared Bindable metadata"))}Ok(())
+}
+fn bindable_key(lua:&Lua,id:&str)->Result<(String,String,String)>{let state=required(lua)?;let state=state.borrow();Ok((state.side.clone(),state.client.clone(),id.into()))}
+pub(crate) fn bindable_owner(lua:&Lua,id:&str)->Result<Option<String>>{
+    let Some(registry)=lua.app_data_ref::<BindableRegistry>().map(|registry|registry.clone())else{return Ok(None)};
+    let key=bindable_key(lua,id)?;let mut records=registry.0.borrow_mut();
+    if records.owners.get(&key).is_some_and(|(_,node)|node.upgrade().is_none_or(|node|node.borrow().destroyed)){records.owners.remove(&key);}
+    Ok(records.owners.get(&key).map(|(realm,_)|realm.clone()))
+}
+pub(crate) fn bindable_request_alive(lua:&Lua,id:&str)->Result<bool>{
+    let state=required(lua)?;let mut state=state.borrow_mut();
+    if state.pending.get(id).is_some_and(Thread::is_resumable){return Ok(true)}
+    state.pending.remove(id);Ok(false)
+}
+fn register_bindable(lua:&Lua,node:&Link,enabled:bool)->Result<()>{
+    let Some(registry)=lua.app_data_ref::<BindableRegistry>().map(|registry|registry.clone())else{return Ok(())};
+    let id=node.borrow().id.clone();let key=bindable_key(lua,&id)?;
+    if enabled{let realm=required(lua)?.borrow().realm.clone();let mut records=registry.0.borrow_mut();if !records.owners.contains_key(&key)&&((records.owners.len()+records.events.len())%1024==0||records.owners.len()+records.events.len()>=MAX_NODES){prune_bindables(&mut records)?;}records.owners.insert(key,(realm,Rc::downgrade(node)));}
+    else{registry.0.borrow_mut().owners.remove(&key);}
+    emit(lua,"bindable_handler",json!({"remoteId":id}))
+}
 const ENVS: &str = "emulator.native.environments";
 const ENV_OWNERS: &str = "emulator.native.environment.owners";
 const BASE_ENV: &str = "emulator.native.base.environment";
@@ -115,6 +156,13 @@ fn signal(lua: &Lua, node: &Link, name: &str) -> Result<AnyUserData> {
     let label=if let Some(name)=name.strip_prefix("property:"){format!("{name}Changed")}else if let Some(name)=name.strip_prefix("attribute:"){format!("{name}AttributeChanged")}else{name.into()};
     let event = crate::scheduler::new_named_signal(lua,&label)?;
     node.borrow_mut().signals.insert(name.into(), event.clone());
+    if name=="Event"&&node.borrow().class=="BindableEvent"{
+        if let Some(registry)=lua.app_data_ref::<BindableRegistry>().map(|registry|registry.clone()){
+            let key=bindable_key(lua,&node.borrow().id)?;let realm=required(lua)?.borrow().realm.clone();let mut records=registry.0.borrow_mut();
+            if !records.events.contains_key(&key)&&((records.owners.len()+records.events.len())%1024==0||records.owners.len()+records.events.len()>=MAX_NODES){prune_bindables(&mut records)?;}
+            records.events.entry(key).or_default().insert(realm,Rc::downgrade(node));
+        }
+    }
     Ok(event)
 }
 fn fire(lua: &Lua, node: &Link, name: &str, args: MultiValue) -> Result<()> {
@@ -176,25 +224,30 @@ pub(crate) fn parent(lua: &Lua, node: &Link, target: Option<Link>) -> Result<()>
 
 pub(crate) fn destroy(lua: &Lua, node: &Link) -> Result<()> {
     guard_write(lua)?;
-    if node.borrow().destroyed { return Ok(()); }
+    if node.borrow().destroyed {return Ok(())}
     fire(lua,node,"Destroying",MultiValue::new())?;
     let children = node.borrow().children.clone();
     for child in children { destroy(lua,&child)?; }
     parent(lua,node,None)?;
     let events: Vec<_> = node.borrow().signals.values().cloned().collect();
     for event in events { crate::scheduler::disconnect_all(lua,&event)?; }
+    if let Some(registry)=lua.app_data_ref::<BindableRegistry>().map(|registry|registry.clone()){
+        let key=bindable_key(lua,&node.borrow().id)?;let mut records=registry.0.borrow_mut();records.owners.remove(&key);records.events.remove(&key);
+    }
     let mut n = node.borrow_mut();
     n.signals.clear();
     n.callback_environments.clear();
     n.properties.retain(|_,v| !matches!(v,Value::Function(_)));
     n.destroyed = true;
     drop(n);
+    if let Some(state)=state(lua){let mut state=state.borrow_mut();let id=node.borrow().id.clone();state.paths.remove(&id);state.tweens.remove(&id);}
     mark_key(lua,node,"Destroyed",false);
     Ok(())
 }
 
 fn event_class(name: &str) -> Option<&'static str> {
     match name {
+        "Completed" => Some("TweenBase"),
         "ChildAdded"|"ChildRemoved"|"DescendantAdded"|"DescendantRemoving"|"AncestryChanged"|"Changed"|"Destroying"|"AttributeChanged" => Some("Instance"),
         "Loaded" => Some("DataModel"), "Event" => Some("BindableEvent"), "OnServerEvent"|"OnClientEvent" => Some("BaseRemoteEvent"),
         "PlayerAdded"|"PlayerRemoving" => Some("Players"), "CharacterAdded"|"CharacterRemoving"|"Idled" => Some("Player"),
@@ -215,6 +268,9 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "OnInvoke" if is("BindableFunction") => Some(Value::Nil),
         "OnServerInvoke"|"OnClientInvoke" if is("RemoteFunction")=>Some(Value::Nil),
         "PrimaryPart" if is("Model")=>Some(Value::Nil),
+        "Instance" if is("Tween")=>Some(Value::Nil),
+        "PlaybackState" if is("TweenBase")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"PlaybackState","name":"Begin"}))?,
+        "TweenInfo" if is("Tween")=>Some(crate::types::TweenInfo{time:1.,style:"Quad".into(),direction:"Out".into(),repeat_count:0,reverses:false,delay:0.}.into_lua(lua)?),
         "Character" if is("Player")=>Some(Value::Nil),
         "UserId"|"AccountAge" if is("Player")=>Some(Value::Integer(0)),
         "DisplayName" if is("Player")=>Some(str_value(lua,&n.name)?),
@@ -240,7 +296,10 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "HipHeight" if is("Humanoid")=>Some(Value::Number(0.0)),
         "JumpHeight" if is("Humanoid")=>Some(Value::Number(7.2f32 as f64)),
         "UseJumpPower" if is("Humanoid")=>Some(Value::Boolean(true)),
-        "Visible" if is("GuiObject")=>Some(Value::Boolean(true)),
+        "Visible" if is("GuiObject")||is("Path2D")=>Some(Value::Boolean(true)),
+        "Closed" if is("Path2D")=>Some(Value::Boolean(false)),
+        "Thickness" if is("Path2D")=>Some(Value::Number(1.0)),
+        "Color3" if is("Path2D")=>Some(crate::types::Color3([0.;3]).into_lua(lua)?),
         "Active" if is("GuiObject")=>Some(Value::Boolean(false)),
         "Size"|"Position" if is("GuiObject")=>Some(crate::types::UDim2::default().into_lua(lua)?),
         "BackgroundTransparency" if is("GuiObject")=>Some(Value::Number(0.0)),
@@ -252,6 +311,7 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "ResetOnSpawn" if is("LayerCollector")=>Some(Value::Boolean(true)),
         "DisplayOrder" if is("ScreenGui")=>Some(Value::Integer(0)),
         "TouchEnabled"|"GamepadEnabled"|"VREnabled" if is("UserInputService")||is("VRService")=>Some(Value::Boolean(false)),
+        "AccelerometerEnabled"|"GyroscopeEnabled" if is("UserInputService")=>Some(Value::Boolean(false)),
         "KeyboardEnabled"|"MouseEnabled" if is("UserInputService")=>Some(Value::Boolean(true)),
         "MenuIsOpen" if is("GuiService")=>Some(Value::Boolean(false)),
         "IsWindows" if is("GuiService")=>Some(Value::Boolean(cfg!(windows))),
@@ -286,6 +346,7 @@ pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>>
 pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bool> {
     if state(lua).is_none(){return Ok(false)}
     guard_write(lua)?;
+    if instance::is_a(&node.borrow(),"TweenBase")&&matches!(key,"Instance"|"TweenInfo"|"PlaybackState"){return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only")))}
     let previous=||->Result<Option<Value>>{let stored=node.borrow().properties.get(key).cloned();if stored.is_some(){Ok(stored)}else{default(lua,node,key)}};
     let same=|old:&Value,new:&Value|{
         if old==new{return true}
@@ -324,6 +385,10 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
             },_=>{},
         }
     }
+    if node.borrow().class=="Path2D" {
+        let valid=match key{"Visible"|"Closed"=>matches!(new,Value::Boolean(_)),"Thickness"=>matches!(new,Value::Number(_)|Value::Integer(_)),"Color3"=>matches!(new,Value::UserData(value)if value.is::<crate::types::Color3>()),_=>true};
+        if !valid{return Err(Error::lua_string(format!("Unable to assign property {key}. Invalid value")))}
+    }
     match key {
         "Name"=>{if let Value::String(v)=new{let name=v.to_str()?;if node.borrow().name.as_str()==&*name{return Ok(true)}node.borrow_mut().name=name.to_string()}else{return Err(Error::lua_string("Name must be a string"))}},
         "Archivable"=>{if let Value::Boolean(v)=new{if node.borrow().archivable==*v{return Ok(true)}node.borrow_mut().archivable=*v}else{return Err(Error::lua_string("Archivable must be a boolean"))}},
@@ -341,6 +406,7 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
             if key=="Disabled"{node.borrow_mut().properties.insert("Enabled".into(),Value::Boolean(!matches!(new,Value::Boolean(true))));}
         }
     }
+    if key=="OnInvoke" { register_bindable(lua,node,matches!(new,Value::Function(_)))?; }
     changed(lua,node,key)?;
     if key=="OnInvoke" { drain_invokes(lua,node)?; }
     Ok(true)
@@ -408,6 +474,8 @@ fn clone_node(lua:&Lua,node:&Link)->Result<Option<Link>>{
     let n=node.borrow();let result=instance::create_node(lua,&n.class)?;created(lua,&result)?;
     {let mut r=result.borrow_mut();r.name=n.name.clone();r.source=n.source.clone();r.linked_source=n.linked_source.clone();r.attributes=n.attributes.clone();r.properties=n.properties.clone();r.properties.retain(|_,v|!matches!(v,Value::Function(_)));}
     let children=n.children.clone();drop(n);
+    let points=required(lua)?.borrow().paths.get(&node.borrow().id).map(|(_,points)|points.clone());
+    if let Some(points)=points{set_path_points(lua,&result,points)?;}
     for child in children {if let Some(copy)=clone_node(lua,&child)?{parent(lua,&copy,Some(result.clone()))?;}}
     Ok(Some(result))
 }
@@ -463,9 +531,6 @@ fn offline_asset(lua:&Lua,resource:&AssetResource)->Result<bool>{
 fn asset_failed(lua:&Lua,node:&Link,resource:&AssetResource)->Result<()>{
     fire(lua,node,&format!("{}AssetFetchStatusChanged",resource.key),args([asset_enum(lua,"Failure")?]))?;
     fire(lua,node,"AssetFetchFailed",args([str_value(lua,&resource.content)?]))?;
-    if let Ok(logger)=crate::internal::<Function>(lua,"__host_log"){
-        logger.call::<()>(("error",format!("Failed to load {}: resource is unavailable in the offline emulator",resource.content)))?;
-    }
     Ok(())
 }
 fn preload_resources(input:Value)->Result<Vec<AssetResource>>{
@@ -538,8 +603,12 @@ fn preload_async(lua:&Lua,mut values:MultiValue)->Result<NativeCall>{
 
 const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Raycast",c"Raycast"),("Blockcast",c"Blockcast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
 const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
-pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
+pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).chain(PATH_METHODS.iter()).chain(TWEEN_METHODS.iter()).chain(INPUT_METHODS.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
+const PATH_METHODS:&[(&str,&CStr)]=&[("SetControlPoints",c"SetControlPoints"),("GetControlPoints",c"GetControlPoints"),("GetControlPoint",c"GetControlPoint"),("InsertControlPoint",c"InsertControlPoint"),("UpdateControlPoint",c"UpdateControlPoint"),("RemoveControlPoint",c"RemoveControlPoint"),("GetLength",c"GetLength"),("GetPositionOnCurve",c"GetPositionOnCurve"),("GetPositionOnCurveArcLength",c"GetPositionOnCurveArcLength"),("GetTangentOnCurve",c"GetTangentOnCurve"),("GetTangentOnCurveArcLength",c"GetTangentOnCurveArcLength")];
+const TWEEN_METHODS:&[(&str,&CStr)]=&[("Create",c"Create"),("GetValue",c"GetValue"),("Play",c"Play"),("Pause",c"Pause"),("Cancel",c"Cancel")];
+const INPUT_METHODS:&[(&str,&CStr)]=&[("IsKeyDown",c"IsKeyDown"),("IsMouseButtonPressed",c"IsMouseButtonPressed"),("GetKeysPressed",c"GetKeysPressed")];
 pub(crate) fn method_class(name:&str)->Option<&'static str>{
+    if PATH_METHODS.iter().any(|(method,_)|*method==name){return Some("Path2D")}
     Some(match name {
         "Clone"|"GetPropertyChangedSignal"|"GetAttributeChangedSignal"|"QueryDescendants"|"WaitForChild"=>"Instance",
         "GetPlayers"|"GetPlayerFromCharacter"=>"Players","GetNetworkPing"|"Kick"=>"Player",
@@ -550,7 +619,8 @@ pub(crate) fn method_class(name:&str)->Option<&'static str>{
         "SendMessage"|"BindToMessage"|"BindToMessageParallel"=>"Actor",
         "GetLogHistory"=>"LogService","JSONEncode"|"JSONDecode"|"GenerateGUID"=>"HttpService","ComputeStringHash"=>"EncodingService",
         "InspectPlayerFromHumanoidDescription"|"CloseInspectMenu"|"IsTenFootInterface"=>"GuiService",
-        "GetFocusedTextBox"|"GetPlatform"=>"UserInputService",
+        "GetFocusedTextBox"|"GetPlatform"|"IsKeyDown"|"IsMouseButtonPressed"|"GetKeysPressed"=>"UserInputService",
+        "Create"|"GetValue"=>"TweenService", "Play"|"Pause"|"Cancel"=>"TweenBase",
         "BindAction"|"BindActionAtPriority"|"UnbindAction"|"UnbindAllActions"|"GetBoundActionInfo"|"GetAllBoundActionInfo"=>"ContextActionService",
         "GetAssetFetchStatusChangedSignal"|"GetAssetFetchStatus"|"PreloadAsync"|"Preload"=>"ContentProvider",
         "GetRealPhysicsFPS"=>"Workspace","Raycast"|"Blockcast"|"GetPartBoundsInBox"=>"WorldRoot",
@@ -569,7 +639,230 @@ fn bound_action_info(lua:&Lua,action:Option<&BoundAction>)->Result<Table>{
     }
     Ok(result)
 }
+fn path_point(value:&Value)->Result<crate::types::Path2DControlPoint>{
+    if let Value::UserData(value)=value{if let Ok(value)=value.borrow::<crate::types::Path2DControlPoint>(){return Ok(*value)}}
+    Err(Error::lua_string("Variant cast failed"))
+}
+fn path_points(lua:&Lua,node:&Link)->Result<Vec<crate::types::Path2DControlPoint>>{
+    Ok(required(lua)?.borrow().paths.get(&node.borrow().id).map(|(_,points)|points.clone()).unwrap_or_default())
+}
+fn set_path_points(lua:&Lua,node:&Link,points:Vec<crate::types::Path2DControlPoint>)->Result<()>{
+    guard_write(lua)?;
+    if points.len()>1024{return Err(Error::runtime("BudgetExceeded: Path2D control points"))}
+    let state=required(lua)?;let mut model=state.borrow_mut();let id=node.borrow().id.clone();
+    model.paths.retain(|_,(owner,_)|owner.strong_count()>0);
+    let total:usize=model.paths.iter().filter(|(key,_)|**key!=id).map(|(_,(_,points))|points.len()).sum();
+    if total.saturating_add(points.len())>65536{return Err(Error::runtime("BudgetExceeded: Path2D point storage"))}
+    model.paths.insert(id,(Rc::downgrade(node),points));Ok(())
+}
+
+#[derive(Clone)]
+struct PathSegment { controls:[[f64;2];4], count:usize }
+impl PathSegment {
+    fn sample(&self,t:f64,tangent:bool)->[f64;2]{
+        let mut points=self.controls;let mut count=self.count;
+        if tangent{count-=1;for i in 0..count{for axis in 0..2{points[i][axis]=(self.controls[i+1][axis]-self.controls[i][axis])*count as f64;}}}
+        for width in (1..count).rev(){for i in 0..width{for axis in 0..2{points[i][axis]=points[i][axis]*(1.-t)+points[i+1][axis]*t;}}}points[0]
+    }
+    fn speed(&self,t:f64)->f64{let v=self.sample(t,true);v[0].hypot(v[1])}
+    fn length(&self,end:f64)->f64{
+        if self.count==2{return self.speed(0.)*end}
+        fn integrate(curve:&PathSegment,a:f64,b:f64,fa:f64,fm:f64,fb:f64,whole:f64,tolerance:f64,depth:u8)->f64{
+            let mid=(a+b)*0.5;let fl=curve.speed((a+mid)*0.5);let fr=curve.speed((mid+b)*0.5);
+            let left=(mid-a)*(fa+4.*fl+fm)/6.;let right=(b-mid)*(fm+4.*fr+fb)/6.;let delta=left+right-whole;
+            if depth==0||delta.abs()<=15.*tolerance{return left+right+delta/15.}
+            integrate(curve,a,mid,fa,fl,fm,left,tolerance*0.5,depth-1)+integrate(curve,mid,b,fm,fr,fb,right,tolerance*0.5,depth-1)
+        }
+        let fa=self.speed(0.);let fm=self.speed(end*0.5);let fb=self.speed(end);let whole=end*(fa+4.*fm+fb)/6.;
+        integrate(self,0.,end,fa,fm,fb,whole,1e-8*(whole.abs()+1.),12)
+    }
+}
+fn gui_size(node:&Link)->Result<[f64;2]>{
+    let mut chain=Vec::new();let mut cursor=Some(node.clone());
+    while let Some(node)=cursor{
+        if chain.len()>=256{return Err(Error::runtime("BudgetExceeded: GUI ancestry"))}
+        let value=node.borrow();if !instance::is_a(&value,"GuiObject"){break}
+        let size=match value.properties.get("Size"){Some(Value::UserData(value))=>*value.borrow::<crate::types::UDim2>()?,_=>crate::types::UDim2::default()};
+        chain.push(size);cursor=value.parent.upgrade();
+    }
+    let mut size=[0.;2];for value in chain.into_iter().rev(){size=[value.x.scale as f64*size[0]+value.x.offset as f64,value.y.scale as f64*size[1]+value.y.offset as f64];}Ok(size)
+}
+fn path_geometry(lua:&Lua,node:&Link)->Result<([f64;2],Vec<PathSegment>)>{
+    let parent=node.borrow().parent.upgrade().filter(|parent|instance::is_a(&parent.borrow(),"GuiObject")).ok_or_else(||Error::lua_string("Attempting to use Path2D with invalid parent"))?;
+    let size=gui_size(&parent)?;
+    let pixel=|value:crate::types::UDim2|[value.x.scale as f64*size[0]+value.x.offset as f64,value.y.scale as f64*size[1]+value.y.offset as f64];
+    let points=path_points(lua,node)?;let closed=matches!(node.borrow().properties.get("Closed"),Some(Value::Boolean(true)));
+    let count=if points.len()<2{0}else{points.len()-1+usize::from(closed)};
+    let mut segments=Vec::with_capacity(count);
+    for i in 0..count{
+        let a=points[i];let b=points[(i+1)%points.len()];let start=pixel(a.position);let end=pixel(b.position);
+        let mut controls=[[0.;2];4];controls[0]=start;let mut count=1;
+        for (handle,anchor) in [(a.right,start),(b.left,end)]{if handle!=crate::types::UDim2::default(){let offset=pixel(handle);controls[count]=[anchor[0]+offset[0],anchor[1]+offset[1]];count+=1;}}
+        controls[count]=end;count+=1;
+        if controls[..count].iter().flatten().any(|value|!value.is_finite()){return Err(Error::lua_string("Path2D contains non-finite coordinates"))}
+        segments.push(PathSegment{controls,count});
+    }Ok((size,segments))
+}
+fn path_method(lua:&Lua,node:&Link,name:&str,values:MultiValue)->Result<Value>{
+    let required_arg=|index:usize|values.get(index).filter(|value|!value.is_nil()).ok_or_else(||Error::lua_string(format!("Argument {} missing or nil",index+1)));
+    if name=="SetControlPoints"{
+        let input=required_arg(0)?;let Value::Table(input)=input else{return Err(asset_cast(input,"Array"))};
+        if input.raw_len()>1024{return Err(Error::runtime("BudgetExceeded: Path2D control points"))}
+        if input.raw_len()==0&&input.pairs::<Value,Value>().next().transpose()?.is_some(){return Err(Error::lua_string("Unable to cast Dictionary to Array"))}
+        let points=input.clone().sequence_values::<Value>().map(|value|path_point(&value?)).collect::<Result<Vec<_>>>()?;
+        set_path_points(lua,node,points)?;return Ok(Value::Nil)
+    }
+    let mut points=path_points(lua,node)?;
+    if name=="GetControlPoints"{return Ok(Value::Table(lua.create_sequence_from(points)?))}
+    if matches!(name,"GetControlPoint"|"InsertControlPoint"|"UpdateControlPoint"|"RemoveControlPoint"){
+        let input=required_arg(0)?;let index=lua.coerce_number(input.clone())?.ok_or_else(||asset_cast(input,"int"))? as i64;
+        let maximum=points.len()+usize::from(name=="InsertControlPoint");
+        if index<1||index as usize>maximum{return Err(Error::lua_string(format!("Path2D:{name}() at index {index} access out of bounds")))}
+        let index=index as usize-1;if name=="GetControlPoint"{return points[index].into_lua(lua)}
+        match name{"InsertControlPoint"=>points.insert(index,path_point(required_arg(1)?)?),"UpdateControlPoint"=>points[index]=path_point(required_arg(1)?)?,_=>{points.remove(index);}}
+        set_path_points(lua,node,points)?;return Ok(Value::Nil)
+    }
+    let (size,segments)=path_geometry(lua,node)?;
+    if name=="GetLength"{return Ok(Value::Number(segments.iter().map(|segment|segment.length(1.)).sum::<f64>()as f32 as f64))}
+    let input=required_arg(0)?;let alpha=lua.coerce_number(input.clone())?.ok_or_else(||asset_cast(input,"float"))?;
+    if !alpha.is_finite(){return Err(Error::lua_string("Path2D curve parameter must be finite"))}
+    if segments.is_empty(){return Err(Error::lua_string(format!("Path2D:{name}() attempting to query with zero segments")))}
+    let alpha=alpha.clamp(0.,1.);let (index,t)=if name.ends_with("ArcLength"){
+        let lengths:Vec<_>=segments.iter().map(|segment|segment.length(1.)).collect();let total=lengths.iter().sum::<f64>();let mut distance=alpha*total;let mut index=0;
+        while index+1<segments.len()&&distance>lengths[index]{distance-=lengths[index];index+=1;}
+        let mut low=0.;let mut high=1.;for _ in 0..28{let mid=(low+high)*0.5;if segments[index].length(mid)<distance{low=mid}else{high=mid}}
+        (index,if total==0.{0.}else{(low+high)*0.5})
+    }else{let position=alpha*segments.len()as f64;let index=(position.floor()as usize).min(segments.len()-1);(index,position-index as f64)};
+    let tangent=name.starts_with("GetTangent");let point=segments[index].sample(t,tangent);
+    if tangent{return crate::types::Vector([point[0]as f32,point[1]as f32]).into_lua(lua)}
+    let dim=|axis:usize|crate::types::UDim{scale:if size[axis]==0.{0.}else{(point[axis]/size[axis])as f32},offset:0};
+    crate::types::UDim2{x:dim(0),y:dim(1)}.into_lua(lua)
+}
+fn enum_name(value:&Value,family:&str)->Result<String>{
+    let Some(encoded)=crate::types::encode_value(value)?.filter(|value|value["tag"]=="EnumItem")else{return Err(asset_cast(value,family))};
+    if encoded["enum"]!=family{return Err(Error::lua_string(format!("Unable to cast {} to {family}",encoded["enum"].as_str().unwrap_or("EnumItem"))))}
+    Ok(encoded["name"].as_str().unwrap_or("").into())
+}
+fn tween_enum(lua:&Lua,name:&str)->Result<Value>{crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"PlaybackState","name":name}))?.ok_or_else(||Error::runtime("PlaybackState unavailable"))}
+fn tween_status(lua:&Lua,node:&Link,name:&str)->Result<()>{node.borrow_mut().properties.insert("PlaybackState".into(),tween_enum(lua,name)?);changed(lua,node,"PlaybackState")}
+fn tween_kind(value:&Value)->Option<&'static str>{match value{
+    Value::Integer(_)|Value::Number(_)=>Some("double"),Value::Boolean(_)=>Some("bool"),Value::Vector(_)=>Some("Vector3"),
+    Value::UserData(value)=>{macro_rules! typed{($type:ty,$name:literal)=>{if value.is::<$type>(){return Some($name)}}}typed!(crate::types::Vector2,"Vector2");typed!(crate::types::Color3,"Color3");typed!(crate::types::UDim,"UDim");typed!(crate::types::UDim2,"UDim2");typed!(crate::types::CFrame,"CFrame");None},_=>None,
+}}
+fn tween_ease(alpha:f64,style:&str,direction:&str)->f64{
+    fn bounce(t:f64)->f64{if t<1./2.75{7.5625*t*t}else if t<2./2.75{let t=t-1.5/2.75;7.5625*t*t+0.75}else if t<2.5/2.75{let t=t-2.25/2.75;7.5625*t*t+0.9375}else{let t=t-2.625/2.75;7.5625*t*t+0.984375}}
+    let ease=|t:f64|match style{
+        "Sine"=>1.-(t*std::f64::consts::FRAC_PI_2).cos(),"Quad"=>t*t,"Cubic"=>t*t*t,"Quart"=>t.powi(4),"Quint"=>t.powi(5),
+        "Back"=>t*t*(2.70158*t-1.70158),"Bounce"=>1.-bounce(1.-t),"Circular"=>1.-(1.-t*t).max(0.).sqrt(),
+        "Exponential"=>if t==0.{0.}else{2f64.powf(10.*t-10.)},
+        "Elastic"=>if t==0.||t==1.{t}else{-2f64.powf(10.*t-10.)*((t*10.-10.75)*(2.*std::f64::consts::PI/3.)).sin()},_=>t,
+    };
+    let t=alpha.clamp(0.,1.);match direction{"In"=>ease(t),"InOut"=>if t<0.5{ease(t*2.)*0.5}else{1.-ease((1.-t)*2.)*0.5},_=>1.-ease(1.-t)}
+}
+fn tween_cframe(a:crate::types::CFrame,b:crate::types::CFrame,t:f64)->crate::types::CFrame{
+    fn quaternion(r:[[f32;3];3])->[f64;4]{
+        let m=r.map(|row|row.map(f64::from));let trace=m[0][0]+m[1][1]+m[2][2];
+        if trace>0.{let s=(trace+1.).sqrt()*2.;return[(m[2][1]-m[1][2])/s,(m[0][2]-m[2][0])/s,(m[1][0]-m[0][1])/s,s*0.25]}
+        let i=if m[0][0]>m[1][1]&&m[0][0]>m[2][2]{0}else if m[1][1]>m[2][2]{1}else{2};let j=(i+1)%3;let k=(i+2)%3;
+        let s=(1.+m[i][i]-m[j][j]-m[k][k]).max(0.).sqrt()*2.;let mut q=[0.;4];q[i]=s*0.25;q[j]=(m[j][i]+m[i][j])/s;q[k]=(m[k][i]+m[i][k])/s;q[3]=(m[k][j]-m[j][k])/s;q
+    }
+    let qa=quaternion(a.r);let mut qb=quaternion(b.r);let mut dot=qa.iter().zip(qb).map(|(a,b)|a*b).sum::<f64>();if dot<0.{dot=-dot;qb=qb.map(|v|-v);}
+    let q=if dot>0.9995{let mut q=std::array::from_fn::<_,4,_>(|i|qa[i]+(qb[i]-qa[i])*t);let length=q.iter().map(|v|v*v).sum::<f64>().sqrt();for v in &mut q{*v/=length;}q}else{let angle=dot.clamp(-1.,1.).acos();let sine=angle.sin();std::array::from_fn(|i|(qa[i]*((1.-t)*angle).sin()+qb[i]*(t*angle).sin())/sine)};
+    let[x,y,z,w]=q;let r=[[1.-2.*(y*y+z*z),2.*(x*y-z*w),2.*(x*z+y*w)],[2.*(x*y+z*w),1.-2.*(x*x+z*z),2.*(y*z-x*w)],[2.*(x*z-y*w),2.*(y*z+x*w),1.-2.*(x*x+y*y)]];
+    crate::types::CFrame{p:crate::types::Vector(std::array::from_fn(|i|(a.p.0[i]as f64+(b.p.0[i]as f64-a.p.0[i]as f64)*t)as f32)),r:r.map(|row|row.map(|v|v as f32))}
+}
+fn tween_interpolate(lua:&Lua,a:&Value,b:&Value,t:f64)->Result<Value>{
+    if t==0.{return Ok(a.clone())}if t==1.{return Ok(b.clone())}
+    let blend=|a:f64,b:f64|a+(b-a)*t;
+    let dimension=|a:crate::types::UDim,b:crate::types::UDim|crate::types::UDim{scale:blend(a.scale as f64,b.scale as f64)as f32,offset:blend(a.offset as f64,b.offset as f64).round()as i32};
+    match(a,b){
+        (Value::Boolean(_),Value::Boolean(_))=>Ok(b.clone()),
+        (Value::Integer(_)|Value::Number(_),Value::Integer(_)|Value::Number(_))=>{let number=|value:&Value|match value{Value::Integer(value)=>*value as f64,Value::Number(value)=>*value,_=>unreachable!()};Ok(Value::Number(blend(number(a),number(b))))},
+        (Value::Vector(a),Value::Vector(b))=>Ok(Value::Vector(mlua::Vector::new(blend(a.x()as f64,b.x()as f64)as f32,blend(a.y()as f64,b.y()as f64)as f32,blend(a.z()as f64,b.z()as f64)as f32))),
+        (Value::UserData(a),Value::UserData(b))=>{
+            if let(Ok(a),Ok(b))=(a.borrow::<crate::types::Vector2>(),b.borrow::<crate::types::Vector2>()){return crate::types::Vector(std::array::from_fn::<_,2,_>(|i|blend(a.0[i]as f64,b.0[i]as f64)as f32)).into_lua(lua)}
+            if let(Ok(a),Ok(b))=(a.borrow::<crate::types::Color3>(),b.borrow::<crate::types::Color3>()){return crate::types::Color3(std::array::from_fn(|i|blend(a.0[i]as f64,b.0[i]as f64)as f32)).into_lua(lua)}
+            if let(Ok(a),Ok(b))=(a.borrow::<crate::types::UDim>(),b.borrow::<crate::types::UDim>()){return dimension(*a,*b).into_lua(lua)}
+            if let(Ok(a),Ok(b))=(a.borrow::<crate::types::UDim2>(),b.borrow::<crate::types::UDim2>()){return crate::types::UDim2{x:dimension(a.x,b.x),y:dimension(a.y,b.y)}.into_lua(lua)}
+            if let(Ok(a),Ok(b))=(a.borrow::<crate::types::CFrame>(),b.borrow::<crate::types::CFrame>()){return tween_cframe(*a,*b,t).into_lua(lua)}
+            Err(Error::lua_string("Tween interpolation type mismatch"))
+        },_=>Err(Error::lua_string("Tween interpolation type mismatch")),
+    }
+}
+fn tween_control(lua:&Lua,node:&Link,operation:&str)->Result<()>{
+    guard_write(lua)?;let state=required(lua)?;let id=node.borrow().id.clone();
+    let Some(mut tween)=state.borrow().tweens.get(&id).cloned()else{return Ok(())};
+    let current=now(lua);let playing=matches!(tween.playback,"Playing"|"Delayed");
+    if operation=="Play"{
+        if playing{return Ok(())}
+        if tween.playback!="Paused"{tween.elapsed=0.;tween.initial=tween.goals.iter().map(|(key,_)|instance::read_property(lua,&Instance(tween.target.clone()),key)).collect::<Result<_>>()?;}
+        let conflicts:Vec<_>=state.borrow().tweens.values().filter(|other|other.active.is_some()&&Rc::ptr_eq(&other.target,&tween.target)&&other.goals.iter().any(|(key,_)|tween.goals.iter().any(|(goal,_)|goal==key))).filter_map(|other|other.owner.upgrade()).collect();
+        for conflict in conflicts{tween_control(lua,&conflict,"Cancel")?;}
+        tween.started=current;tween.active=Some(node.clone());tween.playback=if tween.info.delay>tween.elapsed{"Delayed"}else{"Playing"};
+    }else{
+        if !playing&&tween.playback!="Paused"{return Ok(())}
+        if playing{tween.elapsed+=(current-tween.started).max(0.);}
+        tween.active=None;tween.playback=if operation=="Pause"{"Paused"}else{"Cancelled"};
+    }
+    tween.revision+=1;let playback=tween.playback;state.borrow_mut().tweens.insert(id,tween);tween_status(lua,node,playback)?;
+    if operation=="Cancel"{fire(lua,node,"Completed",args([tween_enum(lua,"Cancelled")?]))?;}Ok(())
+}
+fn advance_tweens(lua:&Lua)->Result<()>{
+    let state=required(lua)?;state.borrow_mut().tweens.retain(|_,tween|tween.active.is_some()||tween.owner.strong_count()>0);
+    let jobs:Vec<_>=state.borrow().tweens.iter().filter(|(_,tween)|tween.active.is_some()).map(|(id,tween)|(id.clone(),tween.clone())).collect();let current=now(lua);
+    for(id,mut tween)in jobs{
+        let Some(owner)=tween.owner.upgrade()else{continue};
+        if owner.borrow().destroyed||tween.target.borrow().destroyed{state.borrow_mut().tweens.remove(&id);continue}
+        let duration=tween.info.time.max(0.);let delay=tween.info.delay.max(0.);let motion=duration*if tween.info.reverses{2.}else{1.};let cycle=delay+motion;
+        let elapsed=tween.elapsed+(current-tween.started).max(0.);let complete=tween.info.repeat_count>=0&&(cycle==0.||elapsed>=cycle*(tween.info.repeat_count as f64+1.));
+        let in_cycle=if cycle==0.{0.}else{elapsed%cycle};let progress=(in_cycle-delay).max(0.);
+        let playback=if complete{"Completed"}else if in_cycle<delay{"Delayed"}else{"Playing"};
+        let previous_cycle=playback=="Delayed"&&elapsed>=cycle;
+        let alpha=if complete||previous_cycle{if tween.info.reverses{0.}else{1.}}else if duration==0.{1.}else if tween.info.reverses&&progress>duration{2.-progress/duration}else{progress/duration};
+        let alpha=tween_ease(alpha,&tween.info.style,&tween.info.direction);
+        let mut valid=true;
+        if playback!="Delayed"||previous_cycle{for((key,goal),initial)in tween.goals.iter().zip(&tween.initial){
+            if state.borrow().tweens.get(&id).is_none_or(|value|value.revision!=tween.revision){valid=false;break}
+            let value=tween_interpolate(lua,initial,goal,alpha)?;write_property(lua,&tween.target,key,&value)?;
+        }}
+        if !valid||state.borrow().tweens.get(&id).is_none_or(|value|value.revision!=tween.revision){continue}
+        let changed=tween.playback!=playback;tween.playback=playback;if complete{tween.active=None;}
+        state.borrow_mut().tweens.insert(id,tween);
+        if changed{tween_status(lua,&owner,playback)?;}
+        if complete{fire(lua,&owner,"Completed",args([tween_enum(lua,"Completed")?]))?;}
+    }Ok(())
+}
 pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
+    for name in ["IsKeyDown","IsMouseButtonPressed"]{instance::register_method(m,name,move|_,_,value:Value|{enum_name(&value,if name=="IsKeyDown"{"KeyCode"}else{"UserInputType"})?;Ok(false)});}
+    instance::register_method(m,"GetKeysPressed",|lua,_,()|lua.create_table());
+    instance::register_method(m,"GetValue",|lua,_,values:MultiValue|{
+        let a=values.front().ok_or_else(||Error::lua_string("Argument 1 missing or nil"))?;let alpha=lua.coerce_number(a.clone())?.ok_or_else(||asset_cast(a,"float"))?;
+        let style=enum_name(values.get(1).unwrap_or(&Value::Nil),"EasingStyle")?;let direction=enum_name(values.get(2).unwrap_or(&Value::Nil),"EasingDirection")?;Ok(tween_ease(alpha,&style,&direction))
+    });
+    for name in ["Play","Pause","Cancel"]{instance::register_method(m,name,move|lua,this,()|tween_control(lua,&this.0,name));}
+    instance::register_method(m,"Create",|lua,_,mut values:MultiValue|{
+        guard_write(lua)?;let target=object_arg(&mut values)?;let info_value=values.pop_front().unwrap_or(Value::Nil);
+        let info=if let Value::UserData(value)=&info_value{value.borrow::<crate::types::TweenInfo>().ok().map(|value|value.clone())}else{None}.ok_or_else(||asset_cast(&info_value,"TweenInfo"))?;
+        let goals_value=values.pop_front().unwrap_or(Value::Nil);let Value::Table(goals)=goals_value else{return Err(asset_cast(&goals_value,"Dictionary"))};
+        let mut fields=BTreeMap::new();for pair in goals.pairs::<Value,Value>(){
+            if fields.len()>=64{return Err(Error::runtime("BudgetExceeded: Tween goal count"))}
+            let(key,goal)=pair?;let Value::String(key)=key else{return Err(Error::lua_string("TweenService:Create property keys must be strings"))};let key=key.to_str()?.to_owned();
+            let initial=instance::read_property(lua,&Instance(target.clone()),&key).map_err(|_|Error::lua_string(format!("TweenService:Create no property named '{key}' for object '{}'",target.borrow().name)))?;
+            let Some(kind)=tween_kind(&initial)else{return Err(Error::lua_string(format!("TweenService:Create property named '{key}' on object '{}' is not a data type that can be tweened",target.borrow().name)))};
+            if tween_kind(&goal)!=Some(kind){return Err(Error::lua_string(format!("TweenService:Create property named '{key}' cannot be tweened due to type mismatch (property is a '{kind}', but given type is '{}')",goal.type_name())))}
+            fields.insert(key,goal);
+        }
+        let state=required(lua)?;state.borrow_mut().tweens.retain(|_,value|value.active.is_some()||value.owner.strong_count()>0);
+        if state.borrow().tweens.len()>=4096{return Err(Error::runtime("BudgetExceeded: Tween count"))}
+        let node=instance::new_node("Tween")?;created(lua,&node)?;let id=node.borrow().id.clone();
+        node.borrow_mut().properties.insert("Instance".into(),value(lua,target.clone())?);node.borrow_mut().properties.insert("TweenInfo".into(),info_value);node.borrow_mut().properties.insert("PlaybackState".into(),tween_enum(lua,"Begin")?);
+        state.borrow_mut().tweens.insert(id,Tween{owner:Rc::downgrade(&node),active:None,target,info,goals:fields.into_iter().collect(),initial:Vec::new(),elapsed:0.,started:0.,playback:"Begin",revision:0});
+        value(lua,node)
+    });
+    for &(name,_) in PATH_METHODS{instance::register_method(m,name,move|lua,this,values:MultiValue|{
+        let value=path_method(lua,&this.0,name,values)?;
+        Ok(if matches!(name,"SetControlPoints"|"InsertControlPoint"|"UpdateControlPoint"|"RemoveControlPoint"){MultiValue::new()}else{args([value])})
+    });}
     for method in ["BindAction","BindActionAtPriority"]{instance::register_method(m,method,move|lua,_,mut values:MultiValue|{
         let name=match values.pop_front(){Some(Value::String(name))=>name.to_str()?.to_owned(),_=>return Err(Error::lua_string("Argument 1 missing or nil"))};
         let callback=match values.pop_front(){Some(Value::Function(callback))=>callback,_=>return Err(Error::lua_string("Unable to cast value to function"))};
@@ -876,21 +1169,33 @@ pub fn run_script(lua:&Lua,id:&str)->Result<Thread>{
     let name=n.borrow().name.clone();crate::scheduler::set_script_category(lua,&thread,&f,&name)?;
     crate::scheduler::spawn_with(lua,Value::Thread(thread),MultiValue::new(),Some("serial"),Some("game"))
 }
-pub fn frame(lua:&Lua,dt:f64)->Result<()>{poll_children(lua)?;let n=lookup(lua,"RunService").ok_or_else(||Error::runtime("RunService unavailable"))?;for event in ["PreSimulation","PostSimulation","Heartbeat"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}fire(lua,&n,"Stepped",args([Value::Number(now(lua)),Value::Number(dt)]))?;if required(lua)?.borrow().side=="client"{for event in ["PreRender","RenderStepped"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}}Ok(())}
+pub fn frame(lua:&Lua,dt:f64)->Result<()>{poll_children(lua)?;advance_tweens(lua)?;let n=lookup(lua,"RunService").ok_or_else(||Error::runtime("RunService unavailable"))?;for event in ["PreSimulation","PostSimulation","Heartbeat"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}fire(lua,&n,"Stepped",args([Value::Number(now(lua)),Value::Number(dt)]))?;if required(lua)?.borrow().side=="client"{for event in ["PreRender","RenderStepped"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}}Ok(())}
 pub fn deliver(lua:&Lua,kind:&str,payload:Json)->Result<()>{
     let id=payload[if kind=="actor_message"{"actorId"}else{"remoteId"}].as_str().unwrap_or("");
-    if kind=="remote_return"{
+    if kind=="remote_return"||kind=="bindable_return"{
         let thread=required(lua)?.borrow_mut().pending.remove(payload["requestId"].as_str().unwrap_or(""));
-        if let Some(thread)=thread{let mut values=decode_args(lua,&payload["args"])?;if payload["ok"].as_bool()==Some(true){crate::scheduler::schedule(lua,thread,values,None)?;}else{crate::scheduler::schedule_error(lua,thread,values.pop_front().unwrap_or(Value::Nil))?;}}return Ok(())
+        if let Some(thread)=thread{if kind=="bindable_return"&&!thread.is_resumable(){return Ok(())}let mut values=decode_args(lua,&payload["args"])?;if payload["ok"].as_bool()==Some(true){crate::scheduler::schedule(lua,thread,values,None)?;}else{crate::scheduler::schedule_error(lua,thread,values.pop_front().unwrap_or(Value::Nil))?;}}return Ok(())
     }
     // A client-created RemoteEvent has no server counterpart. An event queued before
     // its receiver was destroyed likewise has nothing to deliver to.
     let Some(n)=lookup(lua,id)else{
-        if kind=="remote_event"{return Ok(())}
+        if matches!(kind,"remote_event"|"bindable_event"|"bindable_handler"){return Ok(())}
         return Err(Error::runtime(format!("Message target unavailable: {id}")));
     };
+    if kind=="bindable_handler"{return drain_invokes(lua,&n)}
     let mut values=decode_args(lua,&payload["args"])?;
     match kind{
+        "bindable_event"=>fire(lua,&n,"Event",values),
+        "bindable_call"=>{
+            let Some(callback)=local_bindable_callback(lua,&n)?else{return Err(Error::runtime("Bindable callback owner changed during delivery"))};
+            let callback=Value::Thread(callback_thread(lua,&n,"OnInvoke",callback)?);
+            let request=payload["requestId"].clone();let target=payload["sourceRealm"].clone();
+            crate::scheduler::spawn_tracked(lua,callback,values,Some("serial"),Some("game"),Rc::new(move|lua,result|{
+                let(ok,values)=match result{Ok(values)=>(true,values),Err(error)=>(false,args([bindable_error(lua,error)?]))};
+                let(ok,encoded)=match encode_args(lua,values){Ok(values)=>(ok,values),Err(error)=>(false,encode_args(lua,args([str_value(lua,&error.to_string())?]))?)};
+                emit(lua,"bindable_return",json!({"requestId":request,"target":target,"ok":ok,"args":encoded}))
+            }))?;Ok(())
+        },
         "actor_message"=>fire(lua,&n,&format!("message:{}",payload["topic"].as_str().unwrap_or("")),values),
         "remote_event"=>{if required(lua)?.borrow().side=="server"{let player=lookup(lua,payload["sender"].as_str().or(payload["clientId"].as_str()).unwrap_or("")).ok_or_else(||Error::runtime("Unknown remote sender"))?;values.push_front(value(lua,player)?);fire(lua,&n,"OnServerEvent",values)}else{fire(lua,&n,"OnClientEvent",values)}},
         "remote_call"=>{
@@ -912,18 +1217,38 @@ pub fn deliver(lua:&Lua,kind:&str,payload:Json)->Result<()>{
 fn object_arg(values:&mut MultiValue)->Result<Link>{match values.pop_front(){Some(Value::UserData(v))if v.is::<Instance>()=>Ok(v.borrow::<Instance>()?.0.clone()),_=>Err(Error::lua_string("Instance expected"))}}
 fn text_arg(values:&mut MultiValue)->Result<String>{match values.pop_front(){Some(Value::String(v))=>Ok(v.to_str()?.to_string()),_=>Err(Error::lua_string("String expected"))}}
 fn finish_waiter(lua:&Lua,thread:Thread,result:std::result::Result<MultiValue,Value>)->Result<()>{match result{Ok(v)=>crate::scheduler::schedule(lua,thread,v,None),Err(e)=>crate::scheduler::schedule_error(lua,thread,e)}}
+fn bindable_error(lua:&Lua,error:Value)->Result<Value>{Ok(Value::String(match lua.coerce_string(error)?{Some(value)=>value,None=>lua.create_string("")?}))}
+fn local_bindable_callback(lua:&Lua,node:&Link)->Result<Option<Function>>{
+    if lua.app_data_ref::<BindableRegistry>().is_some(){
+        let realm=required(lua)?.borrow().realm.clone();
+        if bindable_owner(lua,&node.borrow().id)?.as_deref()!=Some(realm.as_str()){return Ok(None)}
+    }
+    Ok(match node.borrow().properties.get("OnInvoke"){Some(Value::Function(callback))=>Some(callback.clone()),_=>None})
+}
+fn queue_bindable(lua:&Lua,node:&Link,thread:Thread,values:MultiValue)->Result<()>{
+    let state=required(lua)?;let request={let mut state=state.borrow_mut();reserve_waiter(&mut state)?;state.requests+=1;format!("{}:bindable:{}",state.realm,state.requests)};
+    let encoded=encode_args(lua,values)?;state.borrow_mut().pending.insert(request.clone(),thread);
+    if let Err(error)=emit(lua,"bindable_call",json!({"remoteId":node.borrow().id,"requestId":request,"args":encoded})){state.borrow_mut().pending.remove(&request);return Err(error)}
+    Ok(())
+}
+fn dispatch_bindable(lua:&Lua,node:&Link,thread:Thread,values:MultiValue,inline:bool)->Result<Option<std::result::Result<MultiValue,Value>>>{
+    if let Some(callback)=local_bindable_callback(lua,node)?{return invoke_callback(lua,node,callback,values,thread,inline)}
+    if bindable_owner(lua,&node.borrow().id)?.is_some(){queue_bindable(lua,node,thread,values)?;}
+    else{let state=required(lua)?;reserve_waiter(&mut state.borrow_mut())?;state.borrow_mut().invokes_waiting.push((node.borrow().id.clone(),thread,values));}
+    Ok(None)
+}
 fn invoke_callback(lua:&Lua,node:&Link,callback:Function,values:MultiValue,waiter:Thread,allow_inline:bool)->Result<Option<std::result::Result<MultiValue,Value>>>{
     let active=Rc::new(Cell::new(allow_inline));let result=Rc::new(RefCell::new(None));let in_callback=active.clone();let out=result.clone();
     let callback=Value::Thread(callback_thread(lua,node,"OnInvoke",callback)?);
     crate::scheduler::spawn_tracked(lua,callback,values,Some("serial"),Some("game"),Rc::new(move|lua,result|{
-        let result=match result{Ok(values)=>Ok(values),Err(error)=>Err(Value::String(lua.coerce_string(error)?.unwrap_or(lua.create_string("")?)))};
+        let result=match result{Ok(values)=>Ok(values),Err(error)=>Err(bindable_error(lua,error)?)};
         if in_callback.get(){*out.borrow_mut()=Some(result);Ok(())}else{finish_waiter(lua,waiter.clone(),result)}
     }))?;active.set(false);let result=result.borrow_mut().take();Ok(result)
 }
 fn drain_invokes(lua:&Lua,node:&Link)->Result<()>{
-    let callback=node.borrow().properties.get("OnInvoke").cloned();let Some(Value::Function(callback))=callback else{return Ok(())};
+    if local_bindable_callback(lua,node)?.is_none()&&bindable_owner(lua,&node.borrow().id)?.is_none(){return Ok(())}
     let state=required(lua)?;let waiting=std::mem::take(&mut state.borrow_mut().invokes_waiting);
-    for(id,thread,args)in waiting{if id==node.borrow().id{invoke_callback(lua,node,callback.clone(),args,thread,false)?;}else{state.borrow_mut().invokes_waiting.push((id,thread,args));}}
+    for(id,thread,args)in waiting{if !thread.is_resumable(){continue}if id==node.borrow().id{dispatch_bindable(lua,node,thread,args,false)?;}else{state.borrow_mut().invokes_waiting.push((id,thread,args));}}
     Ok(())
 }
 fn poll_children(lua:&Lua)->Result<()>{
@@ -1070,6 +1395,14 @@ unsafe extern "C-unwind" fn raw_fire_convert(state:*mut ffi::lua_State)->std::ff
 unsafe extern "C-unwind" fn raw_fire_impl(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
     let node=object_arg(&mut values)?;let event=signal(lua,&node,"Event")?;
     let mut copied=MultiValue::with_capacity(values.len());for value in values{copied.push_back(finish_variant(lua,value)?);}
+    if let Some(registry)=lua.app_data_ref::<BindableRegistry>().map(|registry|registry.clone()){
+        let key=bindable_key(lua,&node.borrow().id)?;let realm=required(lua)?.borrow().realm.clone();let mut targets=Vec::new();
+        if let Some(peers)=registry.0.borrow().events.get(&key){for(peer,target)in peers{
+            if peer==&realm{continue}let Some(target)=target.upgrade()else{continue};let target=target.borrow();if target.destroyed{continue}
+            if let Some(signal)=target.signals.get("Event"){if crate::scheduler::signal_has_listeners(signal)?{targets.push(peer.clone());}}
+        }}
+        if !targets.is_empty(){emit(lua,"bindable_event",json!({"remoteId":node.borrow().id,"targets":targets,"args":encode_args(lua,copied.clone())?}))?;}
+    }
     crate::scheduler::fire_signal(lua,&event,copied)?;Ok(NativeCall::Return(MultiValue::new()))
 })}}
 unsafe extern "C-unwind" fn raw_wait_convert(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
@@ -1103,9 +1436,9 @@ unsafe extern "C-unwind" fn raw_wait_impl(state:*mut ffi::lua_State)->std::ffi::
 unsafe extern "C-unwind" fn raw_invoke(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
     let node=object_arg(&mut values)?;if node.borrow().class!="BindableFunction"{return Err(Error::lua_string("BindableFunction expected"))}
     let thread=lua.current_thread();
-    let callback=node.borrow().properties.get("OnInvoke").cloned();
-    if let Some(Value::Function(callback))=callback{if let Some(result)=invoke_callback(lua,&node,callback,values,thread,true)?{return Ok(match result{Ok(v)=>NativeCall::Return(v),Err(e)=>NativeCall::Error(e)})}crate::scheduler::park_current(lua)?;}
-    else{let model=required(lua)?;reserve_waiter(&mut model.borrow_mut())?;crate::scheduler::park_current(lua)?;model.borrow_mut().invokes_waiting.push((node.borrow().id.clone(),thread,values));}
+    if local_bindable_callback(lua,&node)?.is_none()&&ffi::lua_isyieldable(state)==0{return Err(Error::lua_string("attempt to yield across metamethod/C-call boundary"))}
+    if let Some(result)=dispatch_bindable(lua,&node,thread,values,true)?{return Ok(match result{Ok(v)=>NativeCall::Return(v),Err(e)=>NativeCall::Error(e)})}
+    crate::scheduler::park_current(lua)?;
     Ok(NativeCall::Yield(MultiValue::new()))
 })}}
 fn invoke_remote(lua:&Lua,mut values:MultiValue,to_server:bool)->Result<NativeCall>{
@@ -1202,8 +1535,9 @@ const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
     ("Lighting", "GlobalShadows", "boolean"), ("Lighting", "Ambient OutdoorAmbient", "Color3"),
     ("GuiService", "MenuIsOpen IsWindows", "boolean"), ("TextChatService", "ChatVersion", "Enum.ChatVersion"),
     ("ContentProvider", "RequestQueueSize", "number"),
+    ("Path2D", "Closed Visible", "boolean"), ("Path2D", "Thickness", "number"), ("Path2D", "Color3", "Color3"),
 ];
-const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased";
+const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Completed Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased";
 
 fn completion_class(node: &instance::Node, classes: &str) -> bool { classes.split('|').any(|class| instance::is_a(node, class)) }
 fn completion_label(label: &str) -> bool { !label.is_empty() && label.len() <= 256 && !label.contains('\0') }
@@ -1273,6 +1607,79 @@ pub(crate) fn completions(lua: &Lua, path: &[String]) -> Result<Vec<Json>> {
         items.entry(child.name.clone()).or_insert_with(||completion_item(&child.name,"property",&child.class,"DataModel child in the selected VM"));
     }
     Ok(items.into_values().take(256).collect())
+}
+
+const INSPECT_PAGE_SIZE: usize = 100;
+
+fn inspect_text(text: &str) -> Json {
+    let (value, truncated) = crate::console::render_bytes(text.as_bytes(), 512);
+    let escaped = text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'));
+    json!({"type":"string","value":value,"bytes":text.len(),"encoding":if escaped {"escaped-bytes"} else {"utf8"},"truncated":truncated})
+}
+fn inspect_reference(node: &instance::Node) -> Json {
+    json!({"type":"Instance","id":node.id,"name":crate::console::display_bytes(node.name.as_bytes(),512),"class":node.class})
+}
+fn inspect_row(node: &Link) -> Json {
+    let node = node.borrow();
+    json!({"id":node.id,"name":crate::console::display_bytes(node.name.as_bytes(),512),"class":node.class,
+        "hasChildren":node.children.iter().any(|child| !child.borrow().destroyed)})
+}
+
+pub(crate) fn inspect_tree(lua: &Lua, parent: Option<&str>, offset: usize) -> Result<Json> {
+    if parent.is_some_and(|id| id.len() > 1024) { return Err(Error::runtime("Instance identifier is too long")); }
+    let state = required(lua)?;
+    let model = state.borrow();
+    let mut nodes: Vec<Link> = match parent {
+        Some(id) => model.nodes.get(id).and_then(Weak::upgrade).filter(|node| !node.borrow().destroyed)
+            .map(|node| node.borrow().children.iter().filter(|child| !child.borrow().destroyed).cloned().collect()).unwrap_or_default(),
+        None => model.nodes.values().filter_map(Weak::upgrade).filter(|node| {
+            let node = node.borrow(); !node.destroyed && node.parent.upgrade().is_none()
+        }).collect(),
+    };
+    if parent.is_none() {
+        nodes.sort_by(|a,b| { let a=a.borrow();let b=b.borrow();
+            (a.id != "game", &a.name, &a.class, &a.id).cmp(&(b.id != "game", &b.name, &b.class, &b.id))
+        });
+    }
+    let total = nodes.len();
+    let items: Vec<Json> = nodes.iter().skip(offset).take(INSPECT_PAGE_SIZE).map(inspect_row).collect();
+    let end = offset.saturating_add(items.len());
+    Ok(json!({"items":items,"total":total,"nextOffset":(end < total).then_some(end)}))
+}
+
+pub(crate) fn inspect_node(lua: &Lua, id: &str) -> Result<Json> {
+    if id.len() > 1024 { return Err(Error::runtime("Instance identifier is too long")); }
+    let node = lookup(lua,id).filter(|node| !node.borrow().destroyed)
+        .ok_or_else(|| Error::runtime("Instance unavailable in selected VM"))?;
+    let mut result = inspect_row(&node);
+    let node = node.borrow();
+    let mut properties = BTreeMap::new();
+    // These fields live in Rust; making temporary Lua strings or Instance wrappers
+    // to display them would change the heap observed by executor getgc.
+    properties.insert("Name".to_owned(), inspect_text(&node.name));
+    properties.insert("ClassName".to_owned(), inspect_text(&node.class));
+    properties.insert("Parent".to_owned(), node.parent.upgrade().map(|parent| inspect_reference(&parent.borrow())).unwrap_or_else(||json!({"type":"nil"})));
+    properties.insert("Archivable".to_owned(), json!({"type":"boolean","value":node.archivable}));
+    if instance::is_a(&node,"LuaSourceContainer") {
+        properties.insert("Source".to_owned(), inspect_text(&node.source));
+        properties.insert("LinkedSource".to_owned(), inspect_text(&node.linked_source));
+    }
+    for (name,value) in &node.properties {
+        let preview = crate::console::snapshot(lua,std::iter::once(value)).into_iter().next().unwrap_or_else(||json!({"type":value.type_name(),"truncated":true}));
+        properties.insert(name.clone(),preview);
+    }
+    let mut attributes: Vec<Json> = node.attributes.iter().map(|(name,value)| {
+        let value = match value {
+            Attribute::Boolean(value) => json!({"type":"boolean","value":value}),
+            Attribute::Number(value) => crate::console::snapshot(lua,std::iter::once(&Value::Number(*value))).remove(0),
+            Attribute::String(value) => inspect_text(value),
+        };
+        json!({"name":name,"value":value})
+    }).collect();
+    attributes.sort_by(|a,b| a["name"].as_str().cmp(&b["name"].as_str()));
+    result["properties"] = json!(properties.into_iter().map(|(name,value)|json!({"name":name,"value":value})).collect::<Vec<_>>());
+    result["attributes"] = json!(attributes);
+    Ok(result)
 }
 
 #[cfg(all(test, emulator_local_tests))]

@@ -54,7 +54,7 @@ pub(crate) fn implemented(class:&str)->bool{
         "StarterPlayer" | "EncodingService" | "CollectionService" | "Stats" | "TweenService" | "Chat" | "ScriptContext" |
         "StarterPlayerScripts" | "StarterCharacterScripts" | "Humanoid" | "ValueBase" |
         "GuiBase2d" | "StringValue" | "NumberValue" | "IntValue" | "BoolValue" | "ObjectValue" |
-        "GuiObject" | "LayerCollector" | "Frame" | "TextLabel" | "TextButton" | "ImageLabel" |
+        "GuiObject" | "LayerCollector" | "Frame" | "Path2D" | "Tween" | "TextLabel" | "TextButton" | "ImageLabel" |
         "ImageButton" | "ScreenGui" | "UnreliableRemoteEvent" | "DataModel" | "Model" | "BasePart" |
         "Camera" | "WorldRoot" | "Actor" | "Tool" | "Workspace" | "WorldModel" | "Part" | "MeshPart" |
         "Terrain" | "BaseScript" | "ModuleScript" | "Script" | "LocalScript" | "Instance")
@@ -401,6 +401,10 @@ pub fn install(lua: &Lua) -> Result<()> {
     let instance = lua.create_table()?;
     let constructor = lua.create_function(|lua, values:MultiValue| {
         let (class,parent)=<(String,Option<AnyUserData>)as mlua::FromLuaMulti>::from_lua_args(values,1,Some("new"),lua).map_err(argument_error)?;
+        if class == "GCViewer" && crate::scheduler::current_origin(lua) == "executor" {
+            if parent.is_some() { return Err(Error::lua_string("GCViewer is an emulator window and has no DataModel parent")); }
+            return crate::inspector::create_viewer(lua);
+        }
         if class_info(&class).is_some_and(|info|!info.creatable){return Err(Error::lua_string(format!("Unable to create an Instance of type \"{class}\"")))}
         let node = create_node(lua,&class)?;
         crate::model::created(lua, &node)?;

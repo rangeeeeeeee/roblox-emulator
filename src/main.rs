@@ -13,6 +13,7 @@ mod diagnostics;
 mod session;
 mod web;
 mod console;
+mod inspector;
 mod lint;
 
 pub(crate) fn internal<T: mlua::FromLua>(lua:&Lua,name:&str)->LuaResult<T> {
@@ -87,19 +88,21 @@ struct Host {
     emitted: Rc<Cell<usize>>,
     pending_bytes: Rc<Cell<usize>>,
     log_sequence: Rc<Cell<u64>>,
+    bindables: model::BindableRegistry,
     interactive: bool,
 }
 
 impl Host {
     fn new() -> Self {
-        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), interactive: false }
+        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), bindables: Default::default(), interactive: false }
     }
 
     fn interactive() -> Self { Self { interactive: true, ..Self::new() } }
 
     fn realm(&self, cfg: &RealmConfig, scenario: &Scenario) -> LuaResult<Realm> {
         let lua = Lua::new();
-        if self.interactive { lua.set_app_data(console::Capture::default()); }
+        lua.set_app_data(self.bindables.clone());
+        if self.interactive { lua.set_app_data(console::Capture::default()); inspector::install(&lua)?; }
         native::install(&lua)?;
         native::set_executor_profile(&lua,&cfg.executor_profile)?;
         lua.set_memory_limit(scenario.memory_mb * 1024 * 1024)?;
@@ -282,10 +285,21 @@ fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
         let Some(from) = realms.iter().find(|r| r.config.id == msg.from) else { continue };
         msg.payload["sourceRealm"] = json!(msg.from);
         msg.payload["clientId"] = json!(from.config.client_id);
-        let target = msg.payload.get("target").and_then(Json::as_str).unwrap_or("").to_owned();
+        let mut target = msg.payload.get("target").and_then(Json::as_str).unwrap_or("").to_owned();
+        if msg.kind=="bindable_call" {
+            if !model::bindable_request_alive(&from.lua,msg.payload["requestId"].as_str().unwrap_or(""))?{continue;}
+            let id=msg.payload.get("remoteId").and_then(Json::as_str).unwrap_or("");
+            let Some(owner)=model::bindable_owner(&from.lua,id)?else{
+                host.pending_bytes.set(host.pending_bytes.get()+msg.bytes);host.messages.borrow_mut().push_back(msg);continue;
+            };
+            target=owner;
+        }
         for to in realms {
             let selected = match msg.kind.as_str() {
                 "actor_message" => same_machine(&from.config, &to.config) && to.config.actor_id.as_deref() == msg.payload.get("actorId").and_then(Json::as_str),
+                "bindable_handler" => same_machine(&from.config,&to.config),
+                "bindable_event" => from.config.id!=to.config.id && same_machine(&from.config,&to.config) && msg.payload["targets"].as_array().is_some_and(|targets|targets.iter().any(|target|target.as_str()==Some(to.config.id.as_str()))),
+                "bindable_call" | "bindable_return" => to.config.id==target && same_machine(&from.config,&to.config),
                 "remote_event" | "remote_call" => {
                     if target == "server" { from.config.side == "client" && to.config.side == "server" }
                     else { from.config.side == "server" && to.config.side == "client" && (target == "*" || to.config.client_id.as_deref() == Some(target.as_str())) }

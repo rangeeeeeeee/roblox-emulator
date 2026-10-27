@@ -15,6 +15,8 @@ pub struct Status { pub pending: usize, pub parked: usize, pub errors: usize }
 
 struct Scheduler {
     now: f64,
+    execution_seconds: f64,
+    execution_started: Option<Instant>,
     tick: u64,
     sequence: u64,
     resumes: usize,
@@ -28,6 +30,7 @@ struct Scheduler {
     queue: Vec<Job>,
     rt: Table,
     errors: Table,
+    errors_total: usize,
     view_methods: Table,
     profile_threads: Table,
     profiles_begun: u64,
@@ -104,7 +107,7 @@ pub fn status(lua: &Lua) -> Result<Status> {
     Ok(Status {
         pending: state.queue.len(),
         parked: state.tasks.values().filter(|task| task.parked && task.thread.is_resumable()).count(),
-        errors: state.errors.raw_len(),
+        errors: state.errors_total,
     })
 }
 fn key(thread: &Thread) -> usize { thread.state() as usize }
@@ -345,8 +348,14 @@ fn error_text(lua: &Lua, error: Value) -> Result<String> {
     }
 }
 fn report(lua: &Lua, message: String, thread: &Thread) -> Result<()> {
-    let (errors, now) = { let state = shared(lua)?; let state = state.borrow(); (state.errors.clone(), state.now) };
-    if errors.raw_len() >= 1000 { return Err(fail("SchedulerLimit: error log limit exceeded")); }
+    let (errors, now) = { let state = shared(lua)?; let mut state = state.borrow_mut();
+        state.errors_total=state.errors_total.saturating_add(1);(state.errors.clone(), state.now) };
+    // The diagnostic history is bounded, not the lifetime of the running VM.
+    // Evict a batch to amortize array movement while preserving chronological order.
+    if errors.raw_len() >= 1000 {
+        for index in 1..=500 { errors.raw_set(index,errors.raw_get::<Value>(index+500)?)?; }
+        for index in 501..=1000 { errors.raw_set(index,Value::Nil)?; }
+    }
     let record = lua.create_table()?;
     record.raw_set("time", now)?;
     record.raw_set("message", message.clone())?;
@@ -366,6 +375,7 @@ fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>
         }
         state.resumes += 1;
         if state.resumes > state.max_resumes { return Err(fail("SchedulerLimit: resumption budget exceeded")); }
+        if state.resume_depth == 0 { state.execution_started = Some(Instant::now()); }
         state.resume_depth += 1;
         if let Some(task) = state.tasks.get_mut(&key(&thread)) { task.parked = true; task.pending_connection = None; }
     }
@@ -394,7 +404,15 @@ fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>
 }
 
 struct ResumeDepth(Shared);
-impl Drop for ResumeDepth { fn drop(&mut self) { self.0.borrow_mut().resume_depth -= 1; } }
+impl Drop for ResumeDepth {
+    fn drop(&mut self) {
+        let mut state = self.0.borrow_mut();
+        state.resume_depth -= 1;
+        if state.resume_depth == 0 {
+            if let Some(started) = state.execution_started.take() { state.execution_seconds += started.elapsed().as_secs_f64(); }
+        }
+    }
+}
 
 pub fn spawn_with(lua: &Lua, callable: Value, args: MultiValue, mode: Option<&str>, origin: Option<&str>) -> Result<Thread> {
     let thread = to_thread(lua, callable, mode, origin)?;
@@ -517,6 +535,11 @@ pub fn disconnect_all(_lua: &Lua, signal: &AnyUserData) -> Result<()> {
     for handler in handlers { handler.borrow_mut().connected = false; }
     Ok(())
 }
+pub(crate) fn signal_has_listeners(signal: &AnyUserData) -> Result<bool> {
+    let signal=signal.borrow::<Signal>()?;let signal=signal.0.borrow();
+    Ok(signal.handlers.iter().any(|handler|{let handler=handler.borrow();handler.connected&&handler.enabled})||signal.waiters.iter().any(|thread|!thread.is_finished()&&!thread.is_error()))
+}
+
 pub fn fire_signal(lua: &Lua, signal: &AnyUserData, args: MultiValue) -> Result<()> {
     let data = signal_data(signal)?;
     let (waiters, handlers) = { let mut data = data.borrow_mut(); (std::mem::take(&mut data.waiters), data.handlers.clone()) };
@@ -561,7 +584,7 @@ fn callable_callback(lua: &Lua, value: Value) -> Result<Function> {
 #[derive(Clone, Copy)]
 enum Op {
     Spawn, SpawnWith, Defer, Delay, Wait, Cancel, Park, Schedule, Step, Status, GetMode, GetOrigin, SetMode,
-    NewSignal, GetConnections, Synchronize, Desynchronize, Print, Warn, Time, Tick,
+    NewSignal, GetConnections, Synchronize, Desynchronize, Print, Warn, Time, Tick, Clock,
     SignalIndex, SignalString, SignalReadOnly, Connect, ConnectParallel, Once, SignalWait, Fire, DisconnectAll,
     ConnectionIndex, ConnectionString, ConnectionReadOnly, Disconnect, ViewIndex, Enable, Disable, ConnectionFire, ConnectionDefer,
     ProfileBegin, ProfileEnd, ProfileStatus,
@@ -622,6 +645,39 @@ unsafe extern "C-unwind" fn dispatch(state: *mut ffi::lua_State) -> i32 {
 }
 fn native_function(lua: &Lua, name: Option<&'static CStr>, op: Op) -> Result<Function> {
     unsafe { lua.exec_raw(op as i32, |state| ffi::lua_pushcclosurek(state, dispatch, name.map_or(std::ptr::null(), CStr::as_ptr), 1, None)) }
+}
+unsafe extern "C-unwind" fn raw_print(state: *mut ffi::lua_State) -> i32 {
+    unsafe {
+        let count = ffi::lua_gettop(state);
+        let warn = ffi::lua_tointeger(state, ffi::lua_upvalueindex(1)) as i32 == Op::Warn as i32;
+        ffi::luaL_checkstack(state, count + 3, c"print arguments".as_ptr());
+        ffi::lua_rawgetfield(state, ffi::LUA_REGISTRYINDEX, c"emulator.scheduler.tostring".as_ptr());
+        // Keep the real tostring C frame and original errors, outside Rust guards.
+        for index in 1..=count {
+            ffi::lua_pushvalue(state, count + 1);
+            ffi::lua_pushvalue(state, index);
+            ffi::lua_call(state, 1, 1);
+            if ffi::lua_tolstring(state, -1, std::ptr::null_mut()).is_null() {
+                ffi::luaL_error(state, c"'tostring' must return a string".as_ptr());
+            }
+        }
+        ffi::lua_remove(state, count + 1);
+        Lua::invoke_native_callback(state, |lua, mut values| {
+            let mut bytes = Vec::new();
+            let mut strings = Vec::with_capacity(count as usize);
+            for value in values.split_off(count as usize) {
+                let Value::String(text) = value else { return Err(fail("print conversion did not produce a string")); };
+                if !strings.is_empty() { bytes.push(b'\t'); }
+                bytes.extend_from_slice(&text.as_bytes());
+                strings.push(text);
+            }
+            if let Ok(logger) = crate::internal::<Function>(lua, "__host_log") {
+                let _capture = crate::console::stage(lua, &values, &strings);
+                logger.call::<()>((if warn { "warn" } else { "info" }, lua.create_string(&bytes)?))?;
+            }
+            Ok(empty())
+        })
+    }
 }
 fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
     let op = match op { value if (Op::Spawn as i32..=Op::LoadModule as i32).contains(&value) => unsafe { std::mem::transmute::<i32, Op>(value) }, _ => return Err(fail("invalid native scheduler opcode")) };
@@ -690,23 +746,15 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
             for (index, handler) in handlers.into_iter().enumerate() { result.raw_set(index + 1, lua.create_userdata(ConnectionView(handler))?)?; }
             Ok(returned(Value::Table(result)))
         }
-        Op::Print | Op::Warn => {
-            let tostring: Function = lua.globals().get("tostring")?;
-            let mut bytes = Vec::new();
-            let mut strings = Vec::with_capacity(args.len());
-            for (index, value) in args.iter().enumerate() {
-                if index > 0 { bytes.push(b'\t'); }
-                let text = tostring.call::<mlua::LuaString>(value.clone())?;
-                bytes.extend_from_slice(&text.as_bytes());
-                strings.push(text);
-            }
-            if let Ok(logger) = crate::internal::<Function>(lua, "__host_log") {
-                let _capture = crate::console::stage(lua, &args, &strings);
-                logger.call::<()>((if matches!(op, Op::Print) { "info" } else { "warn" }, lua.create_string(&bytes)?))?;
-            }
-            Ok(empty())
-        }
+        Op::Print | Op::Warn => Ok(NativeCall::Dispatch(raw_print)),
         Op::Time | Op::Tick => Ok(returned(Value::Number(shared(lua)?.borrow().now + if matches!(op, Op::Tick) { 1700000000.0 } else { 0.0 }))),
+        Op::Clock => {
+            let state = shared(lua)?;
+            let state = state.borrow();
+            // Simulated waits advance now; uninterrupted code measures real execution.
+            // Count only the outermost resume so nested task.spawn never doubles time.
+            Ok(returned(Value::Number(state.now + state.execution_seconds + state.execution_started.map_or(0.0, |start| start.elapsed().as_secs_f64()))))
+        }
         Op::GetMemoryCategory | Op::SetMemoryCategory => {
             let current = unsafe { emu_getmemcat(lua.state()) } as usize;
             let previous = shared(lua)?.borrow().memory_names.get(current).cloned().ok_or_else(|| fail("Unknown native allocation category"))?;
@@ -886,6 +934,7 @@ fn set_meta(lua: &Lua, sample: AnyUserData, index: Op, tostring: Op, readonly: O
 }
 
 pub fn install(lua: &Lua) -> Result<()> {
+    lua.set_named_registry_value("emulator.scheduler.tostring", lua.globals().get::<Function>("tostring")?)?;
     let config = crate::internal::<Option<Table>>(lua, "__config")?;
     let max_tasks = config.as_ref().and_then(|config| config.get::<usize>("maxTasks").ok()).unwrap_or(10000).clamp(1, 100000);
     let max_resumes = config.as_ref().and_then(|config| config.get::<usize>("maxResumes").ok()).unwrap_or(10000).clamp(1, 100000);
@@ -910,8 +959,8 @@ pub fn install(lua: &Lua) -> Result<()> {
     }
     let default_category = lua.create_string("Default")?;
     lua.set_app_data(Rc::new(RefCell::new(Scheduler {
-        now: 0.0, tick: 0, sequence: 0, resumes: 0, resume_depth: 0, max_resume_depth, max_tasks, max_resumes, actor, deferred_signals,
-        tasks: HashMap::new(), queue: Vec::new(), rt: rt.clone(), errors,
+        now: 0.0, execution_seconds: 0.0, execution_started: None, tick: 0, sequence: 0, resumes: 0, resume_depth: 0, max_resume_depth, max_tasks, max_resumes, actor, deferred_signals,
+        tasks: HashMap::new(), queue: Vec::new(), rt: rt.clone(), errors, errors_total: 0,
         view_methods: view_methods.clone(),
         profile_threads, profiles_begun: 0, profiles_completed: 0, profile_samples: VecDeque::new(),
         memory_names: vec![default_category.clone()], memory_ids: HashMap::from([(default_category, 0)]),
@@ -943,7 +992,7 @@ pub fn install(lua: &Lua) -> Result<()> {
     lua.globals().set("task", task)?;
     for (name, debug_name, op) in [("print", c"print", Op::Print), ("warn", c"warn", Op::Warn), ("time", c"time", Op::Time),
         ("elapsedTime", c"elapsedTime", Op::Time), ("tick", c"tick", Op::Tick)] { lua.globals().set(name, native_function(lua, Some(debug_name), op)?)?; }
-    let clock = native_function(lua, Some(c"clock"), Op::Time)?;
+    let clock = native_function(lua, Some(c"clock"), Op::Clock)?;
     let os: Table = lua.globals().get("os")?;
     os.set_readonly(false);
     let result = os.raw_set("clock", clock);

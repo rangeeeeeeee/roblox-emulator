@@ -7,8 +7,8 @@ const MAX_TEXT: usize = 2048;
 const MAX_DEPTH: usize = 4;
 const MAX_ENTRIES: usize = 32;
 
-// Only Rust-owned snapshots cross into the UI. Keeping Lua table references here
-// would keep printed objects alive and change what getgc observes.
+// Only Rust-owned snapshots cross into the UI. Inspector handles are weak, so
+// expanding a live value does not keep printed objects alive between requests.
 #[derive(Clone, Default)]
 pub(crate) struct Capture(Rc<RefCell<Option<Vec<Json>>>>);
 
@@ -78,7 +78,7 @@ pub(crate) fn snapshot<'a>(lua: &Lua, values: impl IntoIterator<Item = &'a Value
     let mut preview = Preview { lua, nodes: MAX_NODES, text: MAX_TEXT, seen: HashSet::new() };
     let mut result = Vec::new();
     for value in values.into_iter().take(32) {
-        if preview.nodes == 0 { result.push(json!({"type":"...","truncated":true})); break; }
+        if preview.nodes == 0 { result.push(describe(lua,value)); continue; }
         result.push(preview.value(value, 0));
     }
     result
@@ -108,6 +108,7 @@ impl Preview<'_> {
             }
             Value::Table(table) => {
                 let mut node = json!({"type":"table","address":address(self.lua,value),"entries":[]});
+                if let Some(handle) = crate::inspector::handle(self.lua, table) { node["handle"] = json!(handle); }
                 if !self.seen.insert(table.to_pointer() as usize) { node["reference"] = json!(true); return node; }
                 if depth >= MAX_DEPTH { node["truncated"] = json!(true); return node; }
                 let mut entries = Vec::new();
@@ -124,8 +125,21 @@ impl Preview<'_> {
             Value::UserData(data) => {
                 if let Ok(instance) = data.borrow::<crate::instance::Instance>() {
                     let node = instance.0.borrow();
-                    json!({"type":"Instance","name":self.text(node.name.as_bytes()),"class":self.text(node.class.as_bytes()),"address":address(self.lua,value)})
-                } else { self.opaque(value) }
+                    json!({"type":"Instance","id":node.id,"name":self.text(node.name.as_bytes()),"class":self.text(node.class.as_bytes()),"address":address(self.lua,value)})
+                } else {
+                    let mut node=self.opaque(value);
+                    if let Ok(name)=data.type_name() {
+                        let bytes=name.as_bytes();
+                        if &*bytes!=b"userdata" { node["typeName"]=json!(self.text(&bytes)); }
+                    }
+                    node
+                }
+            }
+            Value::Function(function) => {
+                let info = function.info();
+                let mut node=json!({"type":"function","address":address(self.lua,value),"name":info.name,"source":info.source,"what":info.what,"line":info.line_defined});
+                if let Some(handle)=crate::inspector::value_handle(self.lua,value) {node["handle"]=json!(handle);}
+                node
             }
             _ => self.opaque(value),
         }
@@ -136,6 +150,10 @@ impl Preview<'_> {
         }
         json!({"type":value.type_name(),"address":address(self.lua,value)})
     }
+}
+
+pub(crate) fn describe(lua: &Lua, value: &Value) -> Json {
+    Preview { lua, nodes: 1, text: MAX_TEXT, seen: HashSet::new() }.value(value, 0)
 }
 
 #[cfg(all(test, emulator_local_tests))]

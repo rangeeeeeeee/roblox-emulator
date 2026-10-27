@@ -1,7 +1,7 @@
 import {EditorState, Prec} from '@codemirror/state';
 import {EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
   drawSelection, dropCursor, highlightActiveLine, hoverTooltip} from '@codemirror/view';
-import {defaultKeymap, history, historyKeymap, indentWithTab, indentSelection} from '@codemirror/commands';
+import {defaultKeymap, history, historyKeymap, indentWithTab, indentSelection, isolateHistory} from '@codemirror/commands';
 import {StreamLanguage, indentUnit, indentOnInput, bracketMatching, syntaxHighlighting,
   HighlightStyle, syntaxTree} from '@codemirror/language';
 import {autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, snippetCompletion, acceptCompletion, closeCompletion} from '@codemirror/autocomplete';
@@ -58,12 +58,21 @@ const globals = [
   entry('setmetatable', '(table, metatable?) → table', 'Set a table metatable.'),
   entry('getmetatable', '(value) → any', 'Read the metatable or its protected value.'),
   ...['game', 'workspace', 'script', 'shared', '_G', 'Enum', 'Instance', 'Vector2', 'Vector3', 'CFrame', 'Color3',
-    'UDim', 'UDim2', 'Random', 'Ray', 'task', 'math', 'string', 'table', 'buffer', 'coroutine', 'debug', 'os', 'utf8']
+    'UDim', 'UDim2', 'Random', 'Ray', 'Rect', 'NumberRange', 'NumberSequence', 'NumberSequenceKeypoint',
+    'ColorSequence', 'ColorSequenceKeypoint', 'TweenInfo', 'Path2DControlPoint', 'Vector2int16', 'Vector3int16',
+    'RaycastParams', 'OverlapParams', 'task', 'math', 'string', 'table', 'buffer', 'coroutine', 'debug', 'os', 'utf8']
     .map(label => entry(label, 'global', label, 'variable'))
 ];
 const executor = [
+  {...entry('GCViewer', 'Instance.new("GCViewer")', 'Open the executor-only GC viewer window.', 'class'), apply: 'Instance.new("GCViewer")'},
   entry('getgc', '(includeTables?) → {any}', 'Snapshot GC objects in the selected VM.'),
   entry('filtergc', '(selector, options?, returnOne?) → any', 'Find GC objects matching the selector and filters.'),
+  entry('getupvalue', '(functionOrLevel, index) → any', 'Read a captured upvalue. Same native function as debug.getupvalue; C closures are unsupported.'),
+  entry('getupvalues', '(functionOrLevel) → table', 'Read captured upvalues at their original indices. Same native function as debug.getupvalues.'),
+  entry('setupvalue', '(functionOrLevel, index, value) → ()', 'Change a captured upvalue. Same native function as debug.setupvalue.'),
+  entry('getconstant', '(functionOrLevel, index) → value?', 'Read a Luau constant at its original index; hidden or out-of-range slots return nil.'),
+  entry('getconstants', '(functionOrLevel) → table', 'Read the Luau constant pool, preserving indices and nil gaps. C closures are unsupported.'),
+  entry('setconstant', '(functionOrLevel, index, value) → ()', 'Change a primitive constant. This emulator preserves its existing type; other type changes report UnsupportedApi.'),
   entry('getgenv', '() → table', 'Return the executor global environment.'),
   entry('getrenv', '() → table', 'Return the game environment of this VM.'),
   entry('identifyexecutor', '() → (string, string)', 'Return the active executor profile.'),
@@ -92,7 +101,10 @@ const members = {
   buffer: ['create', 'fromstring', 'tostring', 'len', 'copy', 'fill', 'readu8', 'writeu8', 'readu32', 'writeu32', 'readf64', 'writef64'],
   Instance: ['new'], Vector2: ['new', 'zero', 'one'], Vector3: ['new', 'zero', 'one', 'xAxis', 'yAxis', 'zAxis'],
   CFrame: ['new', 'Angles', 'lookAt', 'fromMatrix', 'identity'], Color3: ['new', 'fromRGB', 'fromHSV', 'fromHex'],
-  UDim: ['new'], UDim2: ['new', 'fromScale', 'fromOffset'], Random: ['new'], Ray: ['new']
+  UDim: ['new'], UDim2: ['new', 'fromScale', 'fromOffset'], Random: ['new'], Ray: ['new'],
+  Rect: ['new'], NumberRange: ['new'], NumberSequence: ['new'], NumberSequenceKeypoint: ['new'],
+  ColorSequence: ['new'], ColorSequenceKeypoint: ['new'], TweenInfo: ['new'], Path2DControlPoint: ['new'],
+  Vector2int16: ['new'], Vector3int16: ['new'], RaycastParams: ['new'], OverlapParams: ['new']
 };
 const instanceMembers = ['GetService', 'FindService', 'GetChildren', 'GetDescendants', 'FindFirstChild', 'WaitForChild',
   'FindFirstChildOfClass', 'IsA', 'GetFullName', 'GetActor', 'GetAttribute', 'SetAttribute', 'GetAttributes',
@@ -176,6 +188,151 @@ function instancePath(source) {
   return null;
 }
 
+// A small lexical pass keeps block editing independent of lint/network results.
+// Strings (including long brackets/interpolation) and comments are never scanned as code.
+function blockTokens(source) {
+  const tokens = [];
+  for (let at = 0; at < source.length;) {
+    if (/\s/.test(source[at])) { at++; continue; }
+    const from = at, comment = source.startsWith('--', at);
+    if (comment) at += 2;
+    const long = /^\[(=*)\[/.exec(source.slice(at));
+    if (long) {
+      const close = ']' + long[1] + ']', end = source.indexOf(close, at + long[0].length);
+      at = end < 0 ? source.length : end + close.length;
+      tokens.push({text: source.slice(from, at), from, to: at, kind: comment ? 'comment' : 'literal', open: end < 0}); continue;
+    }
+    if (comment) {
+      at = source.indexOf('\n', at); if (at < 0) at = source.length;
+      tokens.push({text: source.slice(from, at), from, to: at, kind: 'comment', open: true}); continue;
+    }
+    const quote = source[at];
+    if (quote === '"' || quote === "'" || quote === '`') {
+      let closed = false; at++;
+      while (at < source.length) {
+        if (source[at] === '\\') { at = Math.min(source.length, at + 2); continue; }
+        if (source[at++] === quote) { closed = true; break; }
+      }
+      tokens.push({text: source.slice(from, at), from, to: at, kind: 'literal', open: !closed}); continue;
+    }
+    const word = /^[A-Za-z_]\w*/.exec(source.slice(at));
+    const number = /^(?:0[xX][\da-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(source.slice(at));
+    const symbol = /^(?:\.\.\.|\.\.|->|::|==|~=|<=|>=)/.exec(source.slice(at));
+    const text = word?.[0] || number?.[0] || symbol?.[0] || source[at++];
+    if (word || number || symbol) at += text.length;
+    tokens.push({text, from, to: at, kind: word ? 'word' : number ? 'number' : 'symbol'});
+  }
+  return tokens;
+}
+function balanced(tokens, angles = false) {
+  const stack = [], pairs = {')': '(', ']': '[', '}': '{', '>': '<'};
+  for (const {text, kind} of tokens) {
+    if (kind === 'literal') continue;
+    if (['(', '[', '{', ...(angles ? ['<'] : [])].includes(text)) stack.push(text);
+    else if (Object.hasOwn(pairs, text) && (angles || text !== '>') && stack.pop() !== pairs[text]) return false;
+  }
+  return stack.length === 0;
+}
+function completeExpression(tokens) {
+  const last = tokens.at(-1);
+  return !!last && balanced(tokens) && !tokens.some(token => token.open)
+    && !tokens.some(token => token.kind === 'word' && ['function', 'if', 'then', 'else', 'elseif', 'end', 'do', 'for', 'while', 'repeat', 'until', 'return', 'local', 'break', 'continue'].includes(token.text))
+    && (last.kind === 'literal' || last.kind === 'number' || [')', ']', '}', '...'].includes(last.text)
+      || last.kind === 'word' && (!reservedWords.has(last.text) || ['true', 'false', 'nil'].includes(last.text)));
+}
+function functionHeader(tokens) {
+  let index = 1;
+  if (tokens[index]?.kind === 'word') {
+    index++;
+    while (['.', ':'].includes(tokens[index]?.text) && tokens[index + 1]?.kind === 'word') index += 2;
+  }
+  if (tokens[index]?.text === '<') {
+    let depth = 1; index++;
+    while (index < tokens.length && depth) { if (tokens[index].text === '<') depth++; if (tokens[index].text === '>') depth--; index++; }
+    if (depth) return false;
+  }
+  if (tokens[index]?.text !== '(') return false;
+  const start = index++; let depth = 1;
+  while (index < tokens.length && depth) { if (tokens[index].text === '(') depth++; if (tokens[index].text === ')') depth--; index++; }
+  if (depth || !balanced(tokens.slice(start, index))) return false;
+  if (index === tokens.length) return true;
+  if (tokens[index++].text !== ':') return false;
+  const type = tokens.slice(index);
+  const last = type.at(-1);
+  if (!last || !balanced(type, true) || !(last.kind !== 'symbol' || [')', ']', '}', '>', '?', '...'].includes(last.text))) return false;
+  return type.every((token, i) => token.kind === 'literal' || token.kind === 'number'
+    || token.kind === 'word' && !['return', 'local', 'end', 'do', 'then', 'else', 'for', 'while', 'if', 'break', 'continue', 'function'].includes(token.text)
+      && type[i - 1]?.kind !== 'word'
+    || token.kind === 'symbol' && ['.', ':', '?', '|', '&', '->', '...', ',', '(', ')', '{', '}', '[', ']', '<', '>'].includes(token.text));
+}
+function closingBlock(tokens, start, afterHeader, source) {
+  const stack = [{kind: tokens[start].text}];
+  const indentation = token => /^[\t ]*/.exec(source.slice(source.lastIndexOf('\n', token.from - 1) + 1))[0];
+  const base = indentation(tokens[start]);
+  for (let index = afterHeader; index < tokens.length; index++) {
+    const token = tokens[index]; if (token.kind !== 'word') continue;
+    const word = token.text, previous = tokens[index - 1];
+    if (word === 'function' || word === 'for' || word === 'while' || word === 'repeat'
+      || word === 'if' && (/[\r\n]/.test(source.slice(previous.to, token.from)) && !['=', 'return', ',', '('].includes(previous.text)
+        || ['then', 'do', 'else', ';'].includes(previous.text))) stack.push({kind: word, pending: ['for', 'while'].includes(word)});
+    else if (word === 'do') { if (stack.at(-1)?.pending) stack.at(-1).pending = false; else stack.push({kind: word}); }
+    else if (word === 'end' || word === 'until') {
+      // An aligned closer also covers Luau if-expressions, whose nested `if`
+      // keywords do not introduce statement blocks or require another `end`.
+      if ((word === 'until') === (tokens[start].text === 'repeat') && indentation(token) === base) return token;
+      if ((word === 'until') !== (stack.at(-1)?.kind === 'repeat')) return null;
+      stack.pop(); if (!stack.length) return token;
+    }
+  }
+  return null;
+}
+
+export function insertBlock(view) {
+  const {state} = view, selection = state.selection.main;
+  if (view.composing || !selection.empty || state.selection.ranges.length !== 1) return false;
+  const cursor = selection.head, line = state.doc.lineAt(cursor), source = state.doc.toString(), all = blockTokens(source);
+  if (all.some(token => ['literal', 'comment'].includes(token.kind) && token.from < cursor && (cursor < token.to || cursor === token.to && token.open))) return false;
+  const tokens = all.filter(token => token.kind !== 'comment'), before = tokens.filter(token => token.to <= cursor);
+  if (!before.length || state.doc.lineAt(before.at(-1).to).number !== line.number) return false;
+  const first = before.findIndex(token => token.from >= line.from);
+  let start = first, kind = before[start]?.text, suffix = '';
+  if (!['for', 'while', 'if', 'elseif', 'else', 'do', 'repeat'].includes(kind)) {
+    start = before.findLastIndex(token => token.text === 'function' && token.kind === 'word'); kind = 'function';
+    if (start < 0 || cursor - before[start].from > 8192 || !functionHeader(before.slice(start))) return false;
+  } else {
+    const header = before.slice(start + 1);
+    if (['else', 'do', 'repeat'].includes(kind)) { if (header.length) return false; }
+    else {
+      const ending = kind === 'if' || kind === 'elseif' ? 'then' : 'do';
+      if (header.at(-1)?.text === ending) header.pop(); else suffix = ' ' + ending;
+      if (kind === 'for') {
+        let split = 0;
+        while (header[split]?.kind === 'word' && !reservedWords.has(header[split].text)) { split++; if (header[split]?.text !== ',') break; split++; }
+        if (!/^[A-Za-z_]\w*(?:,[A-Za-z_]\w*)*$/.test(header.slice(0, split).map(token => token.text).join(''))
+          || !['in', '='].includes(header[split]?.text) || !completeExpression(header.slice(split + 1))) return false;
+        if (header[split].text === '=') {
+          let depth = 0, comma = false;
+          for (const token of header.slice(split + 1)) { if (['(', '[', '{'].includes(token.text)) depth++; if ([')', ']', '}'].includes(token.text)) depth--; if (token.text === ',' && !depth) comma = true; }
+          if (!comma || split !== 1) return false;
+        }
+      } else if (!completeExpression(header)) return false;
+    }
+  }
+  const after = source.slice(cursor, line.to);
+  if (!/^\s*(?:(?:end|until)\b)?[\s)\]},;]*$/.test(after)) return false;
+  const headerLine = state.doc.lineAt(before[start].from), base = /^\s*/.exec(headerLine.text)[0];
+  const inner = base + state.facet(indentUnit), close = closingBlock(tokens, start, before.length, source);
+  const existing = close && (state.doc.lineAt(close.from).number === line.number || /^\s*/.exec(state.doc.lineAt(close.from).text)[0].length >= base.length);
+  const branch = kind === 'else' || kind === 'elseif';
+  let insert = suffix + '\n' + inner, to = cursor + /^\s*/.exec(after)[0].length;
+  const anchor = cursor + insert.length;
+  if (!branch && !existing) insert += '\n' + base + (kind === 'repeat' ? 'until ' : 'end');
+  else if (existing && close.from >= cursor && close.from <= line.to && !source.slice(cursor, close.from).trim()) insert += '\n' + base;
+  view.dispatch({changes: {from: cursor, to, insert}, selection: {anchor}, scrollIntoView: true,
+    userEvent: 'input', annotations: isolateHistory.of('full')});
+  return true;
+}
+
 export function createEditor(parent, options) {
   let context = options.context || 'server';
   let timer, controller, generation = 0;
@@ -192,8 +349,10 @@ export function createEditor(parent, options) {
       const receiver = before.slice(0, -1), path = instancePath(receiver);
       const name = /([A-Za-z_]\w*)\s*$/.exec(receiver)?.[1];
       const names = operator === ':' ? [...instanceMembers, ...(context === 'server' ? ['FireClient', 'FireAllClients', 'InvokeClient'] : ['FireServer', 'InvokeServer'])]
-        : (members[name] || (path ? ['Name', 'ClassName', 'Parent', 'Archivable', ...instanceMembers] : []));
-      const fallback = {from: token.from, options: names.map(label => entry(label, operator === ':' ? 'method' : name || 'member', label)), validFor: /^\w*$/};
+        : [...(members[name] || (path ? ['Name', 'ClassName', 'Parent', 'Archivable', ...instanceMembers] : [])),
+          ...(name === 'debug' && context === 'executor' ? ['getupvalue', 'getupvalues', 'setupvalue', 'getconstant', 'getconstants', 'setconstant'] : [])];
+      const fallback = {from: token.from, options: names.map(label => name === 'debug' && context === 'executor' && docs.has(label)
+        ? docs.get(label) : entry(label, operator === ':' ? 'method' : name || 'member', label)), validFor: /^\w*$/};
       return path ? completeInstance(request, path, operator, before.length - 1, fallback) : fallback;
     }
     const locals = [...request.state.doc.toString().matchAll(/\blocal\s+(?:function\s+)?([A-Za-z_]\w*)/g)]
@@ -281,7 +440,7 @@ export function createEditor(parent, options) {
   const extensions = [
     lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), history(), drawSelection(), dropCursor(),
     EditorState.allowMultipleSelections.of(true), indentUnit.of('    '), luau, indentOnInput(), bracketMatching(),
-    Prec.highest(keymap.of([{key: 'Tab', run: acceptCompletion}])),
+    Prec.highest(keymap.of([{key: 'Tab', run: acceptCompletion}, {key: 'Enter', run: insertBlock}])),
     closeBrackets(), autocompletion({override: [complete]}), highlightActiveLine(), hover,
     linter(null), lintGutter(),
     keymap.of([{key: 'Mod-Enter', run: () => { options.onRun?.(); return true; }},

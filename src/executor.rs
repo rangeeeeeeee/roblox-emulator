@@ -47,7 +47,11 @@ pub fn install(lua:&Lua)->Result<()> {
     for (name,host) in [("getgc","__host_getgc"),("iscclosure","__host_iscclosure"),("islclosure","__host_islclosure"),("newcclosure","__host_newcclosure"),("clonefunction","__host_clonefunction"),("getrawmetatable","__host_getrawmetatable"),("setrawmetatable","__host_setrawmetatable"),("setreadonly","__host_setreadonly"),("isreadonly","__host_isreadonly"),("getnamecallmethod","__host_getnamecallmethod"),("hookfunction","__host_hookfunction"),("restorefunction","__host_restorefunction"),("hookmetamethod","__host_hookmetamethod")]{env.set(name,game.get::<Function>(host)?)?;caps.set(name,"native: isolated Luau VM")?;}
     env.set("filtergc",crate::native::bind_filtergc(lua,&env,&unsupported)?)?;caps.set("filtergc","native: Name, Constants, Upvalues, IgnoreExecutor, Keys, Values, KeyValuePairs, Metatable; Hash unsupported")?;
     let debug=lua.create_table()?;for pair in game.get::<Table>("debug")?.pairs::<Value,Value>(){let(k,v)=pair?;debug.set(k,v)?;}
-    for(name,host)in[("getupvalue","__host_getupvalue"),("getupvalues","__host_getupvalues"),("setupvalue","__host_setupvalue")]{let function=game.get::<Function>(host)?;crate::native::mark_executor_function(lua,&function,&env)?;debug.set(name,function)?;}env.set("debug",debug)?;
+    for(name,host)in[("getupvalue","__host_getupvalue"),("getupvalues","__host_getupvalues"),("setupvalue","__host_setupvalue"),("getconstant","__host_getconstant"),("getconstants","__host_getconstants"),("setconstant","__host_setconstant")]{
+        let function=game.get::<Function>(host)?;crate::native::mark_executor_function(lua,&function,&env)?;
+        debug.set(name,function.clone())?;env.set(name,function)?;
+        caps.set(name,if name=="setconstant"{"native: Luau function or stack level; preserves primitive constant type"}else{"native: Luau function or stack level"})?;
+    }env.set("debug",debug)?;
     let io=Rc::new(RefCell::new(VirtualIo::default()));io.borrow_mut().folders.insert(String::new());
     let s=io.clone();set(lua,&env,"writefile",move|_,(name,data):(String,String)|write(&s,&name,data))?;
     let s=io.clone();set(lua,&env,"appendfile",move|_,(name,data):(String,String)|{let name=path(&name)?;let mut previous=s.borrow().files.get(&name).cloned().unwrap_or_default();previous.push_str(&data);write(&s,&name,previous)})?;
