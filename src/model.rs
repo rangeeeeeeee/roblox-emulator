@@ -280,6 +280,12 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "FieldOfView" if is("Camera")=>Some(Value::Number(70.0)),
         "FieldOfViewMode" if is("Camera")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"FieldOfViewMode","name":"Vertical"}))?,
         "CFrame" if is("Camera")=>Some(crate::types::CFrame{p:crate::types::Vector([0.0;3]),r:[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]}.into_lua(lua)?),
+        "CFrame" if is("BasePart")&&n.class!="Terrain"=>Some(crate::spatial::identity().into_lua(lua)?),
+        "Position" if is("BasePart")&&n.class!="Terrain"=>Some(Value::Vector(mlua::Vector::zero())),
+        "Size" if is("BasePart")&&n.class!="Terrain"=>Some(Value::Vector(if n.class=="Part"{mlua::Vector::new(4.,1.2,2.)}else{mlua::Vector::new(1.,1.,1.)})),
+        "Shape" if n.class=="Part"=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"PartType","name":"Block"}))?,
+        "Material" if is("BasePart")&&n.class!="Terrain"=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"Material","name":"Plastic"}))?,
+        "CollisionGroup" if is("BasePart")&&n.class!="Terrain"=>Some(str_value(lua,"Default")?),
         "Gravity" if is("Workspace")=>Some(Value::Number(196.2)),
         "PlaceId"|"GameId"|"PlaceVersion"|"CreatorId" if is("DataModel")=>Some(Value::Integer(0)),
         "JobId" if is("DataModel")=>Some(str_value(lua,"emulator")?),
@@ -330,6 +336,9 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
 
 pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
     if state(lua).is_none(){return Ok(None)}
+    if instance::is_a(&node.borrow(),"BasePart")&&node.borrow().class!="Terrain"{
+        match key{"Position"=>return Ok(Some(crate::spatial::position_value(node)?)),"CFrame"|"ExtentsCFrame"=>return Ok(Some(crate::spatial::part_frame(node)?.into_lua(lua)?)),"ExtentsSize"=>return Ok(Some(crate::spatial::extents_value(node)?)),_=>{}}
+    }
     if let Some(value)=node.borrow().properties.get(key){return Ok(Some(value.clone()))}
     if key=="RequestQueueSize"&&node.borrow().class=="ContentProvider" {return Ok(Some(Value::Integer(required(lua)?.borrow().pending_assets as i64)))}
     if key=="Source"&&instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(unsupported(lua,"LuaSourceContainer.Source runtime capability"))}
@@ -389,6 +398,37 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
         let valid=match key{"Visible"|"Closed"=>matches!(new,Value::Boolean(_)),"Thickness"=>matches!(new,Value::Number(_)|Value::Integer(_)),"Color3"=>matches!(new,Value::UserData(value)if value.is::<crate::types::Color3>()),_=>true};
         if !valid{return Err(Error::lua_string(format!("Unable to assign property {key}. Invalid value")))}
     }
+    if instance::is_a(&node.borrow(),"BasePart"){
+        if matches!(key,"ExtentsCFrame"|"ExtentsSize"){return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only")))}
+        if node.borrow().class=="Terrain"&&matches!(key,"CFrame"|"Position"|"Size"|"Shape"|"Material"|"CollisionGroup"){return Err(unsupported(lua,&format!("Terrain.{key} mutation")))}
+        if matches!(key,"CFrame"|"Position"){
+            let before=crate::spatial::part_frame(node)?;
+            let next=if key=="CFrame"{crate::spatial::frame(new)?}else{crate::types::CFrame{p:crate::types::Vector(crate::spatial::vector(new)?.map(|v|v as f32)),..before}};
+            if before==next{return Ok(true)}
+            let frame=next.into_lua(lua)?;let position=Value::Vector(mlua::Vector::new(next.p.0[0],next.p.0[1],next.p.0[2]));
+            {let mut node=node.borrow_mut();node.properties.insert("CFrame".into(),frame);node.properties.insert("Position".into(),position);}
+            changed(lua,node,"CFrame")?;if before.p!=next.p{changed(lua,node,"Position")?;}return Ok(true)
+        }
+        if key=="Size"{
+            let size=crate::spatial::vector(new)?.map(|v|(v as f32).clamp(0.001,2048.));
+            let next=Value::Vector(mlua::Vector::new(size[0],size[1],size[2]));
+            if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}
+            node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)
+        }
+        if key=="Shape"&&node.borrow().class=="Part"||key=="Material"{
+            let family=if key=="Shape"{"PartType"}else{"Material"};
+            let encoded=crate::types::encode_value(new)?;let item=if encoded.as_ref().is_some_and(|value|value["tag"]=="EnumItem"&&value["enum"]==family){new.clone()}
+                else if let Value::String(name)=new{crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":family,"name":name.to_str()?.as_ref()}))?.ok_or_else(||Error::lua_string(format!("Unable to assign property {key}")))?}
+                else if let Some(number)=match new{Value::Integer(value)=>Some(*value as f64),Value::Number(value)=>Some(*value),_=>None}{
+                    static ENUM_VALUES:std::sync::OnceLock<Json>=std::sync::OnceLock::new();
+                    let values=ENUM_VALUES.get_or_init(||serde_json::from_str(include_str!("../native/enums.json")).expect("Studio enum metadata"));
+                    let name=values[family].as_array().and_then(|items|items.iter().find(|item|item["value"].as_f64()==Some(number))).and_then(|item|item["name"].as_str()).ok_or_else(||Error::lua_string(format!("Unable to assign property {key}. Invalid enum value")))?;
+                    crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":family,"name":name}))?.ok_or_else(||Error::lua_string("Unknown enum value"))?
+                }else{return Err(Error::lua_string(format!("Unable to assign property {key}. {family} expected")))};
+            if previous()?.as_ref().is_some_and(|old|same(old,&item)){return Ok(true)}node.borrow_mut().properties.insert(key.into(),item);changed(lua,node,key)?;return Ok(true)
+        }
+        if key=="CollisionGroup"{let group=lua.coerce_string(new.clone())?.ok_or_else(||Error::lua_string("Unable to assign property CollisionGroup. String expected"))?;let next=Value::String(group);if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)}
+    }
     match key {
         "Name"=>{if let Value::String(v)=new{let name=v.to_str()?;if node.borrow().name.as_str()==&*name{return Ok(true)}node.borrow_mut().name=name.to_string()}else{return Err(Error::lua_string("Name must be a string"))}},
         "Archivable"=>{if let Value::Boolean(v)=new{if node.borrow().archivable==*v{return Ok(true)}node.borrow_mut().archivable=*v}else{return Err(Error::lua_string("Archivable must be a boolean"))}},
@@ -420,16 +460,43 @@ fn encode(lua:&Lua,v:Value,active:&mut HashSet<usize>)->Result<Json>{
         Value::String(v)=>match v.to_str(){Ok(text)=>json!({"tag":"string","value":text.as_ref()}),Err(_)=>json!({"tag":"string","bytes":v.as_bytes().as_ref()})},
         Value::Buffer(v)=>json!({"tag":"buffer","bytes":v.to_vec()}),
         Value::UserData(ref u) if u.is::<Instance>()=>json!({"tag":"instance","id":u.borrow::<Instance>()?.0.borrow().id}),
-        Value::Table(t)=>{
-            let id=t.to_pointer() as usize;
-            if !active.insert(id){return Err(Error::lua_string("Cannot serialize cyclic table"))}
-            let mut entries=Vec::new();
-            for pair in t.pairs::<Value,Value>() {let(k,v)=pair?;if !matches!(k,Value::String(_)|Value::Number(_)|Value::Integer(_)|Value::Boolean(_)){return Err(Error::lua_string("Unsupported remote table key"))} entries.push(json!({"key":encode(lua,k,active)?,"value":encode(lua,v,active)?}));}
-            active.remove(&id);json!({"tag":"table","entries":entries})
+        Value::Table(table)=>{
+            let mut result=None;
+            unsafe{lua.exec_raw::<()>(table,|state|{
+                result=Some(lua.exec_raw_lua(|raw|encode_stack(lua,raw,state,1,active)));
+                ffi::lua_settop(state,0);
+            })?;}
+            result.expect("wire traversal completed")?
         }
         other=>crate::types::encode_value(&other)?.ok_or_else(||Error::lua_string(format!("Cannot serialize {} across VM boundary",other.type_name())))?,
     })
 }
+// Recursive table handles otherwise expand mlua's hidden reference-thread stack
+// inside FireServer. Keep ancestors on the real Lua stack and build only Rust
+// wire values; primitive/userdata leaves need at most one temporary host handle.
+unsafe fn encode_stack(lua:&Lua,raw:&mlua::state::RawLua,state:*mut ffi::lua_State,index:i32,active:&mut HashSet<usize>)->Result<Json>{unsafe{
+    let index=ffi::lua_absindex(state,index);let top=ffi::lua_gettop(state);
+    if ffi::lua_checkstack(state,3)==0{return Err(Error::StackError)}
+    if ffi::lua_type(state,index)!=ffi::LUA_TTABLE{
+        ffi::lua_pushvalue(state,index);
+        let value=raw.pop::<Value>();ffi::lua_settop(state,top);
+        return encode(lua,value?,active)
+    }
+    let id=ffi::lua_topointer(state,index)as usize;
+    if !active.insert(id){return Err(Error::lua_string("Cannot serialize cyclic table"))}
+    let result=(||{
+        let mut entries=Vec::new();ffi::lua_pushnil(state);
+        while ffi::lua_next(state,index)!=0{
+            if !matches!(ffi::lua_type(state,-2),ffi::LUA_TSTRING|ffi::LUA_TNUMBER|ffi::LUA_TINTEGER|ffi::LUA_TBOOLEAN){return Err(Error::lua_string("Unsupported remote table key"))}
+            let key=encode_stack(lua,raw,state,-2,active)?;
+            let value=encode_stack(lua,raw,state,-1,active)?;
+            entries.push(Json::Object([("key".into(),key),("value".into(),value)].into_iter().collect()));
+            ffi::lua_pop(state,1);
+        }
+        Ok(Json::Object([("tag".into(),Json::String("table".into())),("entries".into(),Json::Array(entries))].into_iter().collect()))
+    })();
+    active.remove(&id);ffi::lua_settop(state,top);result
+}}
 fn decode(lua:&Lua,v:&Json)->Result<Value>{
     Ok(match v["tag"].as_str().unwrap_or("") {
         "nil"=>Value::Nil,"boolean"=>Value::Boolean(v["value"].as_bool().unwrap_or(false)),
@@ -601,9 +668,10 @@ fn preload_async(lua:&Lua,mut values:MultiValue)->Result<NativeCall>{
     Ok(NativeCall::Yield(MultiValue::new()))
 }
 
-const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Raycast",c"Raycast"),("Blockcast",c"Blockcast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
+const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Blockcast",c"Blockcast"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
 const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
-pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).chain(PATH_METHODS.iter()).chain(TWEEN_METHODS.iter()).chain(INPUT_METHODS.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
+pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).chain(PATH_METHODS.iter()).chain(TWEEN_METHODS.iter()).chain(INPUT_METHODS.iter()).chain(SPATIAL_METHODS.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
+const SPATIAL_METHODS:&[(&str,&CStr)]=&[("Raycast",c"Raycast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("GetPartBoundsInRadius",c"GetPartBoundsInRadius")];
 const PATH_METHODS:&[(&str,&CStr)]=&[("SetControlPoints",c"SetControlPoints"),("GetControlPoints",c"GetControlPoints"),("GetControlPoint",c"GetControlPoint"),("InsertControlPoint",c"InsertControlPoint"),("UpdateControlPoint",c"UpdateControlPoint"),("RemoveControlPoint",c"RemoveControlPoint"),("GetLength",c"GetLength"),("GetPositionOnCurve",c"GetPositionOnCurve"),("GetPositionOnCurveArcLength",c"GetPositionOnCurveArcLength"),("GetTangentOnCurve",c"GetTangentOnCurve"),("GetTangentOnCurveArcLength",c"GetTangentOnCurveArcLength")];
 const TWEEN_METHODS:&[(&str,&CStr)]=&[("Create",c"Create"),("GetValue",c"GetValue"),("Play",c"Play"),("Pause",c"Pause"),("Cancel",c"Cancel")];
 const INPUT_METHODS:&[(&str,&CStr)]=&[("IsKeyDown",c"IsKeyDown"),("IsMouseButtonPressed",c"IsMouseButtonPressed"),("GetKeysPressed",c"GetKeysPressed")];
@@ -623,7 +691,7 @@ pub(crate) fn method_class(name:&str)->Option<&'static str>{
         "Create"|"GetValue"=>"TweenService", "Play"|"Pause"|"Cancel"=>"TweenBase",
         "BindAction"|"BindActionAtPriority"|"UnbindAction"|"UnbindAllActions"|"GetBoundActionInfo"|"GetAllBoundActionInfo"=>"ContextActionService",
         "GetAssetFetchStatusChangedSignal"|"GetAssetFetchStatus"|"PreloadAsync"|"Preload"=>"ContentProvider",
-        "GetRealPhysicsFPS"=>"Workspace","Raycast"|"Blockcast"|"GetPartBoundsInBox"=>"WorldRoot",
+        "GetRealPhysicsFPS"=>"Workspace","Raycast"|"Blockcast"|"GetPartBoundsInBox"|"GetPartBoundsInRadius"=>"WorldRoot",
         "ScreenPointToRay"|"ViewportPointToRay"=>"Camera","GetStyled"=>"Instance","Clear"=>"Terrain",
         "PostAsync"|"PostAsyncFullUrl"|"RequestLimitedAsync"=>"HttpRbxApiService",
         "PromptPurchase"|"GetRobuxBalance"|"PerformPurchaseV2"|"PromptRobloxPurchase"|"PromptThirdPartyPurchase"=>"MarketplaceService",
@@ -833,6 +901,9 @@ fn advance_tweens(lua:&Lua)->Result<()>{
     }Ok(())
 }
 pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
+    instance::register_method(m,"Raycast",|lua,this,args:MultiValue|crate::spatial::raycast(lua,&this.0,args));
+    instance::register_method(m,"GetPartBoundsInBox",|lua,this,args:MultiValue|crate::spatial::bounds(lua,&this.0,args,false));
+    instance::register_method(m,"GetPartBoundsInRadius",|lua,this,args:MultiValue|crate::spatial::bounds(lua,&this.0,args,true));
     for name in ["IsKeyDown","IsMouseButtonPressed"]{instance::register_method(m,name,move|_,_,value:Value|{enum_name(&value,if name=="IsKeyDown"{"KeyCode"}else{"UserInputType"})?;Ok(false)});}
     instance::register_method(m,"GetKeysPressed",|lua,_,()|lua.create_table());
     instance::register_method(m,"GetValue",|lua,_,values:MultiValue|{
@@ -1105,7 +1176,13 @@ fn load_nodes(lua:&Lua,nodes:Vec<Json>,wire:bool)->Result<()>{
             let mut keys:BTreeSet<String>=props.clone().pairs::<String,Value>().map(|entry|entry.map(|(key,_)|key)).collect::<Result<_>>()?;
             if let Some(changed)=node["$changed"]["properties"].as_array(){keys.extend(changed.iter().filter_map(Json::as_str).map(str::to_owned));}
             else if wire&&node.get("$changed").is_none(){keys.extend(n.borrow().properties.iter().filter(|(_,value)|!matches!(value,Value::Function(_))).map(|(key,_)|key.clone()));}
-            for key in keys{if !selected(node,"properties",&key){continue}let next:Value=props.raw_get(key.as_str())?;
+            for key in keys{if !selected(node,"properties",&key){continue}let mut next:Value=props.raw_get(key.as_str())?;
+                if instance::is_a(&n.borrow(),"BasePart")&&n.borrow().class!="Terrain"&&matches!(key.as_str(),"CFrame"|"Position"|"Size"|"Shape"|"Material"|"CollisionGroup")&&!next.is_nil(){
+                    if !wire{if let Some(encoded)=properties.get(&key){if let Some(native)=crate::types::decode_value(lua,encoded)?{next=native;}}}
+                    // Host seeds and replicas use the same transform normalization
+                    // as script writes, including Position-only updates.
+                    write_property(lua,n,&key,&next)?;continue
+                }
                 let differs=if key=="Archivable"{let next=matches!(next,Value::Boolean(true));let different=n.borrow().archivable!=next;n.borrow_mut().archivable=next;different}
                 else{let previous=n.borrow().properties.get(&key).cloned().unwrap_or(Value::Nil);let different=previous!=next;if next.is_nil(){n.borrow_mut().properties.remove(&key);}else{n.borrow_mut().properties.insert(key.clone(),next);}different};
                 if wire&&differs{changed(lua,n,&key)?;}
@@ -1523,6 +1600,8 @@ const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
     ("StringValue", "Value", "string"), ("BoolValue", "Value", "boolean"),
     ("NumberValue|IntValue", "Value", "number"), ("ObjectValue", "Value", "Instance | nil"),
     ("BasePart", "Anchored Massless CanCollide CanTouch CanQuery", "boolean"), ("BasePart", "Transparency", "number"),
+    ("BasePart", "CFrame ExtentsCFrame", "CFrame"), ("BasePart", "Position Size ExtentsSize", "Vector3"),
+    ("BasePart", "Material", "Enum.Material"), ("BasePart", "CollisionGroup", "string"), ("Part", "Shape", "Enum.PartType"),
     ("Humanoid", "Health MaxHealth WalkSpeed JumpPower HipHeight JumpHeight", "number"), ("Humanoid", "UseJumpPower", "boolean"),
     ("GuiObject", "Visible Active", "boolean"), ("GuiObject", "Size Position", "UDim2"), ("GuiObject", "ZIndex", "number"),
     ("GuiObject", "BackgroundTransparency", "number"), ("TextLabel|TextButton", "Text", "string"),

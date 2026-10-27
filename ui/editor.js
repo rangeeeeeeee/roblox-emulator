@@ -73,6 +73,10 @@ const executor = [
   entry('getconstant', '(functionOrLevel, index) → value?', 'Read a Luau constant at its original index; hidden or out-of-range slots return nil.'),
   entry('getconstants', '(functionOrLevel) → table', 'Read the Luau constant pool, preserving indices and nil gaps. C closures are unsupported.'),
   entry('setconstant', '(functionOrLevel, index, value) → ()', 'Change a primitive constant. This emulator preserves its existing type; other type changes report UnsupportedApi.'),
+  entry('getproto', '(functionOrLevel, index, activated) → {function}', 'Pass true for activated to find real live closures of a nested prototype in this VM. Inactive prototypes are unsupported.'),
+  entry('getprotos', '(functionOrLevel) → table', 'Unsupported: inactive prototype functions require VM support and are not fabricated.'),
+  entry('getstack', '(level, index?) → any', 'Read real register slots in an interpreted Luau stack frame. C and native machine-code frames are unsupported.'),
+  entry('setstack', '(level, index, value) → ()', 'Change a real Luau register slot. Active call function slots and native machine-code frames are protected.'),
   entry('getgenv', '() → table', 'Return the executor global environment.'),
   entry('getrenv', '() → table', 'Return the game environment of this VM.'),
   entry('identifyexecutor', '() → (string, string)', 'Return the active executor profile.'),
@@ -350,7 +354,7 @@ export function createEditor(parent, options) {
       const name = /([A-Za-z_]\w*)\s*$/.exec(receiver)?.[1];
       const names = operator === ':' ? [...instanceMembers, ...(context === 'server' ? ['FireClient', 'FireAllClients', 'InvokeClient'] : ['FireServer', 'InvokeServer'])]
         : [...(members[name] || (path ? ['Name', 'ClassName', 'Parent', 'Archivable', ...instanceMembers] : [])),
-          ...(name === 'debug' && context === 'executor' ? ['getupvalue', 'getupvalues', 'setupvalue', 'getconstant', 'getconstants', 'setconstant'] : [])];
+          ...(name === 'debug' && context === 'executor' ? ['getupvalue', 'getupvalues', 'setupvalue', 'getconstant', 'getconstants', 'setconstant', 'getproto', 'getprotos', 'getstack', 'setstack'] : [])];
       const fallback = {from: token.from, options: names.map(label => name === 'debug' && context === 'executor' && docs.has(label)
         ? docs.get(label) : entry(label, operator === ':' ? 'method' : name || 'member', label)), validFor: /^\w*$/};
       return path ? completeInstance(request, path, operator, before.length - 1, fallback) : fallback;

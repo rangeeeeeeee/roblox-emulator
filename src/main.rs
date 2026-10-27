@@ -8,6 +8,7 @@ mod instance;
 mod types;
 mod scheduler;
 mod model;
+mod spatial;
 mod executor;
 mod diagnostics;
 mod session;
@@ -15,6 +16,51 @@ mod web;
 mod console;
 mod inspector;
 mod lint;
+
+#[cfg(windows)]
+#[link(name="kernel32")]
+unsafe extern "system" {
+    fn QueryPerformanceCounter(value:*mut i64)->i32;
+    fn QueryPerformanceFrequency(value:*mut i64)->i32;
+}
+struct BudgetClock {
+    #[cfg(windows)] frequency:Option<i64>,
+    #[cfg(windows)] cached:Cell<Option<(Instant,i64)>>,
+    #[cfg(windows)] previous:Cell<i64>,
+}
+impl BudgetClock {
+    fn new()->Self {
+        #[cfg(windows)] {
+            let mut frequency=0;
+            let valid=unsafe{QueryPerformanceFrequency(&mut frequency)}!=0&&frequency>0;
+            Self{frequency:valid.then_some(frequency),cached:Cell::new(None),previous:Cell::new(0)}
+        }
+        #[cfg(not(windows))] {Self{}}
+    }
+    fn expired(&self,deadline:Instant)->bool {
+        #[cfg(windows)] if let Some(frequency)=self.frequency {
+            let mut current=0;
+            if unsafe{QueryPerformanceCounter(&mut current)}!=0&&current>=0&&current>=self.previous.replace(current) {
+                let threshold=match self.cached.get() {
+                    Some((cached,threshold))if cached==deadline=>Some(threshold),
+                    _=>{
+                        // Counter sampled before Instant makes this threshold conservative.
+                        // Recalibrate only when a caller changes the live deadline Cell.
+                        let threshold=deadline.checked_duration_since(Instant::now()).and_then(|remaining|{
+                            let ticks=remaining.as_nanos().checked_mul(frequency as u128)?/1_000_000_000;
+                            current.checked_add(i64::try_from(ticks).ok()?)
+                        });
+                        self.cached.set(threshold.map(|threshold|(deadline,threshold)));threshold
+                    }
+                };
+                if threshold.is_some_and(|threshold|current<=threshold){return false}
+            }else{self.cached.set(None);}
+        }
+        // Preserve the exact existing timeout decision, including all fallback paths.
+        Instant::now()>deadline
+    }
+}
+
 
 pub(crate) fn internal<T: mlua::FromLua>(lua:&Lua,name:&str)->LuaResult<T> {
     if let Ok(table)=lua.named_registry_value::<Table>("emulator.internal") { table.get(name) } else {lua.globals().get(name)}
@@ -110,8 +156,9 @@ impl Host {
         let guard = deadline.clone();
         let wall_time_exceeded=Rc::new(Cell::new(false));
         let exceeded=wall_time_exceeded.clone();
+        let budget_clock=BudgetClock::new();
         lua.set_interrupt(move |_| {
-            if Instant::now() > guard.get() { exceeded.set(true); Err(LuaError::runtime("BudgetExceeded: Luau wall-time budget")) }
+            if budget_clock.expired(guard.get()) { exceeded.set(true); Err(LuaError::runtime("BudgetExceeded: Luau wall-time budget")) }
             else { Ok(VmState::Continue) }
         });
         let globals = lua.globals();

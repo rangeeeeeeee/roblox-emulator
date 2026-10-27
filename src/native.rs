@@ -27,6 +27,10 @@ unsafe extern "C-unwind" {
     fn emu_getconstants(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_inspectconstants(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setconstant(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getproto(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getprotos(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getstack(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_setstack(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_newcclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_clonefunction(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getrawmetatable(state: *mut ffi::lua_State) -> std::ffi::c_int;
@@ -90,7 +94,7 @@ fn set_function_name(lua: &Lua, function: &Function, name: *const std::ffi::c_ch
 
 pub fn install(lua: &Lua) -> Result<()> {
     lua.set_compiler(Compiler::new().set_mutable_globals(["_G", "shared", "script"]));
-    let functions: [(&str, &std::ffi::CStr, ffi::lua_CFunction); 21] = [
+    let functions: [(&str, &std::ffi::CStr, ffi::lua_CFunction); 25] = [
         ("__host_getgc", c"getgc", emu_getgc),
         ("__host_filtergc", c"filtergc", emu_filtergc),
         ("__host_iscclosure", c"iscclosure", emu_iscclosure),
@@ -101,6 +105,10 @@ pub fn install(lua: &Lua) -> Result<()> {
         ("__host_getconstant", c"getconstant", emu_getconstant),
         ("__host_getconstants", c"getconstants", emu_getconstants),
         ("__host_setconstant", c"setconstant", emu_setconstant),
+        ("__host_getproto", c"getproto", emu_getproto),
+        ("__host_getprotos", c"getprotos", emu_getprotos),
+        ("__host_getstack", c"getstack", emu_getstack),
+        ("__host_setstack", c"setstack", emu_setstack),
         ("__host_newcclosure", c"newcclosure", emu_newcclosure),
         ("__host_clonefunction", c"clonefunction", emu_clonefunction),
         ("__host_getrawmetatable", c"getrawmetatable", emu_getrawmetatable),

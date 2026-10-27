@@ -208,6 +208,126 @@ static Closure* check_lua_closure(lua_State* state)
     return clvalue(luaA_toobject(state, 1));
 }
 
+struct ProtoScan
+{
+    lua_State* state;
+    Proto* proto;
+    int count;
+    bool fill;
+};
+
+static int check_index(lua_State* state, int argument, int count, const char* message)
+{
+    const double index = luaL_checknumber(state, argument);
+    if (!std::isfinite(index) || index < 1 || index > count || std::floor(index) != index)
+        luaL_argerror(state, argument, message);
+    return int(index);
+}
+
+static bool visit_proto(void* context, lua_Page*, GCObject* object)
+{
+    ProtoScan& scan = *static_cast<ProtoScan*>(context);
+    if (isdead(scan.state->global, object) || object->gch.tt != LUA_TFUNCTION) return false;
+    Closure* closure = gco2cl(object);
+    // A preloaded DUPCLOSURE with unbound captures is not an active function.
+    if (closure->isC || closure->preload || closure->l.p != scan.proto) return false;
+    if (++scan.count > 1000000) luaL_error(scan.state, "GcEnumerationLimit: more than 1000000 active closures");
+    if (scan.fill)
+    {
+        TValue value;
+        setclvalue(scan.state, &value, closure);
+        luaA_pushvalue(scan.state, &value);
+        lua_rawseti(scan.state, -2, scan.count);
+    }
+    return false;
+}
+
+extern "C" int emu_getproto(lua_State* state)
+{
+    Proto* parent = check_lua_closure(state)->l.p;
+    const int index = check_index(state, 2, parent->sizep, "prototype index out of range");
+    if (!lua_isnoneornil(state, 3)) luaL_checktype(state, 3, LUA_TBOOLEAN);
+    if (!lua_toboolean(state, 3))
+        luaL_error(state, "UnsupportedApi: inactive prototypes need a VM call guard; use getproto(function, index, true)");
+    Proto* proto = parent->p[index - 1];
+    lua_settop(state, 1);
+    luaL_checkstack(state, 2, "getproto");
+    GcPause pause(state);
+    ProtoScan scan{state, proto, 0, false};
+    luaM_visitgco(state, &scan, visit_proto);
+    lua_createtable(state, scan.count, 0);
+    scan.count = 0;
+    scan.fill = true;
+    luaM_visitgco(state, &scan, visit_proto);
+    return 1;
+}
+
+extern "C" int emu_getprotos(lua_State* state)
+{
+    check_lua_closure(state);
+    luaL_error(state, "UnsupportedApi: inactive prototypes need a VM call guard; use getproto(function, index, true)");
+}
+
+static CallInfo* check_stack_frame(lua_State* state)
+{
+    const double level = luaL_checknumber(state, 1);
+    if (!std::isfinite(level) || level < 0 || level > INT_MAX || std::floor(level) != level)
+        luaL_argerror(state, 1, "invalid stack level");
+    if (level >= state->ci - state->base_ci) luaL_argerror(state, 1, "stack level out of range");
+    CallInfo* frame = state->ci - int(level);
+    if (!frame->p) luaL_error(state, "C closures are not supported");
+    if (frame->flags & LUA_CALLINFO_NATIVE)
+        luaL_error(state, "UnsupportedApi: native machine-code stack frames are not accessible");
+    return frame;
+}
+
+extern "C" int emu_getstack(lua_State* state)
+{
+    CallInfo* frame = check_stack_frame(state);
+    const int count = int(frame->top - frame->base);
+    if (!lua_isnoneornil(state, 2))
+    {
+        const int index = check_index(state, 2, count, "stack index out of range");
+        const TValue value = frame->base[index - 1];
+        luaC_threadbarrier(state);
+        luaA_pushvalue(state, &value);
+        return 1;
+    }
+    // Snapshot before creating the result table: its temporary slots can overlap
+    // the caller's register window. The scratch lives on the quota-accounted Lua stack.
+    const ptrdiff_t base = frame->base - state->stack;
+    const int scratch = lua_gettop(state) + 1;
+    GcPause pause(state);
+    luaL_checkstack(state, count + 2, "getstack");
+    luaC_threadbarrier(state);
+    std::memmove(state->top, state->stack + base, size_t(count) * sizeof(TValue));
+    state->top += count;
+    lua_createtable(state, count, 0);
+    for (int index = 0; index < count; ++index)
+    {
+        lua_pushvalue(state, scratch + index);
+        lua_rawseti(state, -2, index + 1);
+    }
+    return 1;
+}
+
+extern "C" int emu_setstack(lua_State* state)
+{
+    CallInfo* frame = check_stack_frame(state);
+    const int index = check_index(state, 2, int(frame->top - frame->base), "stack index out of range");
+    luaL_checkany(state, 3);
+    TValue* slot = frame->base + index - 1;
+    // A frame may overlap a callee's function slot. Replacing that slot while
+    // the call is active would invalidate native continuation/closure metadata.
+    for (CallInfo* active = frame + 1; active <= state->ci; ++active)
+        if (slot == active->func)
+            luaL_error(state, "UnsupportedApi: an active call's function slot cannot be overwritten");
+    const TValue value = *luaA_toobject(state, 3);
+    luaC_threadbarrier(state);
+    setobj2s(state, slot, &value);
+    return 0;
+}
+
 extern "C" int emu_getupvalue(lua_State* state)
 {
     check_lua_closure(state);
