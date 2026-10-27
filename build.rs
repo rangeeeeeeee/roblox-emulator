@@ -28,6 +28,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/gc.cpp");
     println!("cargo:rerun-if-changed=native/filtergc.cpp");
     println!("cargo:rerun-if-changed=native/lint.cpp");
+    println!("cargo:rerun-if-changed=native/bytecode.cpp");
     println!("cargo:rerun-if-changed=vendor/luau-lint-0.740/LinterAst.cpp");
     println!("cargo:rerun-if-env-changed=LUAU_SOURCE_DIR");
     let source = luau_source();
@@ -44,6 +45,7 @@ fn main() {
         .file("native/gc.cpp")
         .file("native/filtergc.cpp")
         .file("native/lint.cpp")
+        .file("native/bytecode.cpp")
         .file("vendor/luau-lint-0.740/LinterAst.cpp");
     if env::var("DEBUG").as_deref() == Ok("true") {
         build.define("LUAU_ENABLE_ASSERT", None);

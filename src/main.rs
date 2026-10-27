@@ -16,6 +16,7 @@ mod web;
 mod console;
 mod inspector;
 mod lint;
+mod bytecode;
 
 #[cfg(windows)]
 #[link(name="kernel32")]

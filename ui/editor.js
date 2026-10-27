@@ -1,4 +1,4 @@
-import {EditorState, Prec} from '@codemirror/state';
+import {EditorState, Prec, Compartment} from '@codemirror/state';
 import {EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
   drawSelection, dropCursor, highlightActiveLine, hoverTooltip} from '@codemirror/view';
 import {defaultKeymap, history, historyKeymap, indentWithTab, indentSelection, isolateHistory} from '@codemirror/commands';
@@ -344,9 +344,13 @@ export function insertBlock(view) {
 
 export function createEditor(parent, options) {
   let context = options.context || 'server';
+  let format = options.format || 'source';
+  const language = new Compartment();
+  const sourceExtensions = [luau, indentOnInput(), bracketMatching(), closeBrackets()];
   let timer, controller, generation = 0;
   const docs = new Map([...globals, ...executor].map(item => [item.label, item]));
   function complete(request) {
+    if (format !== 'source') return null;
     const token = request.matchBefore(/\w*/);
     if (!token) return null;
     const node = syntaxTree(request.state).resolveInner(request.pos, -1);
@@ -394,6 +398,7 @@ export function createEditor(parent, options) {
     finally { clearTimeout(timeout); }
   }
   const hover = hoverTooltip((view, position) => {
+    if (format !== 'source') return null;
     const line = view.state.doc.lineAt(position), offset = position - line.from;
     const before = /[\w]+$/.exec(line.text.slice(0, offset))?.[0] || '';
     const after = /^\w*/.exec(line.text.slice(offset))[0];
@@ -408,6 +413,11 @@ export function createEditor(parent, options) {
   });
   function scheduleLint() {
     generation++; clearTimeout(timer); controller?.abort();
+    if (format !== 'source') {
+      view.dispatch(setDiagnostics(view.state, []));
+      options.onLintStatus?.('Bytecode · validated on run', 'Base64 compiler bytecode; source lint is disabled');
+      return;
+    }
     options.onLintStatus?.('Checking…');
     timer = setTimeout(runLint, 450);
   }
@@ -448,14 +458,14 @@ export function createEditor(parent, options) {
   }
   const extensions = [
     lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), history(), drawSelection(), dropCursor(),
-    EditorState.allowMultipleSelections.of(true), indentUnit.of('    '), luau, indentOnInput(), bracketMatching(),
-    Prec.highest(keymap.of([{key: 'Tab', run: acceptCompletion}, {key: 'Enter', run: insertBlock}])),
-    closeBrackets(), autocompletion({override: [complete]}), highlightActiveLine(), hover,
+    EditorState.allowMultipleSelections.of(true), indentUnit.of('    '), language.of(format === 'source' ? sourceExtensions : []),
+    Prec.highest(keymap.of([{key: 'Tab', run: acceptCompletion}, {key: 'Enter', run: view => format === 'source' && insertBlock(view)}])),
+    autocompletion({override: [complete]}), highlightActiveLine(), hover,
     linter(null), lintGutter(),
     keymap.of([{key: 'Mod-Enter', run: () => { options.onRun?.(); return true; }},
       ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, ...lintKeymap, indentWithTab,
       {key: 'Escape', run: () => { parent.dispatchEvent(new CustomEvent('editor-escape', {bubbles: true})); return true; }}]),
-    EditorView.contentAttributes.of({'aria-label': 'Luau source', spellcheck: 'false', autocapitalize: 'off'}),
+    EditorView.contentAttributes.of({'aria-label': 'Code input', spellcheck: 'false', autocapitalize: 'off'}),
     EditorState.transactionFilter.of(transaction => {
       if (transaction.docChanged && sourceBytes(transaction.newDoc.toString()) > MAX_SOURCE_BYTES) {
         options.onSizeError?.('Source exceeds 256 KiB.'); return [];
@@ -502,7 +512,12 @@ export function createEditor(parent, options) {
     setContext(value) {
       if (value === context) return;
       contextStates.set(context, view.state); context = value;
-      view.setState(contextStates.get(value) || EditorState.create({extensions})); scheduleLint();
+      view.setState(contextStates.get(value) || EditorState.create({extensions}));
+      view.dispatch({effects: language.reconfigure(format === 'source' ? sourceExtensions : [])}); scheduleLint();
+    },
+    setFormat(value) {
+      format = value; closeCompletion(view);
+      view.dispatch({effects: language.reconfigure(format === 'source' ? sourceExtensions : [])}); scheduleLint();
     },
     getSelection: () => view.state.selection.main,
     position() { const head = view.state.selection.main.head, line = view.state.doc.lineAt(head); return {line: line.number, column: head - line.from + 1}; },

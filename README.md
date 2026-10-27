@@ -65,6 +65,12 @@ Choose a realm and context before running a command. Client and executor command
 
 The UI starts paused. Use the running/stepping controls to advance scheduled work; reset recreates the session from the scenario file. Autoscroll is off by default.
 
+To run compiled code, select **Bytecode (Base64)** above the editor, paste Base64 or open a `.b64` file, choose a VM/context and press **Ctrl+Enter**. Source remains the default. History preserves the input format. Bytecode uses the same environment, scheduler, output and execution budgets as source.
+
+The importer accepts compiler-produced Luau bytecode versions 3–14, including Roblox opcode encoding (multiplier 227, decoded with 203) and its optional 24-byte trailer. It checks Base64, serialized boundaries, references and instruction operands before loading. This is not a complete hostile-bytecode verifier: use trusted compiler output. Encrypted/compressed containers, class constants and runtime-specialized userdata opcodes are rejected. A script still needs its original game objects/modules; successful loading does not provide those dependencies.
+
+For `/api/execute`, pass `{"realm":"client1","context":"client","format":"bytecode-base64","source":"<Base64>"}`. Omit `format` or use `"source"` for Luau text. `loadstring` remains source-only.
+
 In an **Executor** context:
 
 ```lua

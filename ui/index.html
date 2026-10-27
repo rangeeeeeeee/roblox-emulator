@@ -232,11 +232,11 @@
     <section class="panel editor-panel" aria-labelledby="editorTitle">
       <div class="panel-heading">
         <div class="panel-title"><h2 id="editorTitle">Editor</h2><span id="documentName" class="document-name">server.luau</span></div>
-        <span class="document-name">Luau</span>
+        <select id="inputFormat" aria-label="Input format" title="Run Luau source or Base64 compiler bytecode in the selected VM"><option value="source">Luau source</option><option value="bytecode-base64">Bytecode (Base64)</option></select>
       </div>
       <div class="editor-tools">
         <button id="openButton" class="small" type="button">Open file</button>
-        <input id="fileInput" type="file" accept=".lua,.luau" hidden>
+        <input id="fileInput" type="file" accept=".lua,.luau,.b64" hidden>
         <button id="downloadButton" class="small" type="button">Download</button>
         <label class="sr-only" for="historySelect">Run history for this mode</label>
         <select id="historySelect" class="history"><option value="">Mode history</option></select>
@@ -261,7 +261,7 @@
         <button id="insertExample" class="small" type="button">Insert example</button>
       </div>
       <div class="editor-footer">
-        <div id="editorHelp" class="editor-help"><span id="cursorPosition">Ln 1, Col 1</span><span>Tab accept / indent · Ctrl+Space complete</span></div>
+        <div id="editorHelp" class="editor-help"><span id="cursorPosition">Ln 1, Col 1</span><span id="formatHelp">Tab accept / indent · Ctrl+Space complete</span></div>
         <button id="lintStatus" class="plain small" type="button" title="Show diagnostics (Ctrl+Shift+M)">Checking…</button>
         <button id="runButton" class="run" type="button" disabled>Run <span class="shortcut">Ctrl+Enter</span></button>
       </div>
@@ -323,8 +323,9 @@
       client: '-- Client environment.\nlocal players = game:GetService("Players")\nprint("Client ready", players.LocalPlayer)\n',
       executor: '-- Executor environment for the selected VM.\nprint(identifyexecutor())\nprint("GC objects:", #getgc(true))\n'
     };
-    const drafts = {}, filenames = {}, histories = {}, choices = {};
+    const drafts = {}, filenames = {}, histories = {}, choices = {}, formats = {};
     for (const mode of modes) {
+      formats[mode] = stored.formats?.[mode] === 'bytecode-base64' ? 'bytecode-base64' : 'source';
       drafts[mode] = typeof stored.drafts?.[mode] === 'string' ? stored.drafts[mode] : defaults[mode];
       filenames[mode] = typeof stored.filenames?.[mode] === 'string' ? stored.filenames[mode] : mode + '.luau';
       histories[mode] = Array.isArray(stored.histories?.[mode]) ? stored.histories[mode].filter(item => item && typeof item.source === 'string').slice(0, 20) : [];
@@ -350,14 +351,14 @@
     $('autoscroll').checked = stored.version === 2 && stored.autoscroll === true;
     if (['generic', 'macsploit-744.2'].includes(stored.profile)) $('profileSelect').value = stored.profile;
     const editor = EmulatorEditor.createEditor($('source'), {
-      doc: drafts[mode], context: mode, getToken: () => token, getRealm: () => $('realmSelect').value, onChange: editChanged, onCursor: cursor,
+      doc: drafts[mode], context: mode, format: formats[mode], getToken: () => token, getRealm: () => $('realmSelect').value, onChange: editChanged, onCursor: cursor,
       onRun: runCode, onSizeError: showError,
       onLintStatus(text, detail) { $('lintStatus').textContent = text; $('lintStatus').title = detail || 'Show diagnostics (Ctrl+Shift+M)'; }
     });
 
     function save() {
       drafts[mode] = editor.getValue();
-      try { localStorage.setItem(storageKey, JSON.stringify({version: 2, mode, drafts, filenames, histories, choices, profile: $('profileSelect').value, autoscroll: $('autoscroll').checked})); }
+      try { localStorage.setItem(storageKey, JSON.stringify({version: 2, mode, drafts, filenames, histories, choices, formats, profile: $('profileSelect').value, autoscroll: $('autoscroll').checked})); }
       catch { storageAvailable = false; }
     }
     function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 250); }
@@ -451,6 +452,7 @@
       document.body.dataset.context = mode;
       for (const button of document.querySelectorAll('.mode')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
       editor.setContext(mode);
+      setFormat(formats[mode]);
       if (editor.getValue() !== drafts[mode]) editor.setValue(drafts[mode]);
       $('documentName').textContent = filenames[mode];
       renderHistory(); renderTargets(); cursor();
@@ -459,6 +461,13 @@
     function cursor() {
       const position = editor.position();
       $('cursorPosition').textContent = 'Ln ' + position.line + ', Col ' + position.column;
+    }
+    function setFormat(value) {
+      formats[mode] = value === 'bytecode-base64' ? value : 'source';
+      $('inputFormat').value = formats[mode]; editor.setFormat(formats[mode]);
+      $('insertExample').disabled = formats[mode] !== 'source';
+      $('formatHelp').textContent = formats[mode] === 'source' ? 'Tab accept / indent · Ctrl+Space complete' : 'Base64 · Luau / Roblox opcodes · whitespace allowed';
+      $('inputFormat').title = formats[mode] === 'source' ? 'Luau source code' : 'Paste Base64 compiler bytecode (Luau or Roblox opcodes). Use trusted bytecode only.';
     }
     function editChanged() { drafts[mode] = editor.getValue(); cursor(); updateActions(); saveSoon(); }
     function renderCommand() {
@@ -548,10 +557,11 @@
       const realm = $('realmSelect').value, source = editor.getValue(), context = mode;
       if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) { showError('Source exceeds 256 KiB.'); return; }
       const previous = histories[context][0];
-      if (!previous || previous.source !== source || previous.realm !== realm) histories[context].unshift({source, realm, at: Date.now(), filename: filenames[context]});
+      const format = formats[context];
+      if (!previous || previous.source !== source || previous.realm !== realm || previous.format !== format) histories[context].unshift({source, realm, format, at: Date.now(), filename: filenames[context]});
       histories[context] = histories[context].slice(0, 20);
       renderHistory(); save();
-      await mutate('execute', {realm, context, source}, 'Running: ' + titles[context] + ' · ' + realm, 'Submitted to ' + realm);
+      await mutate('execute', {realm, context, source, format}, 'Running: ' + titles[context] + ' · ' + realm, 'Submitted to ' + realm);
     }
     function renderLogFilters() {
       const logs = Array.isArray(state?.logs) ? state.logs : [];
@@ -881,6 +891,7 @@
             const realm = state?.realms?.find(realm => realm.id === current.realm && realm.executor);
             if (!realm) { showError('The selected executor VM is no longer available.'); return; }
             if (mode !== 'executor') switchMode('executor');
+            if (formats[mode] !== 'source') { showError('Switch the editor to Luau source before inserting a GC expression.'); return; }
             choices.executor = {realm: current.realm, client: realm.clientId || '', actor: realm.actorId ? 'actor:' + realm.actorId : '@main'};
             renderTargets();
             editor.insert('getgcvalue(' + JSON.stringify(current.id) + ', ' + page.snapshot + ', ' + value.snapshotIndex + ')');
@@ -1075,30 +1086,33 @@ print(table.concat(lines, "\n"))
       if ($('historySelect').value === '') return;
       const entry = histories[mode][Number($('historySelect').value)];
       if (!entry) return;
+      setFormat(entry.format);
       if (!editor.setValue(entry.source)) return;
       if (typeof entry.filename === 'string') filenames[mode] = entry.filename;
       $('documentName').textContent = filenames[mode];
       $('historySelect').value = ''; editChanged(); status('Code restored from history');
     });
     $('openButton').addEventListener('click', () => $('fileInput').click());
+    $('inputFormat').addEventListener('change', () => { setFormat($('inputFormat').value); save(); });
     $('fileInput').addEventListener('change', async () => {
       const file = $('fileInput').files[0]; $('fileInput').value = '';
       if (!file) return;
-      if (!/\.(lua|luau)$/i.test(file.name)) { showError('Choose a .lua or .luau file.'); return; }
+      if (!/\.(lua|luau|b64)$/i.test(file.name)) { showError('Choose a .lua, .luau or Base64 .b64 file.'); return; }
       const targetMode = mode;
       try {
         if (file.size > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 256 KiB.');
         const source = await file.text();
         if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 256 KiB.');
         drafts[targetMode] = source; filenames[targetMode] = file.name;
-        if (targetMode === mode) { editor.setValue(source); $('documentName').textContent = file.name; }
+        formats[targetMode] = /\.b64$/i.test(file.name) ? 'bytecode-base64' : 'source';
+        if (targetMode === mode) { setFormat(formats[targetMode]); editor.setValue(source); $('documentName').textContent = file.name; }
         save(); status('Opened ' + file.name + '');
       } catch (error) { showError('Could not read file: ' + error.message); }
     });
     $('downloadButton').addEventListener('click', () => {
       const url = URL.createObjectURL(new Blob([editor.getValue()], {type: 'text/plain;charset=utf-8'}));
       const link = document.createElement('a'); link.href = url;
-      link.download = (filenames[mode] || mode + '.luau').replace(/[\\/:*?"<>|]/g, '_');
+      link.download = (filenames[mode] || mode + '.luau').replace(/\.(lua|luau|b64)$/i, formats[mode] === 'source' ? '.luau' : '.b64').replace(/[\\/:*?"<>|]/g, '_');
       document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     for (const id of ['contextFilter', 'realmFilter', 'levelFilter', 'autoscroll']) $(id).addEventListener('change', () => { renderLogs(); if (id === 'autoscroll') save(); });

@@ -188,6 +188,11 @@ impl Session {
     }
 
     pub fn execute(&mut self, realm: &str, context: &str, source: &str) -> Result<Json> {
+        self.execute_input(realm, context, source, "source")
+    }
+
+    pub fn execute_input(&mut self, realm: &str, context: &str, source: &str, format: &str) -> Result<Json> {
+        if !matches!(format, "source" | "bytecode-base64") { return Err(failure("Unknown input format")); }
         let index = self.realms.iter().position(|candidate| candidate.config.id == realm).ok_or_else(|| failure("Unknown realm"))?;
         let config = &self.realms[index].config;
         if context != config.side && !(context == "executor" && config.side == "client" && config.executor) {
@@ -204,18 +209,26 @@ impl Session {
         environment.table.set_safeenv(false);
         self.next_command += 1;
         let command = Rc::new(RefCell::new(json!({"id":self.next_command,"realm":realm,"context":context,
-            "status":"running","time":self.host.clock.get(),"sourceBytes":source.len(),"yieldCount":0})));
+            "status":"running","time":self.host.clock.get(),"sourceBytes":source.len(),"format":format,"yieldCount":0})));
         self.commands.push_back(command.clone());
         let runtime = &self.realms[index];
         runtime.arm(self.scenario.cpu_ms);
         runtime.wall_time_exceeded.set(false);
-        let function = runtime.lua.load(source).set_mode(mlua::chunk::ChunkMode::Text)
-            .set_name(format!("=Console/{realm}/{context}/{}", self.next_command)).set_environment(environment.table.clone()).into_function();
+        let input = if format == "bytecode-base64" {
+            crate::bytecode::decode(source).map(|(bytes, encoding)| {
+                command.borrow_mut()["bytecodeEncoding"] = json!(encoding);
+                command.borrow_mut()["bytecodeBytes"] = json!(bytes.len());
+                bytes
+            })
+        } else { Ok(source.as_bytes().to_vec()) };
+        let function = input.and_then(|bytes| runtime.lua.load(bytes)
+            .set_mode(if format == "source" { mlua::chunk::ChunkMode::Text } else { mlua::chunk::ChunkMode::Binary })
+            .set_name(format!("=Console/{realm}/{context}/{}", self.next_command)).set_environment(environment.table.clone()).into_function());
         let function = match function {
             Ok(function) => function,
             Err(error) => {
                 command.borrow_mut()["status"] = json!("error");
-                command.borrow_mut()["error"] = json!({"type":"compile","message":error.to_string()});
+                command.borrow_mut()["error"] = json!({"type":if format == "source" {"compile"} else {"bytecode"},"message":error.to_string()});
                 self.output.log(realm, context, "error", &error.to_string());
                 return Ok(command.borrow().clone());
             }

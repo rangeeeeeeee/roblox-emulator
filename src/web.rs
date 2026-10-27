@@ -123,7 +123,8 @@ impl App {
                 let realm = body.get("realm").and_then(Value::as_str).ok_or("Select a VM")?;
                 let context = body.get("context").and_then(Value::as_str).ok_or("Select a context")?;
                 let source = body.get("source").and_then(Value::as_str).ok_or("Source must be a string")?;
-                command = Some(self.session.execute(realm, context, source).map_err(|e|e.to_string())?);
+                let format = match body.get("format") { None => "source", Some(value) => value.as_str().ok_or("Format must be a string")? };
+                command = Some(self.session.execute_input(realm, context, source, format).map_err(|e|e.to_string())?);
                 self.runtime_error = None;
             }
             "/api/step" => {
