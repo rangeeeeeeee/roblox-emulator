@@ -1,4 +1,5 @@
 use mlua::{Function, Lua, Result, Table, ffi, chunk::Compiler};
+use sha2::{Digest, Sha384};
 
 pub(crate) fn random_bytes(bytes:&mut [u8])->std::io::Result<()> {
     #[cfg(windows)] {
@@ -20,6 +21,14 @@ unsafe extern "C-unwind" {
     fn emu_mark_executor(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_iscclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_islclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_isexecutorclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getinfo(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_setname(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_setinfo(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getsafeenv(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_setsafeenv(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_getcallstack(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_bind_dofile(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getupvalue(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getupvalues(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setupvalue(state: *mut ffi::lua_State) -> std::ffi::c_int;
@@ -32,22 +41,58 @@ unsafe extern "C-unwind" {
     fn emu_getstack(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setstack(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_newcclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_isnewcclosure(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_isfunctionhooked(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_clonefunction(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getrawmetatable(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setrawmetatable(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setreadonly(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_isreadonly(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_makereadonly(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_makewritable(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_getnamecallmethod(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_setnamecallmethod(state: *mut ffi::lua_State) -> std::ffi::c_int;
+    fn emu_isvalidlevel(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_hookfunction(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_restorefunction(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_hookmetamethod(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_collectgarbage(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setfunctionname(state: *mut ffi::lua_State, name: *const std::ffi::c_char);
+    fn emu_feed_function_hash(state: *mut ffi::lua_State, context: *mut std::ffi::c_void, feed: unsafe extern "C" fn(*mut std::ffi::c_void, *const u8, usize)) -> std::ffi::c_int;
 }
 
+unsafe extern "C" fn feed_function_hash(context: *mut std::ffi::c_void, data: *const u8, len: usize) {
+    let hash = unsafe { &mut *context.cast::<Sha384>() };
+    if len != 0 { hash.update(unsafe { std::slice::from_raw_parts(data, len) }); }
+}
+
+pub(crate) fn function_hash(lua: &Lua, function: &Function) -> Result<String> {
+    let mut hash = Sha384::new();
+    let mut status = 0;
+    unsafe {
+        lua.exec_raw::<()>(function.clone(), |state| {
+            status = emu_feed_function_hash(state, (&mut hash as *mut Sha384).cast(), feed_function_hash);
+            ffi::lua_settop(state, 0);
+        })?;
+    }
+    match status {
+        0 => Ok(format!("{:x}", hash.finalize())),
+        1 => Err(mlua::Error::lua_string("getfunctionhash expects a Lua closure")),
+        2 => Err(mlua::Error::lua_string("UnsupportedApi: getfunctionhash cannot serialize this complex constant")),
+        3 => Err(mlua::Error::lua_string("UnsupportedApi: getfunctionhash encountered a cyclic or invalid prototype")),
+        _ => Err(mlua::Error::lua_string("UnsupportedApi: getfunctionhash exceeded its prototype budget")),
+    }
+}
+
+struct ExecutorProfile(i32);
+pub(crate) fn is_macsploit_7444(lua: &Lua) -> bool {
+    lua.app_data_ref::<ExecutorProfile>().is_some_and(|profile| profile.0 == 2)
+}
 pub fn set_executor_profile(lua: &Lua, name: &str) -> Result<()> {
-    let profile=match name {"generic"=>0,"macsploit-744.2"=>1,_=>return Err(mlua::Error::runtime("Unknown executor profile"))};
-    unsafe {lua.exec_raw((),|state|emu_set_executor_profile(state,profile))}
+    let profile=match name {"generic"=>0,"macsploit-744.2"=>1,"macsploit-744.4"=>2,_=>return Err(mlua::Error::runtime("Unknown executor profile"))};
+    unsafe {lua.exec_raw::<()>((),|state|emu_set_executor_profile(state,profile))?;}
+    lua.set_app_data(ExecutorProfile(profile));
+    Ok(())
 }
 
 pub fn name_function(lua: &Lua, function: &Function, name: &std::ffi::CStr) -> Result<()> {
@@ -75,6 +120,35 @@ pub fn bind_filtergc(lua: &Lua, environment: &Table, unsupported: &Table) -> Res
     }
 }
 
+pub(crate) fn bind_dofile(lua: &Lua, function: &Function) -> Result<Function> {
+    unsafe { lua.exec_raw(function.clone(), |state| { emu_bind_dofile(state); }) }
+}
+
+pub(crate) fn bind_debug_helpers(lua: &Lua, environment: &Table, debug: &Table) -> Result<()> {
+    for (name, debug_name, native) in [
+        ("setname", c"setname", emu_setname as ffi::lua_CFunction),
+        ("setinfo", c"setinfo", emu_setinfo as ffi::lua_CFunction),
+        ("getsafeenv", c"getsafeenv", emu_getsafeenv as ffi::lua_CFunction),
+        ("setsafeenv", c"setsafeenv", emu_setsafeenv as ffi::lua_CFunction),
+        ("getcallstack", c"getcallstack", emu_getcallstack as ffi::lua_CFunction),
+    ] {
+        let function: Function = unsafe { lua.exec_raw((), |state| ffi::lua_pushcfunctiond(state, native, debug_name.as_ptr()))? };
+        mark_executor_function(lua, &function, environment)?;
+        debug.set(name, function)?;
+    }
+    Ok(())
+}
+
+pub fn bind_isexecutorclosure(lua: &Lua, environment: &Table) -> Result<Function> {
+    let reference: Function = lua.load("return function() end").set_environment(environment.clone()).eval()?;
+    mark_executor_function(lua, &reference, environment)?;
+    unsafe {
+        lua.exec_raw((environment.clone(), reference), |state| {
+            ffi::lua_pushcclosured(state, emu_isexecutorclosure, c"isexecutorclosure".as_ptr(), 2);
+        })
+    }
+}
+
 pub(crate) fn inspect_constants(lua:&Lua,function:&Function)->Result<Table>{
     unsafe{lua.exec_raw(function.clone(),|state|{emu_inspectconstants(state);ffi::lua_replace(state,1);ffi::lua_settop(state,1);})}
 }
@@ -94,11 +168,12 @@ fn set_function_name(lua: &Lua, function: &Function, name: *const std::ffi::c_ch
 
 pub fn install(lua: &Lua) -> Result<()> {
     lua.set_compiler(Compiler::new().set_mutable_globals(["_G", "shared", "script"]));
-    let functions: [(&str, &std::ffi::CStr, ffi::lua_CFunction); 25] = [
+    let functions: [(&str, &std::ffi::CStr, ffi::lua_CFunction); 32] = [
         ("__host_getgc", c"getgc", emu_getgc),
         ("__host_filtergc", c"filtergc", emu_filtergc),
         ("__host_iscclosure", c"iscclosure", emu_iscclosure),
         ("__host_islclosure", c"islclosure", emu_islclosure),
+        ("__host_getinfo", c"getinfo", emu_getinfo),
         ("__host_getupvalue", c"getupvalue", emu_getupvalue),
         ("__host_getupvalues", c"getupvalues", emu_getupvalues),
         ("__host_setupvalue", c"setupvalue", emu_setupvalue),
@@ -110,12 +185,18 @@ pub fn install(lua: &Lua) -> Result<()> {
         ("__host_getstack", c"getstack", emu_getstack),
         ("__host_setstack", c"setstack", emu_setstack),
         ("__host_newcclosure", c"newcclosure", emu_newcclosure),
+        ("__host_isnewcclosure", c"isnewcclosure", emu_isnewcclosure),
+        ("__host_isfunctionhooked", c"isfunctionhooked", emu_isfunctionhooked),
         ("__host_clonefunction", c"clonefunction", emu_clonefunction),
         ("__host_getrawmetatable", c"getrawmetatable", emu_getrawmetatable),
         ("__host_setrawmetatable", c"setrawmetatable", emu_setrawmetatable),
         ("__host_setreadonly", c"setreadonly", emu_setreadonly),
         ("__host_isreadonly", c"isreadonly", emu_isreadonly),
+        ("__host_makereadonly", c"makereadonly", emu_makereadonly),
+        ("__host_makewritable", c"makewritable", emu_makewritable),
         ("__host_getnamecallmethod", c"getnamecallmethod", emu_getnamecallmethod),
+        ("__host_setnamecallmethod", c"setnamecallmethod", emu_setnamecallmethod),
+        ("__host_isvalidlevel", c"isvalidlevel", emu_isvalidlevel),
         ("__host_hookfunction", c"hookfunction", emu_hookfunction),
         ("__host_restorefunction", c"restorefunction", emu_restorefunction),
         ("__host_hookmetamethod", c"hookmetamethod", emu_hookmetamethod),

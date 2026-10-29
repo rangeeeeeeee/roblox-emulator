@@ -1,4 +1,4 @@
-use mlua::{AnyUserData, Error, FromLuaMulti, Function, IntoLuaMulti, Lua, MultiValue, Result, Table, Thread, UserData, UserDataFields, Value, ffi};
+use mlua::{AnyUserData, Error, FromLua, FromLuaMulti, Function, IntoLuaMulti, Lua, MultiValue, Result, Table, Thread, UserData, UserDataFields, Value, ffi};
 use mlua::state::NativeCall;
 use std::{cell::RefCell, collections::{HashMap, VecDeque}, ffi::CStr, rc::{Rc, Weak}, time::Instant};
 
@@ -21,6 +21,9 @@ struct Scheduler {
     sequence: u64,
     resumes: usize,
     resume_depth: usize,
+    freeze_scopes: usize,
+    network_root_safe: bool,
+    network_root_scopes: usize,
     max_resume_depth: usize,
     max_tasks: usize,
     max_resumes: usize,
@@ -28,6 +31,7 @@ struct Scheduler {
     deferred_signals: bool,
     tasks: HashMap<usize, Task>,
     queue: Vec<Job>,
+    suspended_batch: Option<VecDeque<Job>>,
     rt: Table,
     errors: Table,
     errors_total: usize,
@@ -50,6 +54,7 @@ struct Task {
     mode: String,
     origin: String,
     parked: bool,
+    running: bool,
     waiter: Option<Weak<RefCell<SignalData>>>,
     completion: Option<Completion>,
     yield_observer: Option<YieldObserver>,
@@ -71,6 +76,8 @@ struct Signal(Rc<RefCell<SignalData>>);
 #[derive(Default)]
 struct SignalData {
     label: String,
+    owner_class: String,
+    event_name: String,
     handlers: Vec<Rc<RefCell<ConnectionData>>>,
     waiters: Vec<Thread>,
 }
@@ -81,6 +88,7 @@ struct ConnectionView(Rc<RefCell<ConnectionData>>);
 struct ConnectionData {
     signal: Weak<RefCell<SignalData>>,
     callback: Value,
+    creator: Thread,
     environment: Table,
     mode: String,
     origin: String,
@@ -105,10 +113,46 @@ pub fn status(lua: &Lua) -> Result<Status> {
     let shared = shared(lua)?;
     let state = shared.borrow();
     Ok(Status {
-        pending: state.queue.len(),
+        pending: state.queue.len() + state.suspended_batch.as_ref().map_or(0,VecDeque::len),
         parked: state.tasks.values().filter(|task| task.parked && task.thread.is_resumable()).count(),
         errors: state.errors_total,
     })
+}
+pub fn memory_status(lua: &Lua) -> Result<Table> {
+    let names = shared(lua)?.borrow().memory_names.clone();
+    let result = lua.create_table()?;
+    for (category, name) in names.into_iter().enumerate() {
+        let record = lua.create_table()?;
+        record.raw_set("name", name)?;
+        record.raw_set("category", category)?;
+        record.raw_set("bytes", unsafe { ffi::lua_totalbytes(lua.state(), category as i32) })?;
+        result.raw_set(category + 1, record)?;
+    }
+    Ok(result)
+}
+pub fn profile_status(lua: &Lua) -> Result<Table> {
+    let state = shared(lua)?;
+    let state = state.borrow();
+    let result = lua.create_table()?;
+    result.raw_set("begun", state.profiles_begun)?;
+    result.raw_set("completed", state.profiles_completed)?;
+    let (mut threads, mut scopes) = (0, 0);
+    for entry in state.profile_threads.clone().pairs::<Value, AnyUserData>() {
+        let (_, stack) = entry?;
+        threads += 1;
+        scopes += stack.borrow::<ProfileStack>()?.0.len();
+    }
+    result.raw_set("activeThreads", threads)?;
+    result.raw_set("activeScopes", scopes)?;
+    let samples = lua.create_table()?;
+    for (index, sample) in state.profile_samples.iter().enumerate() {
+        let record = lua.create_table()?;
+        record.raw_set("label", sample.label.as_str())?;
+        record.raw_set("elapsed", sample.elapsed)?;
+        samples.raw_set(index + 1, record)?;
+    }
+    result.raw_set("samples", samples)?;
+    Ok(result)
 }
 fn key(thread: &Thread) -> usize { thread.state() as usize }
 fn clear_profile(lua: &Lua, thread: &Thread) -> Result<()> {
@@ -147,6 +191,20 @@ pub fn set_thread_environment(lua: &Lua, thread: &Thread, environment: &Table) -
         })?;
     }
     if assigned { Ok(()) } else { Err(fail("Unable to assign thread environment")) }
+}
+
+pub(crate) fn running_game_environments(lua:&Lua)->Result<Vec<Table>>{
+    let threads:Vec<_>=shared(lua)?.borrow().tasks.values()
+        .filter(|task|task.origin=="game"&&!task.thread.is_finished()&&!task.thread.is_error())
+        .map(|task|task.thread.clone()).collect();
+    let mut environments=Vec::with_capacity(threads.len());
+    for thread in threads {
+        let env:Table=unsafe{lua.exec_raw(thread,|state|{
+            ffi::lua_getfenv(state,1);ffi::lua_replace(state,1);ffi::lua_settop(state,1);
+        })?};
+        environments.push(env);
+    }
+    Ok(environments)
 }
 
 // Called in the original native frame before Rust borrows. Unmanaged coroutines
@@ -242,6 +300,15 @@ pub fn current_origin(lua: &Lua) -> String {
     shared(lua).ok().and_then(|state| state.borrow().tasks.get(&(lua.state() as usize)).map(|task| task.origin.clone())).unwrap_or_else(|| "game".into())
 }
 
+pub(crate) fn origin_resolver(lua: &Lua) -> Option<Rc<dyn Fn(usize) -> Option<String>>> {
+    let scheduler = Rc::downgrade(&shared(lua).ok()?);
+    Some(Rc::new(move |thread| {
+        let scheduler = scheduler.upgrade()?;
+        let state = scheduler.try_borrow().ok()?;
+        state.tasks.get(&thread).map(|task| task.origin.clone())
+    }))
+}
+
 fn ensure_task(lua: &Lua, thread: &Thread, mode: Option<&str>, origin: Option<&str>) -> Result<()> {
     let mode = mode.map(str::to_owned).unwrap_or_else(|| current_mode(lua));
     let origin = origin.map(str::to_owned).unwrap_or_else(|| current_origin(lua));
@@ -249,7 +316,8 @@ fn ensure_task(lua: &Lua, thread: &Thread, mode: Option<&str>, origin: Option<&s
     let mut state = shared.borrow_mut();
     if !state.tasks.contains_key(&key(thread)) {
         if state.tasks.len() >= state.max_tasks { return Err(fail("SchedulerLimit: task limit exceeded")); }
-        state.tasks.insert(key(thread), Task { thread: thread.clone(), mode, origin, parked: false, waiter: None, completion: None, yield_observer: None, pending_connection: None });
+        crate::executor::record_thread_origin(lua,thread,&origin);
+        state.tasks.insert(key(thread), Task { thread: thread.clone(), mode, origin, parked: false, running: false, waiter: None, completion: None, yield_observer: None, pending_connection: None });
     }
     Ok(())
 }
@@ -282,7 +350,7 @@ fn to_thread(lua: &Lua, callable: Value, mode: Option<&str>, origin: Option<&str
 fn enqueue(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>, delay: f64, started: Option<f64>) -> Result<()> {
     let shared = shared(lua)?;
     let mut state = shared.borrow_mut();
-    if state.queue.len() >= state.max_tasks { return Err(fail("SchedulerLimit: queued task limit exceeded")); }
+    if state.queue.len() + state.suspended_batch.as_ref().map_or(0,VecDeque::len) >= state.max_tasks { return Err(fail("SchedulerLimit: queued task limit exceeded")); }
     state.sequence += 1;
     let job = Job { thread, args, error, at: state.now + delay, tick: state.tick + 1, sequence: state.sequence, started };
     state.queue.push(job);
@@ -306,6 +374,38 @@ pub fn schedule_error(lua: &Lua, thread: Thread, error: Value) -> Result<()> {
     let waiter = if let Some(task) = shared(lua)?.borrow_mut().tasks.get_mut(&key(&thread)) { task.parked = false; task.waiter.take() } else { None };
     detach_waiter(&thread, waiter);
     enqueue(lua, thread, MultiValue::new(), Some(error), 0.0, None)
+}
+
+// Resuming nested task.spawn parents is part of the interrupted job, not a new tick.
+pub(crate) fn resume_parents_before_batch(lua: &Lua, items: Vec<(Thread,MultiValue)>) -> Result<()> {
+    let mut active = Vec::new();
+    for (thread,args) in items {
+        if thread.is_finished() || thread.is_error() { continue; }
+        ensure_task(lua,&thread,None,None)?;
+        let waiter = if let Some(task) = shared(lua)?.borrow_mut().tasks.get_mut(&key(&thread)) {
+            task.parked = false; task.waiter.take()
+        } else { None };
+        detach_waiter(&thread,waiter);
+        active.push((thread,args));
+    }
+    let shared = shared(lua)?;
+    let mut state = shared.borrow_mut();
+    // These are existing, already admitted task frames; resuming them must not fail
+    // merely because unrelated work filled the queue while approval was pending.
+    if state.suspended_batch.is_some() {
+        for (thread,args) in active.into_iter().rev() {
+            state.sequence += 1;
+            let job=Job { thread, args, error:None, at:state.now, tick:state.tick, sequence:state.sequence, started:None };
+            state.suspended_batch.as_mut().unwrap().push_front(job);
+        }
+    } else {
+        for (thread,args) in active {
+            state.sequence += 1;
+            let job=Job { thread, args, error:None, at:state.now, tick:state.tick+1, sequence:state.sequence, started:None };
+            state.queue.push(job);
+        }
+    }
+    Ok(())
 }
 
 fn detach_waiter(thread: &Thread, waiter: Option<Weak<RefCell<SignalData>>>) {
@@ -360,11 +460,12 @@ fn report(lua: &Lua, message: String, thread: &Thread) -> Result<()> {
     record.raw_set("time", now)?;
     record.raw_set("message", message.clone())?;
     errors.raw_set(errors.raw_len() + 1, record)?;
-    if let Ok(logger) = crate::internal::<Function>(lua, "__host_log") { logger.call::<()>(("error", message.as_str()))?; }
+    crate::host_log(lua, "error", lua.create_string(message.as_bytes())?)?;
     crate::model::script_error(lua, &message, thread)
 }
-fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>) -> Result<()> {
+fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>, root_safe: bool) -> Result<()> {
     if !thread.is_resumable() { return Ok(()); }
+    if crate::network::frozen(lua) { return enqueue(lua,thread,args,error,0.0,None); }
     {
         let shared = shared(lua)?;
         let mut state = shared.borrow_mut();
@@ -375,11 +476,11 @@ fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>
         }
         state.resumes += 1;
         if state.resumes > state.max_resumes { return Err(fail("SchedulerLimit: resumption budget exceeded")); }
-        if state.resume_depth == 0 { state.execution_started = Some(Instant::now()); }
+        if state.resume_depth == 0 { state.execution_started = Some(Instant::now()); state.network_root_safe = root_safe; }
         state.resume_depth += 1;
-        if let Some(task) = state.tasks.get_mut(&key(&thread)) { task.parked = true; task.pending_connection = None; }
+        if let Some(task) = state.tasks.get_mut(&key(&thread)) { task.parked = true; task.running = true; task.pending_connection = None; }
     }
-    let depth_guard = ResumeDepth(shared(lua)?);
+    let depth_guard = ResumeDepth(shared(lua)?, key(&thread));
     let resumed = resume_raw(lua, &thread, args, error);
     drop(depth_guard);
     match resumed {
@@ -403,20 +504,56 @@ fn resume_task(lua: &Lua, thread: Thread, args: MultiValue, error: Option<Value>
     }
 }
 
-struct ResumeDepth(Shared);
+struct ResumeDepth(Shared, usize);
 impl Drop for ResumeDepth {
     fn drop(&mut self) {
         let mut state = self.0.borrow_mut();
+        if let Some(task) = state.tasks.get_mut(&self.1) { task.running = false; }
         state.resume_depth -= 1;
         if state.resume_depth == 0 {
+            state.network_root_safe = false;
             if let Some(started) = state.execution_started.take() { state.execution_seconds += started.elapsed().as_secs_f64(); }
         }
     }
 }
 
+pub(crate) fn network_freeze_safe(lua: &Lua) -> Result<bool> {
+    let state = shared(lua)?;
+    let state = state.borrow();
+    Ok(state.network_root_safe && state.tasks.get(&(lua.state() as usize)).is_some_and(|task|task.running)
+        && state.resume_depth <= state.freeze_scopes + 1)
+}
+
+struct NetworkRootScope(Shared);
+impl Drop for NetworkRootScope {
+    fn drop(&mut self) { self.0.borrow_mut().network_root_scopes -= 1; }
+}
+pub(crate) fn with_network_root<T>(lua: &Lua, callback: impl FnOnce() -> Result<T>) -> Result<T> {
+    let shared=shared(lua)?;
+    shared.borrow_mut().network_root_scopes += 1;
+    let scope=NetworkRootScope(shared);
+    let result=callback();
+    drop(scope);
+    result
+}
+
+struct FreezeScope(Option<Shared>);
+impl FreezeScope {
+    fn enter(lua: &Lua) -> Result<Self> {
+        if unsafe { ffi::lua_isyieldable(lua.state()) } == 0 { return Ok(Self(None)); }
+        let shared = shared(lua)?;
+        shared.borrow_mut().freeze_scopes += 1;
+        Ok(Self(Some(shared)))
+    }
+}
+impl Drop for FreezeScope {
+    fn drop(&mut self) { if let Some(shared) = &self.0 { shared.borrow_mut().freeze_scopes -= 1; } }
+}
+
 pub fn spawn_with(lua: &Lua, callable: Value, args: MultiValue, mode: Option<&str>, origin: Option<&str>) -> Result<Thread> {
     let thread = to_thread(lua, callable, mode, origin)?;
-    resume_task(lua, thread.clone(), args, None)?;
+    let root_safe=origin == Some("executor") || shared(lua)?.borrow().network_root_scopes > 0;
+    resume_task(lua, thread.clone(), args, None, root_safe)?;
     Ok(thread)
 }
 pub fn spawn_tracked(lua: &Lua, callable: Value, args: MultiValue, mode: Option<&str>, origin: Option<&str>, completion: Completion) -> Result<Thread> {
@@ -431,7 +568,8 @@ pub fn spawn_observed(lua: &Lua, callable: Value, args: MultiValue, mode: Option
         task.completion = Some(completion);
         task.yield_observer = observer;
     }
-    resume_task(lua, thread.clone(), args, None)?;
+    let root_safe=origin == Some("executor") || shared(lua)?.borrow().network_root_scopes > 0;
+    resume_task(lua, thread.clone(), args, None, root_safe)?;
     Ok(thread)
 }
 
@@ -455,6 +593,7 @@ pub fn cancel(lua: &Lua, thread: Thread) -> Result<()> {
         let shared = shared(lua)?;
         let mut state = shared.borrow_mut();
         state.queue.retain(|job| key(&job.thread) != key(&thread));
+        if let Some(batch) = &mut state.suspended_batch { batch.retain(|job|key(&job.thread) != key(&thread)); }
         state.tasks.remove(&key(&thread))
     };
     clear_profile(lua, &thread)?;
@@ -469,30 +608,78 @@ pub fn flush(lua: &Lua, now: f64) -> Result<usize> {
     step_mode(lua, now, false)
 }
 fn step_mode(lua: &Lua, now: f64, timed_waits: bool) -> Result<usize> {
+    if crate::network::frozen(lua) { return Ok(shared(lua)?.borrow().queue.len()); }
     let ready = {
         let shared = shared(lua)?;
         let mut state = shared.borrow_mut();
+        if state.suspended_batch.is_some() { return Err(fail("scheduler step must be resumed before starting another step")); }
         if !now.is_finite() || now < state.now { return Err(fail("scheduler time must be finite and nondecreasing")); }
         state.now = now;
         state.tick += 1;
         state.resumes = 0;
         state.rt.raw_set("now", now)?;
-        state.queue.sort_by(|a, b| a.at.total_cmp(&b.at).then(a.sequence.cmp(&b.sequence)));
         let tick = state.tick;
+        // A queue containing only future waits needs no sort or repartition.
+        if !state.queue.iter().any(|job| job.at <= now && job.tick <= tick && (timed_waits || job.started.is_none())) {
+            return Ok(state.queue.len());
+        }
+        state.queue.sort_by(|a, b| a.at.total_cmp(&b.at).then(a.sequence.cmp(&b.sequence)));
         let (ready, pending) = std::mem::take(&mut state.queue).into_iter().partition::<Vec<_>, _>(|job| job.at <= now && job.tick <= tick && (timed_waits || job.started.is_none()));
         state.queue = pending;
         ready
     };
-    for job in ready {
-        let args = job.started.map(|started| one(Value::Number(now - started))).unwrap_or(job.args);
-        resume_task(lua, job.thread, args, job.error)?;
-    }
+    run_batch(lua,ready.into())?;
     Ok(shared(lua)?.borrow().queue.len())
 }
 
-pub fn new_signal(lua: &Lua) -> Result<AnyUserData> { new_named_signal(lua, "") }
-pub fn new_named_signal(lua: &Lua, label: &str) -> Result<AnyUserData> {
-    lua.create_userdata(Signal(Rc::new(RefCell::new(SignalData { label: label.into(), ..SignalData::default() }))))
+fn run_batch(lua: &Lua, mut ready: VecDeque<Job>) -> Result<()> {
+    while let Some(job) = ready.pop_front() {
+        if crate::network::frozen(lua) {
+            ready.push_front(job);
+            shared(lua)?.borrow_mut().suspended_batch=Some(ready);
+            return Ok(());
+        }
+        let now=shared(lua)?.borrow().now;
+        let args = job.started.map(|started| one(Value::Number(now - started))).unwrap_or(job.args);
+        resume_task(lua,job.thread,args,job.error,true)?;
+        if crate::network::frozen(lua) {
+            shared(lua)?.borrow_mut().suspended_batch=Some(ready);
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+pub fn resume_step(lua: &Lua) -> Result<usize> {
+    if crate::network::frozen(lua) { return Ok(shared(lua)?.borrow().queue.len()); }
+    let ready=shared(lua)?.borrow_mut().suspended_batch.take();
+    if let Some(ready)=ready { run_batch(lua,ready)?; }
+    Ok(shared(lua)?.borrow().queue.len())
+}
+
+pub fn new_signal(lua: &Lua) -> Result<AnyUserData> { new_named_signal(lua, "", "", "") }
+pub fn new_named_signal(lua: &Lua, label: &str, owner_class:&str, event_name:&str) -> Result<AnyUserData> {
+    lua.create_userdata(Signal(Rc::new(RefCell::new(SignalData { label: label.into(),owner_class:owner_class.into(),event_name:event_name.into(),..SignalData::default() }))))
+}
+pub(crate) fn signal_arguments(lua:&Lua,signal:AnyUserData,info:bool)->Result<Table> {
+    let signal=signal_data(&signal)?;let signal=signal.borrow();
+    let signature:&[(&str,&str)]=match (signal.owner_class.as_str(),signal.event_name.as_str()) {
+        ("Players","PlayerAdded")=>&[("player","Player")],
+        ("Players","PlayerRemoving")=>&[("player","Player"),("reason","Enum.PlayerExitReason")],
+        ("Player","CharacterAdded"|"CharacterRemoving")=>&[("character","Model")],
+        ("Player","Idled")=>&[("time","number")],
+        ("RunService","Heartbeat"|"RenderStepped"|"PreRender"|"PreSimulation"|"PostSimulation")=>&[("deltaTime","number")],
+        ("RunService","Stepped")=>&[("time","number"),("deltaTime","number")],
+        (_,"ChildAdded"|"ChildRemoved"|"DescendantAdded"|"DescendantRemoving")=>&[("child","Instance")],
+        (_,"Touched"|"TouchEnded")=>&[("otherPart","BasePart")],
+        _=>return Err(fail("UnsupportedApi: signal argument metadata is unavailable")),
+    };
+    let result=lua.create_table()?;
+    for (i,(name,kind)) in signature.iter().enumerate(){
+        if info {let row=lua.create_table()?;row.raw_set("Name",*name)?;row.raw_set("Type",*kind)?;result.raw_set(i+1,row)?;}
+        else {result.raw_set(i+1,*kind)?;}
+    }
+    Ok(result)
 }
 pub fn wait_signal(lua: &Lua, signal: &AnyUserData) -> Result<()> {
     let data = signal_data(signal)?;
@@ -511,7 +698,7 @@ fn connect_value(lua: &Lua, signal: &AnyUserData, callback: Value, parallel: boo
     if parallel && !state.borrow().actor { return Err(fail("ConnectParallel requires an Actor")); }
     if data.borrow().handlers.len() >= state.borrow().max_tasks { return Err(fail("SchedulerLimit: signal connection limit exceeded")); }
     let connection = Rc::new(RefCell::new(ConnectionData {
-        signal: Rc::downgrade(&data), callback, mode: if parallel { "parallel" } else { "serial" }.into(),
+        signal: Rc::downgrade(&data), callback, creator: lua.current_thread(), mode: if parallel { "parallel" } else { "serial" }.into(),
         environment: lua.globals(), origin: current_origin(lua), connected: true, enabled: true, once,
     }));
     let value = lua.create_userdata(Connection(connection.clone()))?;
@@ -541,10 +728,33 @@ pub(crate) fn signal_has_listeners(signal: &AnyUserData) -> Result<bool> {
 }
 
 pub fn fire_signal(lua: &Lua, signal: &AnyUserData, args: MultiValue) -> Result<()> {
+    fire_signal_mode(lua, signal, args, false, false, false)
+}
+
+// Host input enters the managed queue before user callbacks run. This also
+// permits a callback to yield for network approval without nesting the host call.
+pub(crate) fn fire_input_signal(lua: &Lua, signal: &AnyUserData, args: MultiValue) -> Result<()> {
+    fire_signal_mode(lua, signal, args, true, false, false)
+}
+
+// A host-delivered signal is a new managed root, so its immediate callbacks
+// may yield for approval. Remaining callbacks queue when a prompt opens.
+pub(crate) fn fire_host_signal(lua: &Lua, signal: &AnyUserData, args: MultiValue) -> Result<()> {
+    fire_signal_mode(lua, signal, args, false, true, false)
+}
+
+pub(crate) fn fire_render_callback(lua: &Lua, callback: Function, environment: Table, origin: &str, args: MultiValue) -> Result<()> {
+    let thread=to_thread(lua,Value::Function(callback),Some("serial"),Some(origin))?;
+    set_thread_environment(lua,&thread,&environment)?;
+    if crate::network::frozen(lua) {enqueue(lua,thread,args,None,0.0,None)}
+    else {resume_task(lua,thread,args,None,true)}
+}
+
+fn fire_signal_mode(lua: &Lua, signal: &AnyUserData, args: MultiValue, force_deferred: bool, host_root: bool, force_immediate: bool) -> Result<()> {
     let data = signal_data(signal)?;
     let (waiters, handlers) = { let mut data = data.borrow_mut(); (std::mem::take(&mut data.waiters), data.handlers.clone()) };
     for waiter in waiters { schedule(lua, waiter, args.clone(), None)?; }
-    let deferred = shared(lua)?.borrow().deferred_signals;
+    let deferred = force_deferred || (!force_immediate && shared(lua)?.borrow().deferred_signals);
     for connection in handlers {
         let (callback, environment, mode, origin, once) = {
             let connection = connection.borrow();
@@ -555,10 +765,10 @@ pub fn fire_signal(lua: &Lua, signal: &AnyUserData, args: MultiValue) -> Result<
         let callback = callable_callback(lua, callback)?;
         let thread = to_thread(lua, Value::Function(callback), Some(&mode), Some(&origin))?;
         set_thread_environment(lua, &thread, &environment)?;
-        if deferred {
+        if deferred || (host_root && crate::network::frozen(lua)) {
             shared(lua)?.borrow_mut().tasks.get_mut(&key(&thread)).unwrap().pending_connection = Some(connection);
             enqueue(lua, thread, args.clone(), None, 0.0, None)?;
-        } else { resume_task(lua, thread, args.clone(), None)?; }
+        } else { resume_task(lua, thread, args.clone(), None, host_root)?; }
     }
     Ok(())
 }
@@ -584,7 +794,7 @@ fn callable_callback(lua: &Lua, value: Value) -> Result<Function> {
 #[derive(Clone, Copy)]
 enum Op {
     Spawn, SpawnWith, Defer, Delay, Wait, Cancel, Park, Schedule, Step, Status, GetMode, GetOrigin, SetMode,
-    NewSignal, GetConnections, Synchronize, Desynchronize, Print, Warn, Time, Tick, Clock,
+    NewSignal, GetConnections, GetConnection, ExecutorFireSignal, Synchronize, Desynchronize, Print, Warn, Time, Tick, Clock,
     SignalIndex, SignalString, SignalReadOnly, Connect, ConnectParallel, Once, SignalWait, Fire, DisconnectAll,
     ConnectionIndex, ConnectionString, ConnectionReadOnly, Disconnect, ViewIndex, Enable, Disable, ConnectionFire, ConnectionDefer,
     ProfileBegin, ProfileEnd, ProfileStatus,
@@ -644,12 +854,21 @@ unsafe extern "C-unwind" fn dispatch(state: *mut ffi::lua_State) -> i32 {
     unsafe { Lua::invoke_native_callback(state, |lua, args| invoke(lua, opcode, args)) }
 }
 fn native_function(lua: &Lua, name: Option<&'static CStr>, op: Op) -> Result<Function> {
+    if matches!(op, Op::Print | Op::Warn) {
+        let function = if matches!(op, Op::Print) { raw_print } else { raw_warn };
+        return unsafe { lua.exec_raw((), |state| ffi::lua_pushcclosurek(state, function, name.map_or(std::ptr::null(), CStr::as_ptr), 0, None)) };
+    }
     unsafe { lua.exec_raw(op as i32, |state| ffi::lua_pushcclosurek(state, dispatch, name.map_or(std::ptr::null(), CStr::as_ptr), 1, None)) }
 }
 unsafe extern "C-unwind" fn raw_print(state: *mut ffi::lua_State) -> i32 {
+    unsafe { raw_print_body(state, false) }
+}
+unsafe extern "C-unwind" fn raw_warn(state: *mut ffi::lua_State) -> i32 {
+    unsafe { raw_print_body(state, true) }
+}
+unsafe fn raw_print_body(state: *mut ffi::lua_State, warn: bool) -> i32 {
     unsafe {
         let count = ffi::lua_gettop(state);
-        let warn = ffi::lua_tointeger(state, ffi::lua_upvalueindex(1)) as i32 == Op::Warn as i32;
         ffi::luaL_checkstack(state, count + 3, c"print arguments".as_ptr());
         ffi::lua_rawgetfield(state, ffi::LUA_REGISTRYINDEX, c"emulator.scheduler.tostring".as_ptr());
         // Keep the real tostring C frame and original errors, outside Rust guards.
@@ -671,10 +890,8 @@ unsafe extern "C-unwind" fn raw_print(state: *mut ffi::lua_State) -> i32 {
                 bytes.extend_from_slice(&text.as_bytes());
                 strings.push(text);
             }
-            if let Ok(logger) = crate::internal::<Function>(lua, "__host_log") {
-                let _capture = crate::console::stage(lua, &values, &strings);
-                logger.call::<()>((if warn { "warn" } else { "info" }, lua.create_string(&bytes)?))?;
-            }
+            let _capture = crate::console::stage(lua, &values, &strings);
+            crate::host_log(lua, if warn { "warn" } else { "info" }, lua.create_string(&bytes)?)?;
             Ok(empty())
         })
     }
@@ -685,7 +902,14 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
         Op::Spawn | Op::SpawnWith => {
             let callable = take(&mut args);
             let (mode, origin) = if matches!(op, Op::SpawnWith) { (optional_string(take(&mut args))?, optional_string(take(&mut args))?) } else { (None, None) };
-            Ok(returned(Value::Thread(spawn_with(lua, callable, args, mode.as_deref(), origin.as_deref())?)))
+            let scope = FreezeScope::enter(lua)?;
+            let thread = spawn_with(lua, callable, args, mode.as_deref(), origin.as_deref())?;
+            drop(scope);
+            if crate::network::frozen(lua) {
+                crate::network::suspend_parent(lua,one(Value::Thread(thread)))?;
+                return Ok(NativeCall::Yield(MultiValue::new()));
+            }
+            Ok(returned(Value::Thread(thread)))
         }
         Op::Defer | Op::Delay => {
             let delay = if matches!(op, Op::Delay) { duration(take(&mut args))? } else { 0.0 };
@@ -746,7 +970,20 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
             for (index, handler) in handlers.into_iter().enumerate() { result.raw_set(index + 1, lua.create_userdata(ConnectionView(handler))?)?; }
             Ok(returned(Value::Table(result)))
         }
-        Op::Print | Op::Warn => Ok(NativeCall::Dispatch(raw_print)),
+        Op::GetConnection => {
+            let signal = signal_data(&userdata(take(&mut args))?)?;
+            let index = i64::from_lua(take(&mut args), lua)?;
+            let handler = usize::try_from(index).ok().and_then(|index| index.checked_sub(1))
+                .and_then(|index| signal.borrow().handlers.get(index).cloned());
+            Ok(returned(match handler { Some(handler) => Value::UserData(lua.create_userdata(ConnectionView(handler))?), None => Value::Nil }))
+        }
+        Op::ExecutorFireSignal => {
+            let signal=userdata(take(&mut args))?;
+            fire_signal_mode(lua,&signal,args,false,false,true)?;
+            Ok(empty())
+        }
+        Op::Print => Ok(NativeCall::Dispatch(raw_print)),
+        Op::Warn => Ok(NativeCall::Dispatch(raw_warn)),
         Op::Time | Op::Tick => Ok(returned(Value::Number(shared(lua)?.borrow().now + if matches!(op, Op::Tick) { 1700000000.0 } else { 0.0 }))),
         Op::Clock => {
             let state = shared(lua)?;
@@ -766,18 +1003,7 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
             Ok(returned(Value::String(previous)))
         }
         Op::ResetMemoryCategory => Ok(empty()),
-        Op::MemoryStatus => {
-            let names = shared(lua)?.borrow().memory_names.clone();
-            let result = lua.create_table()?;
-            for (category, name) in names.into_iter().enumerate() {
-                let record = lua.create_table()?;
-                record.raw_set("name", name)?;
-                record.raw_set("category", category)?;
-                record.raw_set("bytes", unsafe { ffi::lua_totalbytes(lua.state(), category as i32) })?;
-                result.raw_set(category + 1, record)?;
-            }
-            Ok(returned(Value::Table(result)))
-        }
+        Op::MemoryStatus => Ok(returned(Value::Table(memory_status(lua)?))),
         Op::DumpCodeSize | Op::DumpHeap | Op::DumpRefs | Op::TraceRefs | Op::LoadModule => unreachable!("permission checked in native entry"),
         Op::ProfileBegin => {
             let Value::String(label) = take(&mut args) else { return Err(fail("profile label conversion failed")); };
@@ -820,26 +1046,7 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
             }
             Ok(empty())
         }
-        Op::ProfileStatus => {
-            let state = shared(lua)?;
-            let state = state.borrow();
-            let result = lua.create_table()?;
-            result.raw_set("begun", state.profiles_begun)?;
-            result.raw_set("completed", state.profiles_completed)?;
-            let (mut threads, mut scopes) = (0, 0);
-            for entry in state.profile_threads.clone().pairs::<Value, AnyUserData>() { let (_, stack) = entry?; threads += 1; scopes += stack.borrow::<ProfileStack>()?.0.len(); }
-            result.raw_set("activeThreads", threads)?;
-            result.raw_set("activeScopes", scopes)?;
-            let samples = lua.create_table()?;
-            for (index, sample) in state.profile_samples.iter().enumerate() {
-                let record = lua.create_table()?;
-                record.raw_set("label", sample.label.as_str())?;
-                record.raw_set("elapsed", sample.elapsed)?;
-                samples.raw_set(index + 1, record)?;
-            }
-            result.raw_set("samples", samples)?;
-            Ok(returned(Value::Table(result)))
-        }
+        Op::ProfileStatus => Ok(returned(Value::Table(profile_status(lua)?))),
         Op::SignalIndex => {
             signal_data(&userdata(take(&mut args))?)?;
             let name = string(take(&mut args))?;
@@ -868,7 +1075,17 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
             Ok(returned(Value::UserData(connect_value(lua, &signal, callback, matches!(op, Op::ConnectParallel), matches!(op, Op::Once))?)))
         }
         Op::SignalWait => { wait_signal(lua, &userdata(take(&mut args))?)?; Ok(NativeCall::Yield(MultiValue::new())) }
-        Op::Fire => { fire_signal(lua, &userdata(take(&mut args))?, args)?; Ok(empty()) }
+        Op::Fire => {
+            let signal = userdata(take(&mut args))?;
+            let scope = FreezeScope::enter(lua)?;
+            fire_signal(lua,&signal,args)?;
+            drop(scope);
+            if crate::network::frozen(lua) {
+                crate::network::suspend_parent(lua,MultiValue::new())?;
+                return Ok(NativeCall::Yield(MultiValue::new()));
+            }
+            Ok(empty())
+        }
         Op::DisconnectAll => { disconnect_all(lua, &userdata(take(&mut args))?)?; Ok(empty()) }
         Op::ConnectionIndex | Op::ViewIndex => {
             let connection = connection_data(&userdata(take(&mut args))?)?;
@@ -880,6 +1097,7 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
                 "Disconnect" | "disconnect" => Value::Function(native_function(lua, Some(c"Disconnect"), Op::Disconnect)?),
                 "Enabled" if view => Value::Boolean(data.connected && data.enabled),
                 "Function" if view => data.callback.clone(),
+                "Thread" if view => Value::Thread(data.creator.clone()),
                 "ForeignState" if view => Value::Boolean(false),
                 "LuaConnection" if view => Value::Boolean(true),
                 _ => {
@@ -904,7 +1122,7 @@ fn invoke(lua: &Lua, op: i32, mut args: MultiValue) -> Result<NativeCall> {
                     let thread = to_thread(lua, Value::Function(callable_callback(lua, function)?), Some(&mode), Some(&origin))?;
                     set_thread_environment(lua, &thread, &environment)?;
                     if matches!(op, Op::ConnectionDefer) { enqueue(lua, thread, args, None, 0.0, None)?; }
-                    else { resume_task(lua, thread, args, None)?; }
+                    else { resume_task(lua, thread, args, None, false)?; }
                 }
             }
             Ok(empty())
@@ -933,7 +1151,10 @@ fn set_meta(lua: &Lua, sample: AnyUserData, index: Op, tostring: Op, readonly: O
     }
 }
 
-pub fn install(lua: &Lua) -> Result<()> {
+#[cfg(all(test, emulator_local_tests))]
+pub fn install(lua: &Lua) -> Result<()> { install_impl(lua, true) }
+pub fn install_native_host(lua: &Lua) -> Result<()> { install_impl(lua, false) }
+fn install_impl(lua: &Lua, expose_private_callbacks: bool) -> Result<()> {
     lua.set_named_registry_value("emulator.scheduler.tostring", lua.globals().get::<Function>("tostring")?)?;
     let config = crate::internal::<Option<Table>>(lua, "__config")?;
     let max_tasks = config.as_ref().and_then(|config| config.get::<usize>("maxTasks").ok()).unwrap_or(10000).clamp(1, 100000);
@@ -959,8 +1180,8 @@ pub fn install(lua: &Lua) -> Result<()> {
     }
     let default_category = lua.create_string("Default")?;
     lua.set_app_data(Rc::new(RefCell::new(Scheduler {
-        now: 0.0, execution_seconds: 0.0, execution_started: None, tick: 0, sequence: 0, resumes: 0, resume_depth: 0, max_resume_depth, max_tasks, max_resumes, actor, deferred_signals,
-        tasks: HashMap::new(), queue: Vec::new(), rt: rt.clone(), errors, errors_total: 0,
+        now: 0.0, execution_seconds: 0.0, execution_started: None, tick: 0, sequence: 0, resumes: 0, resume_depth: 0, freeze_scopes: 0, network_root_safe: false, network_root_scopes: 0, max_resume_depth, max_tasks, max_resumes, actor, deferred_signals,
+        tasks: HashMap::new(), queue: Vec::new(), suspended_batch: None, rt: rt.clone(), errors, errors_total: 0,
         view_methods: view_methods.clone(),
         profile_threads, profiles_begun: 0, profiles_completed: 0, profile_samples: VecDeque::new(),
         memory_names: vec![default_category.clone()], memory_ids: HashMap::from([(default_category, 0)]),
@@ -973,10 +1194,13 @@ pub fn install(lua: &Lua) -> Result<()> {
         task.raw_set(name, function.clone())?;
         rt.raw_set(name, function)?;
     }
-    for (name, op) in [("spawnWith", Op::SpawnWith), ("park", Op::Park), ("schedule", Op::Schedule), ("step", Op::Step),
+    if expose_private_callbacks { for (name, op) in [("spawnWith", Op::SpawnWith), ("park", Op::Park), ("schedule", Op::Schedule), ("step", Op::Step),
         ("status", Op::Status), ("getMode", Op::GetMode), ("getOrigin", Op::GetOrigin), ("setMode", Op::SetMode),
-        ("newSignal", Op::NewSignal), ("getConnections", Op::GetConnections), ("profileStatus", Op::ProfileStatus),
-        ("memoryStatus", Op::MemoryStatus)] { rt.raw_set(name, native_function(lua, None, op)?)?; }
+        ("newSignal", Op::NewSignal), ("profileStatus", Op::ProfileStatus),
+        ("memoryStatus", Op::MemoryStatus)] { rt.raw_set(name, native_function(lua, None, op)?)?; } }
+    rt.raw_set("getConnections", native_function(lua, None, Op::GetConnections)?)?;
+    rt.raw_set("fireExecutorSignal",native_function(lua,Some(c"firesignal"),Op::ExecutorFireSignal)?)?;
+    rt.raw_set("getConnection",native_function(lua,Some(c"getconnection"),Op::GetConnection)?)?;
     for (name, debug_name, op) in [("Enable", c"Enable", Op::Enable), ("Disable", c"Disable", Op::Disable),
         ("Fire", c"Fire", Op::ConnectionFire), ("Defer", c"Defer", Op::ConnectionDefer)] { view_methods.raw_set(name, native_function(lua, Some(debug_name), op)?)?; }
     let sample = new_signal(lua)?;

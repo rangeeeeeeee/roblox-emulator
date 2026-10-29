@@ -1,5 +1,5 @@
 use mlua::{AnyUserData, Error, Function, Lua, MetaMethod, MultiValue, ObjectLike, Result, Table, UserData, UserDataFields, UserDataMethods, UserDataRegistry, Value, ffi};
-use std::{cell::RefCell, collections::HashMap, rc::{Rc, Weak}, sync::OnceLock};
+use std::{cell::RefCell, collections::HashMap, rc::{Rc, Weak}, sync::{OnceLock,atomic::{AtomicU64,Ordering}}};
 
 pub(crate) type Link = Rc<RefCell<Node>>;
 
@@ -7,6 +7,7 @@ pub(crate) type Link = Rc<RefCell<Node>>;
 pub(crate) enum Attribute { Boolean(bool), Number(f64), String(String) }
 
 pub(crate) struct Node {
+    pub(crate) cache_id: u64,
     pub(crate) id: String,
     pub(crate) class: String,
     pub(crate) name: String,
@@ -18,15 +19,25 @@ pub(crate) struct Node {
     pub(crate) destroyed: bool,
     pub(crate) linked_source: String,
     pub(crate) source: String,
+    pub(crate) source_available: bool,
+    pub(crate) source_initialized: bool,
     pub(crate) properties: HashMap<String, Value>,
     pub(crate) signals: HashMap<String, AnyUserData>,
     pub(crate) callback_environments: HashMap<String, Table>,
+    pub(crate) scriptable: HashMap<String, bool>,
 }
 
 #[derive(Clone)]
 pub(crate) struct Instance(pub(crate) Link);
 
 const CACHE: &str = "emulator.native.instances";
+static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
+const CACHE_PRUNE_INTERVAL: usize = 128;
+const MAX_CACHE_REPLACEMENTS: usize = 4096;
+#[derive(Default)]
+struct CacheIndex { replaced: HashMap<i64,Weak<RefCell<Node>>>, operations: usize }
+#[derive(Clone,Default)]
+struct CacheState(Rc<RefCell<CacheIndex>>);
 pub(crate) const METHODS: &str = "emulator.native.instance.methods";
 pub(crate) const SERVICES: &[&str] = &["Workspace", "Players", "ReplicatedStorage", "ReplicatedFirst",
     "ServerStorage", "ServerScriptService", "RunService", "LogService", "HttpService", "CoreGui",
@@ -53,12 +64,12 @@ pub(crate) fn implemented(class:&str)->bool{
         "Backpack" | "LuaSourceContainer" | "PVInstance" | "UserInputService" | "GuiService" |
         "VRService" | "TextService" | "ContentProvider" | "NetworkClient" | "StarterGui" |
         "StarterPlayer" | "EncodingService" | "CollectionService" | "Stats" | "TweenService" | "Chat" | "ScriptContext" |
-        "StarterPlayerScripts" | "StarterCharacterScripts" | "Humanoid" | "Animator" | "Animation" | "AnimationTrack" | "AnimationController" | "ValueBase" |
+        "StarterPlayerScripts" | "StarterCharacterScripts" | "Humanoid" | "Animator" | "Animation" | "AnimationTrack" | "AnimationController" | "Sound" | "ValueBase" |
         "GuiBase2d" | "StringValue" | "NumberValue" | "IntValue" | "BoolValue" | "ObjectValue" |
         "GuiObject" | "LayerCollector" | "Frame" | "Path2D" | "Tween" | "TextLabel" | "TextButton" | "ImageLabel" |
         "ImageButton" | "ScreenGui" | "UnreliableRemoteEvent" | "DataModel" | "Model" | "BasePart" |
         "Camera" | "WorldRoot" | "Actor" | "Tool" | "Workspace" | "WorldModel" | "Part" | "MeshPart" |
-        "Terrain" | "BaseScript" | "ModuleScript" | "Script" | "LocalScript" | "Instance")
+        "Terrain" | "Fire" | "ClickDetector" | "ProximityPrompt" | "InputObject" | "BaseScript" | "ModuleScript" | "Script" | "LocalScript" | "Instance")
 }
 
 pub(crate) fn is_a(node: &Node, expected: &str) -> bool {
@@ -75,9 +86,15 @@ pub(crate) fn new_node(class: &str) -> Result<Link> {
         return Err(Error::lua_string(format!("Unable to create an Instance of type \"{class}\"")));
     }
     if !implemented(class){return Err(Error::runtime(format!("UnsupportedApi: class {class}")))}
-    Ok(Rc::new(RefCell::new(Node { id: String::new(), class: class.into(), name: class.into(), raw_name: None, parent: Weak::new(),
+    // Cache keys are unique even after a replaced entry outlives its original node.
+    let cache_id=loop {
+        let current=NEXT_CACHE_ID.load(Ordering::Relaxed);
+        if current >= (1u64<<53) {return Err(Error::runtime("Instance identity space exhausted"))}
+        if NEXT_CACHE_ID.compare_exchange_weak(current,current+1,Ordering::Relaxed,Ordering::Relaxed).is_ok(){break current}
+    };
+    Ok(Rc::new(RefCell::new(Node { cache_id, id: String::new(), class: class.into(), name: class.into(), raw_name: None, parent: Weak::new(),
         children: Vec::new(), attributes: HashMap::new(), archivable: true, destroyed: false,
-        linked_source: String::new(), source: String::new(), properties: HashMap::new(), signals: HashMap::new(), callback_environments: HashMap::new() })))
+        linked_source: String::new(), source: String::new(), source_available: true, source_initialized: false, properties: HashMap::new(), signals: HashMap::new(), callback_environments: HashMap::new(), scriptable: HashMap::new() })))
 }
 pub(crate) fn create_node(lua:&Lua,class:&str)->Result<Link>{
     if class_info(class).is_some()&&!implemented(class){return Err(crate::model::unsupported(lua,&format!("class {class}")))}
@@ -86,11 +103,74 @@ pub(crate) fn create_node(lua:&Lua,class:&str)->Result<Link>{
 
 pub(crate) fn wrapper(lua: &Lua, node: Link) -> Result<AnyUserData> {
     let cache: Table = lua.named_registry_value(CACHE)?;
-    let key = Rc::as_ptr(&node) as usize as i64;
+    prune_cache(lua,&cache,false)?;
+    let key = node.borrow().cache_id as i64;
     if let Value::UserData(value) = cache.raw_get(key)? { return Ok(value); }
     let value = lua.create_userdata(Instance(node))?;
     cache.raw_set(key, value.clone())?;
     Ok(value)
+}
+
+fn cache_state(lua:&Lua)->Result<CacheState>{
+    lua.app_data_ref::<CacheState>().map(|state|state.clone()).ok_or_else(||Error::runtime("Instance cache is not initialized"))
+}
+
+fn prune_cache(lua:&Lua,cache:&Table,force:bool)->Result<()> {
+    let state=cache_state(lua)?;
+    let mut state=state.0.borrow_mut();
+    state.operations+=1;
+    if !force && state.operations<CACHE_PRUNE_INTERVAL{return Ok(())}
+    state.operations=0;
+    let mut removed=Vec::new();
+    for (&key,node) in &state.replaced {
+        if node.strong_count()==0 {
+            cache.raw_set(key,Value::Nil)?;
+            removed.push(key);
+        }else if matches!(cache.raw_get::<Value>(key)?,Value::Nil) {
+            removed.push(key);
+        }
+    }
+    for key in removed{state.replaced.remove(&key);}
+    Ok(())
+}
+
+fn cache_node(value:&AnyUserData, api:&str, index:usize)->Result<Link>{
+    value.borrow::<Instance>().map(|instance|instance.0.clone())
+        .map_err(|_|Error::lua_string(format!("invalid argument #{index} to '{api}' (Instance expected)")))
+}
+
+pub(crate) fn cache_invalidate(lua:&Lua, value:AnyUserData)->Result<()> {
+    let key=cache_node(&value,"cache.invalidate",1)?.borrow().cache_id as i64;
+    let cache:Table=lua.named_registry_value(CACHE)?;
+    prune_cache(lua,&cache,false)?;
+    cache.raw_set(key,Value::Nil)?;
+    cache_state(lua)?.0.borrow_mut().replaced.remove(&key);
+    Ok(())
+}
+
+pub(crate) fn cache_is_cached(lua:&Lua, value:AnyUserData)->Result<bool> {
+    let key=cache_node(&value,"cache.iscached",1)?.borrow().cache_id as i64;
+    let cache:Table=lua.named_registry_value(CACHE)?;
+    prune_cache(lua,&cache,false)?;
+    Ok(matches!(cache.raw_get::<Value>(key)?,Value::UserData(_)))
+}
+
+pub(crate) fn cache_replace(lua:&Lua, (original,replacement):(AnyUserData,AnyUserData))->Result<()> {
+    let original_node=cache_node(&original,"cache.replace",1)?;
+    let replacement_node=cache_node(&replacement,"cache.replace",2)?;
+    let key=original_node.borrow().cache_id as i64;
+    let cache:Table=lua.named_registry_value(CACHE)?;
+    prune_cache(lua,&cache,false)?;
+    let state=cache_state(lua)?;
+    let foreign=!Rc::ptr_eq(&original_node,&replacement_node);
+    if foreign && state.0.borrow().replaced.len()>=MAX_CACHE_REPLACEMENTS && !state.0.borrow().replaced.contains_key(&key) {
+        prune_cache(lua,&cache,true)?;
+        if state.0.borrow().replaced.len()>=MAX_CACHE_REPLACEMENTS {return Err(Error::runtime("BudgetExceeded: Instance cache replacements"))}
+    }
+    cache.raw_set(key,replacement)?;
+    if foreign {state.0.borrow_mut().replaced.insert(key,Rc::downgrade(&original_node));}
+    else {state.0.borrow_mut().replaced.remove(&key);}
+    Ok(())
 }
 
 pub(crate) fn set_parent(node: &Link, target: Option<Link>) -> Result<()> {
@@ -190,7 +270,12 @@ pub(crate) fn instance_list(lua: &Lua, nodes: Vec<Link>) -> Result<Table> {
     Ok(result)
 }
 
+pub(crate) fn hidden_by_default(node:&Node,key:&str)->bool {
+    node.class=="Fire"&&key=="size_xml" || node.class=="Player"&&matches!(key,"SimulationRadius"|"MaximumSimulationRadius")
+}
 pub(crate) fn read_property(lua: &Lua, this: &Instance, key: &str) -> Result<Value> {
+    {let node=this.0.borrow();if node.scriptable.get(key)==Some(&false)||(hidden_by_default(&node,key)&&node.scriptable.get(key)!=Some(&true)){return Err(missing_member(&node,key))}}
+    if key=="size_xml"&&this.0.borrow().class=="Fire" {return crate::model::get_hidden_property(lua,&this.0,key).map(|(value,_)|value)}
     if let Some(value) = crate::model::read_property(lua, &this.0, key)? { return Ok(value); }
     let node = this.0.borrow();
     match key {
@@ -300,6 +385,8 @@ impl UserData for Instance {
         });
         methods.add_meta_function(MetaMethod::NewIndex, |lua, mut values:MultiValue| {
             let this=receiver(&mut values,"__newindex")?;let key=property_key(lua,values.pop_front().unwrap_or(Value::Nil))?;let value=values.pop_front().unwrap_or(Value::Nil);
+            {let node=this.0.borrow();if node.scriptable.get(&key)==Some(&false)||(hidden_by_default(&node,&key)&&node.scriptable.get(&key)!=Some(&true)){return Err(missing_member(&node,&key))}}
+            if key=="size_xml"&&this.0.borrow().class=="Fire" {return crate::model::set_hidden_property(lua,&this.0,&key,&value).map(|_|())}
             if key == "Parent" {
                 let parent = match value {
                     Value::Nil => None,
@@ -420,6 +507,7 @@ impl UserData for Instance {
 }
 
 pub fn install(lua: &Lua) -> Result<()> {
+    lua.set_app_data(CacheState::default());
     let cache = lua.create_table()?;
     let weak = lua.create_table()?;
     weak.set("__mode", "v")?;

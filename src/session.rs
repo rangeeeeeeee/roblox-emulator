@@ -1,5 +1,7 @@
 use crate::{Host, Realm, Scenario, internal, load_nodes, model, native, node_id, route, scheduler, sync_realms, visible};
-use mlua::{AnyUserData, Error, Function, MultiValue, Result, Table, Value};
+use mlua::{Error, MultiValue, Result, Table, Value};
+#[cfg(all(test, emulator_local_tests))]
+use mlua::{AnyUserData, Function};
 use serde_json::{Value as Json, json};
 use std::{cell::{Cell, RefCell}, collections::{HashMap, HashSet, VecDeque}, fs, path::Path, rc::Rc, time::{Duration, Instant}};
 
@@ -17,6 +19,9 @@ struct Output {
     sequence: Rc<Cell<u64>>,
     clock: Rc<Cell<f64>>,
 }
+
+enum Startup { Script(usize, String), Executor(usize, String) }
+struct PumpContinuation { now: f64, dt: f64, timed: bool, index: usize, resume_step: bool }
 impl Output {
     fn log(&self, realm: &str, context: &str, level: &str, message: &str) {
         let mut logs = self.logs.borrow_mut();
@@ -25,6 +30,23 @@ impl Output {
         self.sequence.set(seq);
         logs.push(json!({"seq":seq,"time":self.clock.get(),"realm":realm,"context":context,"level":level,
             "message":message.chars().take(4096).collect::<String>()}));
+    }
+    fn protected_error(&self, realm: &str, side: &str, entry: &crate::diagnostics::Entry) {
+        let context = if entry.origin.as_deref() == Some("executor") { "executor" } else { side };
+        let description = match &entry.message {
+            Some(message) if entry.message_truncated => format!("Caught error: {message}…"),
+            Some(message) => format!("Caught error: {message}"),
+            None => format!("Caught error ({})", entry.value_type),
+        };
+        let Ok(mut logs) = self.logs.try_borrow_mut() else { return; };
+        if logs.len() >= 4000 { logs.drain(..2000); }
+        let seq = self.sequence.get().saturating_add(1); self.sequence.set(seq);
+        let mut record = json!({"seq":seq,"time":self.clock.get(),"realm":realm,"context":context,"level":"debug",
+            "category":"caughtError","message":description,"errorType":entry.value_type,"frames":entry.frames});
+        if let Some(frame) = entry.frames.iter().find(|frame| frame.line > 0 && frame.source != "[C]") {
+            record["source"] = json!(frame.source); record["sourceLine"] = json!(frame.line);
+        }
+        logs.push(record);
     }
     fn log_values(&self, realm: &str, context: &str, level: &str, values: &[Json]) {
         self.log(realm, context, level, &serde_json::to_string(values).unwrap_or_default());
@@ -44,16 +66,74 @@ pub struct Session {
     next_command: u64,
     output: Output,
     origin: Option<String>,
+    startups: VecDeque<Startup>,
+    interrupted_pump: Option<PumpContinuation>,
+    advance_target: Option<f64>,
+    network_resume_pending: bool,
+    trace_enabled: bool,
+    last_step_ms: Option<f64>,
+    last_virtual_step_ms: Option<f64>,
+    total_step_ms: f64,
+    measured_steps: u64,
 }
 
 fn failure(message: impl Into<String>) -> Error { Error::runtime(message.into()) }
 fn valid_profile(profile: &str) -> Result<()> {
-    if matches!(profile, "generic" | "macsploit-744.2") { Ok(()) }
+    if matches!(profile, "generic" | "macsploit-744.2" | "macsploit-744.4") { Ok(()) }
     else { Err(failure("Unknown executor profile")) }
 }
 
+pub(crate) fn restrict_source_paths(nodes:&mut [Json],scenario_path:&Path)->Result<()> {
+    let base=scenario_path.parent().unwrap_or(Path::new("."));
+    let root=if base.file_name().is_some_and(|name|name.eq_ignore_ascii_case("scenarios")) {
+        base.parent().unwrap_or(base)
+    } else {base};
+    let root=fs::canonicalize(root).map_err(Error::external)?;
+    let resolve=|value:&mut Json|->Result<()> {
+        let name=value.as_str().ok_or_else(||failure("Scenario source path must be a string"))?;
+        let path=fs::canonicalize(base.join(name)).map_err(Error::external)?;
+        if !path.starts_with(&root) {return Err(failure("Scenario source path is outside its project directory"));}
+        *value=json!(path.to_string_lossy());
+        Ok(())
+    };
+    for node in nodes {
+        let Some(fields)=node.as_object_mut() else {continue};
+        if let Some(path)=fields.get_mut("sourcePath") {resolve(path)?;}
+        if let Some(paths)=fields.get_mut("sourcePrependPaths") {
+            for path in paths.as_array_mut().ok_or_else(||failure("sourcePrependPaths must be an array"))? {resolve(path)?;}
+        }
+        if let Some(insertions)=fields.get_mut("sourceInsertions") {
+            for insertion in insertions.as_array_mut().ok_or_else(||failure("sourceInsertions must be an array"))? {
+                resolve(insertion.get_mut("path").ok_or_else(||failure("sourceInsertions requires path"))?)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Session {
+    /// An inactive session contains no Luau VMs; it exists only to serve place editing.
+    pub(crate) fn stopped() -> Self {
+        let scenario = Scenario {
+            name: "Stopped".into(), engine: "native".into(), signal_behavior: "deferred".into(),
+            trace_errors: false, duration: 0.0, step: 1.0 / 60.0, memory_mb: 64, cpu_ms: 2000,
+            latency: 0.0, nodes: Vec::new(), realms: Vec::new(), expect: Vec::new(),
+            reject: Vec::new(), expected_errors: Vec::new(),
+        };
+        let host = Host::interactive();
+        let output = Output { logs: host.logs.clone(), sequence: host.log_sequence.clone(), clock: host.clock.clone() };
+        Self { host, realms: Vec::new(), scenario, cpu_budget: Rc::new(Cell::new(2000)),
+            server_nodes: HashMap::new(), known: Vec::new(), environments: HashMap::new(),
+            commands: VecDeque::new(), next_command: 0, output, origin: None, startups: VecDeque::new(),
+            interrupted_pump: None, advance_target: None, network_resume_pending: false,
+            trace_enabled: false, last_step_ms: None, last_virtual_step_ms: None, total_step_ms: 0.0, measured_steps: 0 }
+    }
+
     pub fn new(profile: &str) -> Result<Self> {
+        Self::from_scenario(Self::default_scenario(profile)?)
+    }
+
+    pub(crate) fn default_scenario(profile: &str) -> Result<Scenario> {
         valid_profile(profile)?;
         let scenario: Scenario = serde_json::from_value(json!({
             "name":"Interactive session", "engine":"native", "duration":0.0,
@@ -68,17 +148,37 @@ impl Session {
                 {"id":"actor1","side":"client","clientId":"player1","actorId":"actor1"}
             ]
         })).map_err(Error::external)?;
-        Self::from_scenario(scenario)
+        Ok(scenario)
     }
 
-    pub fn from_path(path: &Path) -> Result<Self> { Self::load(path, None) }
+    pub fn from_path(path: &Path) -> Result<Self> { Self::load(path, None, None) }
+    pub(crate) fn from_place(place: &crate::place::Place) -> Result<Self> {
+        Self::from_scenario(place.scenario().map_err(failure)?)
+    }
+    pub(crate) fn from_place_with_trace(place: &crate::place::Place, enabled: bool) -> Result<Self> {
+        let mut scenario = place.scenario().map_err(failure)?;
+        scenario.trace_errors = enabled;
+        Self::from_scenario(scenario)
+    }
     pub fn from_path_with_profile(path: &Path, profile: &str) -> Result<Self> {
         valid_profile(profile)?;
-        Self::load(path, Some(profile))
+        Self::load(path, Some(profile), None)
     }
-    fn load(path: &Path, profile: Option<&str>) -> Result<Self> {
-        if fs::metadata(path).map_err(Error::external)?.len() > 16 * 1024 * 1024 { return Err(failure("Scenario size limit exceeded")); }
-        let mut scenario: Scenario = serde_json::from_str(&fs::read_to_string(path).map_err(Error::external)?).map_err(Error::external)?;
+    pub(crate) fn from_path_with_profile_and_trace(path: &Path, profile: &str, enabled: bool) -> Result<Self> {
+        valid_profile(profile)?;
+        Self::load(path, Some(profile), Some(enabled))
+    }
+    fn load(path: &Path, profile: Option<&str>, trace: Option<bool>) -> Result<Self> {
+        let scenario = Self::prepare_scenario(path,profile,trace)?;
+        let mut session = Self::from_scenario(scenario)?;
+        session.origin = Some(path.to_string_lossy().into_owned());
+        Ok(session)
+    }
+
+    // Resolve trusted CLI scenario files before starting the restricted worker.
+    pub(crate) fn prepare_scenario(path: &Path, profile: Option<&str>, trace: Option<bool>) -> Result<Scenario> {
+        let bytes=crate::read_bounded(path,16*1024*1024).map_err(|error|failure(error.to_string()))?;
+        let mut scenario: Scenario = serde_json::from_slice(&bytes).map_err(Error::external)?;
         for realm in &mut scenario.realms {
             if realm.side == "client" && realm.actor_id.is_none() { realm.executor = true; }
         }
@@ -87,13 +187,20 @@ impl Session {
                 if realm.side == "client" && realm.executor { realm.executor_profile = profile.into(); }
             }
         }
+        restrict_source_paths(&mut scenario.nodes,path)?;
         load_nodes(&mut scenario.nodes, path.parent().unwrap_or(Path::new("."))).map_err(|error| failure(error.to_string()))?;
-        let mut session = Self::from_scenario(scenario)?;
-        session.origin = Some(path.to_string_lossy().into_owned());
-        Ok(session)
+        if let Some(enabled) = trace { scenario.trace_errors = enabled; }
+        for node in &mut scenario.nodes {
+            if let Some(fields)=node.as_object_mut() {
+                for key in ["sourcePath","sourceInsertions","sourcePrependPaths","sourcePrefix","sourceSuffix"] {fields.remove(key);}
+            }
+        }
+        Ok(scenario)
     }
 
-    fn from_scenario(scenario: Scenario) -> Result<Self> {
+    pub(crate) fn set_origin(&mut self, origin: Option<String>) { self.origin=origin; }
+
+    pub(crate) fn from_scenario(scenario: Scenario) -> Result<Self> {
         if scenario.engine != "native" { return Err(failure("Interactive sessions require the native engine")); }
         if !matches!(scenario.signal_behavior.as_str(), "immediate" | "deferred")
             || !scenario.step.is_finite() || !(0.001..=1.0).contains(&scenario.step)
@@ -119,31 +226,114 @@ impl Session {
         let mut known = Vec::new();
         for config in &scenario.realms {
             let realm = host.realm(config, &scenario)?;
-            let nodes: Vec<_> = scenario.nodes.iter().filter(|node| config.side == "server" || visible(node, &server_nodes)).cloned().collect();
+            let nodes: Vec<_> = scenario.nodes.iter().filter(|node| config.side == "server" || visible(node, &server_nodes)).cloned().map(|mut node|{
+                if config.side=="client" {crate::redact_client_source(&mut node,&scenario);}node
+            }).collect();
             realm.seed(&nodes)?;
             realm.changes()?;
             known.push(nodes.iter().map(|node| (node_id(node).to_owned(), node.clone())).collect());
             realms.push(realm);
         }
         let cpu_budget = Rc::new(Cell::new(scenario.cpu_ms));
+        let mut startups = VecDeque::new();
+        for (index, realm) in realms.iter().enumerate() {
+            startups.extend(realm.config.entry.iter().cloned().map(|id|Startup::Script(index,id)));
+            startups.extend(realm.config.executor_entry.iter().cloned().map(|id|Startup::Executor(index,id)));
+        }
+        let trace_enabled = scenario.trace_errors;
         let mut session = Self { host, realms, scenario, cpu_budget, server_nodes, known, environments: HashMap::new(),
-            commands: VecDeque::new(), next_command: 0, output, origin: None };
-        for realm in &session.realms {
-            for id in &realm.config.entry {
-                realm.arm(session.scenario.cpu_ms);
-                if let Err(error) = realm.run_script(id) { session.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); }
-            }
-            for id in &realm.config.executor_entry {
-                let node = session.scenario.nodes.iter().find(|node| node_id(node) == id).ok_or_else(|| failure("Executor entry node missing"))?;
-                let source = node["source"].as_str().ok_or_else(|| failure("Executor entry source missing"))?;
-                realm.arm(session.scenario.cpu_ms);
-                if let Err(error) = crate::executor::run(&realm.lua, source, &format!("@executor/{id}")) {
-                    session.output.log(&realm.config.id, "executor", "error", &error.to_string());
+            commands: VecDeque::new(), next_command: 0, output, origin: None, startups, interrupted_pump: None, advance_target: None,
+            network_resume_pending: false, trace_enabled: false, last_step_ms: None, last_virtual_step_ms: None, total_step_ms: 0.0, measured_steps: 0 };
+        if trace_enabled { session.set_trace_errors(true)?; }
+        session.start_pending()?;
+        session.pump(0.0, 0.0, false)?;
+        Ok(session)
+    }
+
+    fn start_pending(&mut self) -> Result<()> {
+        while !self.network_blocked() {
+            let Some(startup) = self.startups.pop_front() else { break };
+            match startup {
+                Startup::Script(index, id) => {
+                    let realm = &self.realms[index];
+                    realm.arm(self.scenario.cpu_ms);
+                    if let Err(error) = scheduler::with_network_root(&realm.lua,||realm.run_script(&id)) { self.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); }
+                }
+                Startup::Executor(index, id) => {
+                    let realm = &self.realms[index];
+                    let node = self.scenario.nodes.iter().find(|node| node_id(node) == id).ok_or_else(|| failure("Executor entry node missing"))?;
+                    let source = node["source"].as_str().ok_or_else(|| failure("Executor entry source missing"))?;
+                    realm.arm(self.scenario.cpu_ms);
+                    if let Err(error) = crate::executor::run(&realm.lua, source, &format!("@executor/{id}")) {
+                        self.output.log(&realm.config.id, "executor", "error", &error.to_string());
+                    }
                 }
             }
         }
-        session.pump(0.0, 0.0, false)?;
-        Ok(session)
+        Ok(())
+    }
+
+    pub(crate) fn primary_profile(&self) -> &str {
+        self.realms.iter().find(|realm| realm.config.side == "client" && realm.config.executor)
+            .map(|realm|realm.config.executor_profile.as_str()).unwrap_or("generic")
+    }
+
+    pub(crate) fn scenario_template(&self) -> &Scenario { &self.scenario }
+    pub(crate) fn trace_errors_enabled(&self) -> bool { self.trace_enabled }
+
+    pub(crate) fn set_trace_errors(&mut self, enabled: bool) -> Result<()> {
+        for realm in &self.realms {
+            let output = self.output.clone();
+            let realm_id = realm.config.id.clone();
+            let side = realm.config.side.clone();
+            let sink = enabled.then(|| Rc::new(move |entry: &crate::diagnostics::Entry| {
+                output.protected_error(&realm_id, &side, entry);
+            }) as Rc<dyn Fn(&crate::diagnostics::Entry)>);
+            crate::diagnostics::configure(&realm.lua, enabled, sink)?;
+        }
+        self.trace_enabled = enabled;
+        self.scenario.trace_errors = enabled;
+        Ok(())
+    }
+
+    pub(crate) fn network_pending(&self) -> Option<Json> { self.host.network.as_ref().and_then(|network|network.pending()) }
+    pub(crate) fn network_blocked(&self) -> bool { self.host.network.as_ref().is_some_and(|network|network.has_pending()) }
+    pub(crate) fn network_decide(&mut self, id: &str, allow: bool) -> Result<()> {
+        self.host.network.as_ref().ok_or_else(||failure("Network approval is unavailable"))?.decide(id,allow).map_err(failure)?;
+        self.poll_network()
+    }
+    pub(crate) fn network_complete_external(&mut self, id: &str, response: Json) -> Result<()> {
+        self.host.network.as_ref().ok_or_else(||failure("Network approval is unavailable"))?
+            .complete_external(id,response).map_err(failure)?;
+        self.poll_network()
+    }
+    pub(crate) fn poll_network(&mut self) -> Result<()> {
+        if self.network_blocked() { return Ok(()); }
+        let Some(network) = self.host.network.clone() else { return Ok(()) };
+        let mut ready = 0;
+        for realm in &self.realms { ready += network.poll(&realm.lua, &realm.config.id)?; }
+        if ready > 0 { self.network_resume_pending = true; }
+        self.start_pending()?;
+        if self.network_blocked() { return Ok(()); }
+        if let Some(frame) = self.interrupted_pump.take() { self.finish_pump(frame)?; }
+        if self.network_blocked() { return Ok(()); }
+        if self.network_resume_pending {
+            self.network_resume_pending = false;
+            self.pump(self.host.clock.get(), 0.0, false)?;
+        }
+        if self.network_blocked() { return Ok(()); }
+        if let Some(target) = self.advance_target {
+            let started = Instant::now();
+            let budget = Duration::from_millis(self.scenario.cpu_ms.clamp(1000, 10000));
+            while self.host.clock.get() < target && !self.network_blocked() {
+                if started.elapsed() > budget { return Err(failure("BudgetExceeded: advance request wall-time budget")); }
+                let now = (self.host.clock.get() + self.scenario.step).min(target);
+                let dt = now - self.host.clock.get();
+                self.pump(now,dt,true)?;
+            }
+            if !self.network_blocked() { self.advance_target = None; }
+        }
+        Ok(())
     }
 
     fn environment(&mut self, index: usize, context: &str) -> Result<CommandEnvironment> {
@@ -157,31 +347,29 @@ impl Session {
             self.environments.insert(key, environment.clone());
             return Ok(environment);
         }
-        let model = realm.model()?;
-        let get: Function = model.get("get")?;
         let config = &realm.config;
         let parent = if config.side == "server" { "ServerScriptService".to_owned() }
             else if let Some(actor) = &config.actor_id { actor.clone() }
             else if let Some(player) = &config.client_id {
-                let player: AnyUserData = get.call(player.as_str())?;
+                let player = realm.get_instance(player)?.ok_or_else(||failure("Client player is unavailable"))?;
                 let node = player.borrow::<crate::instance::Instance>()?.0.clone();
                 let existing = node.borrow().children.iter().find(|child| child.borrow().class == "PlayerScripts").map(|child|child.borrow().id.clone());
                 if let Some(id) = existing { id } else {
                 let player = node.borrow().id.clone();
                 let id = format!("__console.PlayerScripts.{player}");
-                if get.call::<Option<AnyUserData>>(id.clone())?.is_none() {
+                if realm.get_instance(&id)?.is_none() {
                     realm.seed(&[json!({"id":id,"class":"PlayerScripts","name":"PlayerScripts","parent":player})])?;
                 }
                 id
                 }
             } else { return Err(failure("Client realm has no player")); };
-        if get.call::<Option<AnyUserData>>(parent.clone())?.is_none() { return Err(failure("Command Script parent is unavailable")); }
+        if realm.get_instance(&parent)?.is_none() { return Err(failure("Command Script parent is unavailable")); }
         let mut id = format!("__console.{}.{}", config.id, context);
-        while get.call::<Option<AnyUserData>>(id.clone())?.is_some() { id.push('_'); }
+        while realm.get_instance(&id)?.is_some() { id.push('_'); }
         let name = format!("Console_{}_{}", config.id, context);
         realm.seed(&[json!({"id":id,"class":if config.side=="server" {"Script"} else {"LocalScript"},"name":name,"parent":parent})])?;
-        let script: AnyUserData = get.call(id)?;
-        let table = model.get::<Function>("getEnvironment")?.call(script)?;
+        let script=realm.get_instance(&id)?.ok_or_else(||failure("Command Script is unavailable"))?;
+        let table = realm.script_environment(script)?;
         let environment = CommandEnvironment { table, name };
         self.environments.insert(key, environment.clone());
         Ok(environment)
@@ -192,6 +380,7 @@ impl Session {
     }
 
     pub fn execute_input(&mut self, realm: &str, context: &str, source: &str, format: &str) -> Result<Json> {
+        if self.network_blocked() { return Err(failure("VMs are paused for network approval")); }
         if !matches!(format, "source" | "bytecode-base64") { return Err(failure("Unknown input format")); }
         let index = self.realms.iter().position(|candidate| candidate.config.id == realm).ok_or_else(|| failure("Unknown realm"))?;
         let config = &self.realms[index].config;
@@ -205,6 +394,7 @@ impl Session {
             } else { return Err(failure("Pending command limit exceeded")); }
         }
         self.pump(self.host.clock.get(), 0.0, false)?;
+        if self.network_blocked() { return Err(failure("VMs are paused for network approval")); }
         let environment = self.environment(index, context)?;
         environment.table.set_safeenv(false);
         self.next_command += 1;
@@ -289,8 +479,8 @@ impl Session {
             output.log_values(&realm_id, &command_context, "yield", &values);
             Ok(())
         });
-        if let Err(error) = scheduler::spawn_observed(&runtime.lua, Value::Thread(thread.clone()), MultiValue::new(), Some("serial"),
-            Some(if context == "executor" { "executor" } else { "game" }), completion, Some(observer)) {
+        if let Err(error) = scheduler::with_network_root(&runtime.lua,||scheduler::spawn_observed(&runtime.lua, Value::Thread(thread.clone()), MultiValue::new(), Some("serial"),
+            Some(if context == "executor" { "executor" } else { "game" }), completion, Some(observer))) {
             runtime.arm(self.scenario.cpu_ms);
             let _ = scheduler::cancel(&runtime.lua, thread);
             command.borrow_mut()["status"] = json!("error");
@@ -303,31 +493,72 @@ impl Session {
     }
 
     fn pump(&mut self, now: f64, dt: f64, timed: bool) -> Result<()> {
-        self.host.clock.set(now);
-        sync_realms(&self.realms, &self.scenario, &mut self.server_nodes, &mut self.known)?;
-        route(&self.host, &self.realms, &self.scenario)?;
-        for realm in &self.realms {
+        if self.network_blocked() { return Ok(()); }
+        if self.interrupted_pump.is_some() { return Err(failure("A paused scheduler frame must be resumed first")); }
+        let started = Instant::now();
+        let result = (|| {
+            self.host.clock.set(now);
+            sync_realms(&self.realms, &self.scenario, &mut self.server_nodes, &mut self.known)?;
+            if self.network_blocked() { return Ok(()); }
+            route(&self.host, &self.realms, &self.scenario)?;
+            if self.network_blocked() { return Ok(()); }
+            self.finish_pump(PumpContinuation { now, dt, timed, index: 0, resume_step: false })
+        })();
+        // An HTTP approval can interrupt a frame; don't report a partial pump
+        // or include the user's decision time in the measured host duration.
+        if timed && dt >= 0.000_001 && result.is_ok() && !self.network_blocked() && self.interrupted_pump.is_none() {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            self.last_step_ms = Some(elapsed_ms);
+            self.last_virtual_step_ms = Some(dt * 1000.0);
+            self.total_step_ms += elapsed_ms;
+            self.measured_steps = self.measured_steps.saturating_add(1);
+        }
+        result
+    }
+
+    fn finish_pump(&mut self, mut frame: PumpContinuation) -> Result<()> {
+        while frame.index < self.realms.len() {
+            let realm = &self.realms[frame.index];
             realm.arm(self.scenario.cpu_ms);
-            let stepped = if timed { realm.step(now) } else { scheduler::flush(&realm.lua, now).map(|_| ()) };
+            let stepped = if frame.resume_step { scheduler::resume_step(&realm.lua).map(|_| ()) }
+                else if frame.timed { realm.step(frame.now) } else { scheduler::flush(&realm.lua, frame.now).map(|_| ()) };
             if let Err(error) = stepped { realm.wall_time_exceeded.set(false); self.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); return Err(error); }
             if realm.wall_time_exceeded.replace(false) {
                 let error = failure("BudgetExceeded: Luau wall-time budget");
                 self.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); return Err(error);
             }
-            if dt > 0.0 {
+            if self.network_blocked() { frame.resume_step = true; self.interrupted_pump = Some(frame); return Ok(()); }
+            frame.resume_step = false;
+            if frame.dt > 0.0 {
                 realm.arm(self.scenario.cpu_ms);
-                if let Err(error) = realm.frame(dt) { realm.wall_time_exceeded.set(false); self.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); return Err(error); }
+                if let Err(error) = realm.frame(frame.dt) { realm.wall_time_exceeded.set(false); self.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); return Err(error); }
                 if realm.wall_time_exceeded.replace(false) {
                     let error = failure("BudgetExceeded: Luau wall-time budget");
                     self.output.log(&realm.config.id, &realm.config.side, "error", &error.to_string()); return Err(error);
                 }
+                if self.network_blocked() { frame.index += 1; self.interrupted_pump = Some(frame); return Ok(()); }
             }
+            frame.index += 1;
         }
         sync_realms(&self.realms, &self.scenario, &mut self.server_nodes, &mut self.known)?;
+        if self.network_blocked() { return Ok(()); }
         route(&self.host, &self.realms, &self.scenario)
     }
 
+    pub(crate) fn keyboard_input(&mut self, realm: &str, key: &str, down: bool) -> Result<()> {
+        if self.network_blocked() { return Err(failure("VMs are paused for network approval")); }
+        let config=&self.realms.iter().find(|candidate|candidate.config.id==realm && candidate.config.side=="client")
+            .ok_or_else(||failure("Select a client VM for keyboard input"))?.config;
+        let client=config.client_id.clone();
+        for candidate in self.realms.iter().filter(|candidate|candidate.config.side=="client" && candidate.config.client_id==client) {
+            candidate.arm(self.scenario.cpu_ms);
+            model::keyboard_input(&candidate.lua,key,down)?;
+        }
+        self.pump(self.host.clock.get(),0.0,false)
+    }
+
     pub fn advance(&mut self, seconds: f64) -> Result<Json> {
+        if self.network_blocked() { return self.snapshot(); }
         if !seconds.is_finite() || !(0.0..=MAX_ADVANCE).contains(&seconds) || self.host.clock.get() + seconds > MAX_TIME {
             return Err(failure("Advance requires 0..60 seconds and session time at most 3600 seconds"));
         }
@@ -340,6 +571,7 @@ impl Session {
             let now = (self.host.clock.get() + self.scenario.step).min(target);
             let dt = now - self.host.clock.get();
             self.pump(now, dt, true)?;
+            if self.network_blocked() { self.advance_target = Some(target); break; }
         }
         self.snapshot()
     }
@@ -358,6 +590,9 @@ impl Session {
             "time":self.host.clock.get(),"realms":realms,"logs":*self.host.logs.borrow(),
             "viewers":self.realms.iter().flat_map(|realm|crate::inspector::viewers(&realm.lua,&realm.config.id)).collect::<Vec<_>>(),
             "pendingMessages":self.host.messages.borrow().len(),"pendingMessageBytes":self.host.pending_bytes.get(),
+            "traceCaughtErrors":self.trace_enabled,
+            "metrics":{"lastStepMs":self.last_step_ms,"meanStepMs":if self.measured_steps>0 {Some(self.total_step_ms/self.measured_steps as f64)} else {None},
+                "stepCount":self.measured_steps,"virtualStepMs":self.last_virtual_step_ms,"configuredStepMs":self.scenario.step*1000.0,"vmCount":self.realms.len(),"pendingMessages":self.host.messages.borrow().len()},
             "commands":self.commands.iter().map(|command|command.borrow().clone()).collect::<Vec<_>>(),
             "limits":{"sourceBytes":MAX_SOURCE,"advanceSeconds":MAX_ADVANCE,"sessionSeconds":MAX_TIME,"memoryMb":self.scenario.memory_mb,"cpuMs":self.scenario.cpu_ms}}))
     }
@@ -373,7 +608,22 @@ impl Session {
         Ok(json!({"items":model::completions(&realm.lua,path)?}))
     }
 
+    pub(crate) fn workspace_files(&self, realm: &str) -> Result<Json> {
+        let realm=self.realms.iter().find(|candidate|candidate.config.id==realm && candidate.config.side=="client" && candidate.config.executor)
+            .ok_or_else(||failure("Select a client VM with an executor"))?;
+        let files=crate::executor::virtual_files(&realm.lua)?.into_iter()
+            .map(|(name,size)|json!({"name":name,"size":size})).collect::<Vec<_>>();
+        Ok(json!({"files":files}))
+    }
+    pub(crate) fn workspace_file(&self, realm: &str, name: &str) -> Result<Json> {
+        let realm=self.realms.iter().find(|candidate|candidate.config.id==realm && candidate.config.side=="client" && candidate.config.executor)
+            .ok_or_else(||failure("Select a client VM with an executor"))?;
+        let bytes=crate::executor::virtual_file(&realm.lua,name)?;
+        Ok(json!({"name":name,"base64":base64::encode(&bytes)}))
+    }
+
     pub fn clear_output(&mut self) { self.host.logs.borrow_mut().clear(); }
+    pub(crate) fn last_output(&self) -> Json {json!(*self.host.logs.borrow())}
 
     pub fn inspect(&self, body: &Json) -> Result<Json> {
         let text=|key:&str|->Result<&str>{body.get(key).and_then(Json::as_str).filter(|s|s.len()<=512).ok_or_else(||failure(format!("Invalid inspector {key}")))};
@@ -388,8 +638,25 @@ impl Session {
         match text("kind")? {
             "table"=>crate::inspector::table_page(&realm.lua,text("handle")?,offset),
             "function"=>crate::inspector::function_page(&realm.lua,text("handle")?,text("section")?,offset),
-            "tree"=>model::inspect_tree(&realm.lua,match body.get("parent"){None|Some(Json::Null)=>None,_=>Some(text("parent")?)},offset),
+            "tree"=>{
+                let mut page=model::inspect_tree(&realm.lua,match body.get("parent"){None|Some(Json::Null)=>None,_=>Some(text("parent")?)},offset)?;
+                page["inspectorId"]=json!(crate::inspector::identity(&realm.lua)?);Ok(page)
+            },
+            "gameRoot"=>{
+                let mut page=model::inspect_game_root(&realm.lua)?;
+                page["inspectorId"]=json!(crate::inspector::identity(&realm.lua)?);Ok(page)
+            },
+            "nilInstances"=>{
+                let mut page=model::inspect_nil_instances(&realm.lua,offset)?;
+                page["inspectorId"]=json!(crate::inspector::identity(&realm.lua)?);Ok(page)
+            },
             "instance"=>model::inspect_node(&realm.lua,text("id")?),
+            "source"=>{
+                let identity=crate::inspector::identity(&realm.lua)?;
+                if text("inspectorId")?!=identity {return Err(failure("Inspector belongs to another VM or an expired session"))}
+                let mut result=model::inspect_source(&realm.lua,text("id")?,text("objectId")?)?;
+                result["inspectorId"]=json!(identity);Ok(result)
+            },
             "gc"|"closeGc" if context!="executor"=>Err(failure("GC Viewer requires Executor context")),
             "gc"=>crate::inspector::gc_page(&realm.lua,text("viewer")?,body.get("refresh").and_then(Json::as_bool).unwrap_or(false),offset,
                 if body.get("query").is_some(){text("query")?}else{""},if body.get("valueType").is_some(){text("valueType")?}else{""}),
@@ -404,6 +671,12 @@ impl Session {
         self.cpu_budget.set(ms);
         for realm in &self.realms { realm.arm(ms); }
         Ok(())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(network) = &self.host.network { network.cancel_all(); }
     }
 }
 

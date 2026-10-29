@@ -1,30 +1,38 @@
 use mlua::{Lua, Result, ffi};
 use serde::Serialize;
 use serde_json::{Value as Json, json};
-use std::{cell::RefCell, collections::{HashMap, VecDeque}, panic::{AssertUnwindSafe, catch_unwind}, rc::{Rc, Weak}};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, panic::{AssertUnwindSafe, catch_unwind}, rc::{Rc, Weak}};
 
 const MAX_ERRORS: usize = 512;
 const MAX_MESSAGE_BYTES: usize = 4096;
 const MAX_FRAMES: i32 = 6;
 type Hook = unsafe extern "C-unwind" fn(*mut ffi::lua_State);
+unsafe extern "C" {
+    fn luau_emulator_set_protected_observer(observer: Option<unsafe extern "C" fn(*mut ffi::lua_State)>);
+}
 
+type ErrorSink = Rc<dyn Fn(&Entry)>;
 struct Trace {
     previous: Option<Hook>,
+    enabled: Cell<bool>,
     records: RefCell<Records>,
+    sink: RefCell<Option<ErrorSink>>,
+    origin: Option<Rc<dyn Fn(usize) -> Option<String>>>,
 }
 #[derive(Default)]
 struct Records { total: u64, entries: VecDeque<Entry> }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Entry {
-    sequence: u64,
-    value_type: String,
-    message: Option<String>,
-    message_truncated: bool,
-    frames: Vec<Frame>,
+pub(crate) struct Entry {
+    pub(crate) sequence: u64,
+    pub(crate) value_type: String,
+    pub(crate) message: Option<String>,
+    pub(crate) message_truncated: bool,
+    pub(crate) frames: Vec<Frame>,
+    pub(crate) origin: Option<String>,
 }
-#[derive(Serialize)]
-struct Frame { source: String, name: String, line: i32 }
+#[derive(Clone, Serialize)]
+pub(crate) struct Frame { pub(crate) source: String, pub(crate) name: String, pub(crate) line: i32 }
 struct Handle(Rc<Trace>);
 
 thread_local! {
@@ -43,6 +51,7 @@ unsafe fn bounded_c_string(pointer: *const std::ffi::c_char, limit: usize) -> St
 // Only inspection APIs are used here. In particular, no Lua allocation, coercion,
 // function call, stack push/pop, or metamethod can be caused by this observer.
 unsafe fn capture(state: *mut ffi::lua_State, trace: &Trace) {
+    if !trace.enabled.get() { return; }
     let Ok(mut records) = trace.records.try_borrow_mut() else { return; };
     unsafe {
         let kind = ffi::lua_type(state, -1);
@@ -66,7 +75,13 @@ unsafe fn capture(state: *mut ffi::lua_State, trace: &Trace) {
         records.total = records.total.saturating_add(1);
         let sequence = records.total;
         if records.entries.len() == MAX_ERRORS { records.entries.pop_front(); }
-        records.entries.push_back(Entry { sequence, value_type, message, message_truncated, frames });
+        let origin = trace.origin.as_ref().and_then(|resolve| resolve(state as usize));
+        let entry = Entry { sequence, value_type, message, message_truncated, frames, origin };
+        records.entries.push_back(entry.clone());
+        drop(records);
+        if let Ok(sink) = trace.sink.try_borrow() {
+            if let Some(sink) = sink.as_ref() { sink(&entry); }
+        }
     }
 }
 
@@ -81,14 +96,28 @@ unsafe extern "C-unwind" fn protected_error(state: *mut ffi::lua_State) {
     }
 }
 
+// Separate from Luau's debugger callback: invoking a previous debugger hook at
+// non-yieldable boundaries would violate its contract.
+unsafe extern "C" fn protected_error_nonyieldable(state: *mut ffi::lua_State) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let key = unsafe { ffi::lua_callbacks(state) } as usize;
+        let trace = TRACES.try_with(|traces| traces.try_borrow().ok().and_then(|traces| traces.get(&key).and_then(Weak::upgrade))).ok().flatten();
+        if let Some(trace) = trace { unsafe { capture(state, &trace) }; }
+    }));
+}
+
 pub fn install(lua: &Lua) -> Result<()> {
     if lua.app_data_ref::<Handle>().is_some() { return Ok(()); }
+    let origin = crate::scheduler::origin_resolver(lua);
     let trace = unsafe {
         lua.exec_raw_lua(|raw| {
             let callbacks = ffi::lua_callbacks(raw.state());
             let trace = Rc::new(Trace {
                 previous: (*callbacks).debugprotectederror,
+                enabled: Cell::new(true),
                 records: RefCell::new(Records { total: 0, entries: VecDeque::with_capacity(MAX_ERRORS) }),
+                sink: RefCell::new(None),
+                origin,
             });
             TRACES.with(|traces| {
                 let mut traces = traces.borrow_mut();
@@ -100,7 +129,33 @@ pub fn install(lua: &Lua) -> Result<()> {
         })
     };
     lua.set_app_data(Handle(trace));
+    unsafe { luau_emulator_set_protected_observer(Some(protected_error_nonyieldable)); }
     Ok(())
+}
+
+// The sink runs entirely on the host and must not call into Luau or coerce error objects.
+pub(crate) fn configure(lua: &Lua, enabled: bool, sink: Option<ErrorSink>) -> Result<()> {
+    if enabled { install(lua)?; }
+    if let Some(handle) = lua.app_data_ref::<Handle>() {
+        *handle.0.sink.borrow_mut() = sink;
+        handle.0.enabled.set(enabled);
+    }
+    Ok(())
+}
+
+// Inspecting debug info does not mutate the Lua stack or run script code.
+pub(crate) fn caller(lua: &Lua) -> Option<(String, i32)> {
+    unsafe {
+        for level in 1..32 {
+            let mut debug: ffi::lua_Debug = std::mem::zeroed();
+            if ffi::lua_getinfo(lua.state(), level, c"sl".as_ptr(), &mut debug) == 0 { break; }
+            let source = bounded_c_string(debug.source, 512);
+            if debug.currentline > 0 && !source.is_empty() && source != "[C]" {
+                return Some((source, debug.currentline));
+            }
+        }
+    }
+    None
 }
 
 pub fn snapshot(lua: &Lua) -> Result<Json> {
@@ -108,7 +163,7 @@ pub fn snapshot(lua: &Lua) -> Result<Json> {
         return Ok(json!({"enabled": false, "total": 0, "dropped": 0, "errors": []}));
     };
     let records = handle.0.records.borrow();
-    Ok(json!({"enabled": true, "total": records.total,
+    Ok(json!({"enabled": handle.0.enabled.get(), "total": records.total,
         "dropped": records.total.saturating_sub(records.entries.len() as u64), "errors": records.entries}))
 }
 

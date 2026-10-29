@@ -2,6 +2,7 @@
 // bytecode to Luau. This is not a sandbox for hostile bytecode (nor is luau_load).
 #include "Luau/Bytecode.h"
 #include "Luau/BytecodeUtils.h"
+#include "lbuiltins.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -37,11 +38,11 @@ struct Proto {
 };
 void instructions(const Proto& p, const std::vector<Proto>& protos) {
     const auto& code = p.code;
-    std::vector<bool> starts(code.size());
+    std::vector<bool> starts(code.size()), closureCaptures(code.size());
     for (size_t pc = 0; pc < code.size();) {
         auto op = LuauOpcode(LUAU_INSN_OP(code[pc]));
         require(op < LOP__COUNT && op != LOP_NATIVECALL && op != LOP_BREAK, "Invalid or runtime-only opcode");
-        starts[pc] = true; pc += Luau::getOpLength(op); require(pc <= code.size(), "Missing instruction AUX word");
+        starts[pc] = op != LOP_CAPTURE; pc += Luau::getOpLength(op); require(pc <= code.size(), "Missing instruction AUX word");
     }
     auto reg = [&](unsigned r) { require(r < p.stack, "Invalid register index"); };
     auto constant = [&](unsigned k, int kind = -1) {
@@ -64,11 +65,17 @@ void instructions(const Proto& p, const std::vector<Proto>& protos) {
         case LOP_NOP: case LOP_JUMP: case LOP_JUMPBACK: case LOP_JUMPX: case LOP_COVERAGE: break;
         case LOP_PREPVARARGS: require(p.variadic && a == p.params, "Invalid vararg prologue"); break;
         case LOP_CAPTURE:
+            require(closureCaptures[pc], "Capture outside closure");
             require(a <= LCT_UPVAL, "Invalid capture kind");
             if (a == LCT_UPVAL) require(b < p.upvalues, "Invalid capture upvalue"); else reg(b); break;
         case LOP_FASTCALL: case LOP_FASTCALL1: case LOP_FASTCALL2: case LOP_FASTCALL2K: case LOP_FASTCALL3: case LOP_FASTPCALL:
-            jump(c); if (op != LOP_FASTCALL && op != LOP_FASTPCALL) reg(b);
-            if (op == LOP_FASTCALL2 || op == LOP_FASTCALL3) reg(aux & 255);
+            if (op == LOP_FASTPCALL) require(a < 2, "Invalid protected fastcall id");
+            else require(luauF_table[a] != nullptr, "Invalid fastcall id");
+            jump(c); require(LUAU_INSN_OP(code[pc + 1 + c]) == LOP_CALL, "Fastcall must target CALL");
+            require(pc + 2 + c < code.size(), "Missing instruction after fastcall");
+            if (op != LOP_FASTCALL && op != LOP_FASTPCALL) reg(b);
+            if (op == LOP_FASTCALL2) reg(aux);
+            if (op == LOP_FASTCALL3) reg(aux & 255);
             if (op == LOP_FASTCALL3) reg((aux >> 8) & 255);
             if (op == LOP_FASTCALL2K) constant(aux); break;
         default: reg(a); break;
@@ -108,7 +115,11 @@ void instructions(const Proto& p, const std::vector<Proto>& protos) {
             else { constant(d, LBC_CONSTANT_CLOSURE); child = p.closures[d]; }
             unsigned captures = protos[child].upvalues;
             require(captures < code.size() - pc, "Missing closure captures");
-            for (unsigned i = 1; i <= captures; i++) require(LUAU_INSN_OP(code[pc + i]) == LOP_CAPTURE, "Missing closure capture");
+            for (unsigned i = 1; i <= captures; i++) {
+                require(LUAU_INSN_OP(code[pc + i]) == LOP_CAPTURE, "Missing closure capture");
+                if (op == LOP_DUPCLOSURE) require(LUAU_INSN_A(code[pc + i]) != LCT_REF, "Invalid duplicated closure capture");
+                closureCaptures[pc + i] = true;
+            }
             break;
         }
         case LOP_NEWCLASS: case LOP_NEWCLASSMEMBER: throw std::runtime_error("Class bytecode is not supported by this importer");

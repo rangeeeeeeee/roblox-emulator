@@ -42,6 +42,8 @@ fn state(lua: &Lua) -> Result<Rc<Inspector>> {
     lua.app_data_ref::<Rc<Inspector>>().map(|s| s.clone()).ok_or_else(|| Error::runtime("Inspector requires an interactive session"))
 }
 
+pub(crate) fn identity(lua: &Lua) -> Result<String> { Ok(state(lua)?.prefix.clone()) }
+
 pub(crate) fn install(lua: &Lua) -> Result<()> {
     let values = lua.create_table()?;
     let mt = lua.create_table()?;

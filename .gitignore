@@ -13,6 +13,8 @@
 !/ui/build.mjs
 !/ui/package.json
 !/ui/package-lock.json
+!/ui/studio-icons/
+!/ui/studio-icons/*.png
 
 !/src/
 /src/*
@@ -33,6 +35,7 @@
 /vendor/*
 !/vendor/mlua-0.12.2/
 !/vendor/mlua-sys-0.13.0/
+!/vendor/luau0-src-0.22.0/
 /vendor/*/*
 !/vendor/*/Cargo.toml
 !/vendor/*/LICENSE
@@ -53,6 +56,10 @@
 
 !/vendor/mlua-0.12.2/PATCH.md
 !/vendor/mlua-sys-0.13.0/PATCH.md
+
+!/vendor/luau0-src-0.22.0/luau/
+!/vendor/luau0-src-0.22.0/luau/**
+!/vendor/luau0-src-0.22.0/PATCH.md
 
 !/vendor/luau-lint-0.740/
 /vendor/luau-lint-0.740/*

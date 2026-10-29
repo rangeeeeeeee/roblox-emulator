@@ -9,6 +9,8 @@ use std::{cell::{Cell, RefCell}, collections::{BTreeMap, BTreeSet, HashMap, Hash
 struct Model {
     nodes: HashMap<String, Weak<RefCell<instance::Node>>>,
     changes: BTreeMap<String, Change>,
+    // Explorer priority must not keep detached Instances alive in the VM.
+    recent_nil: VecDeque<Weak<RefCell<instance::Node>>>,
     sequence: u64,
     requests: u64,
     applying: bool,
@@ -19,14 +21,21 @@ struct Model {
     studio: bool,
     pending: HashMap<String, Thread>,
     modules: HashMap<String, Module>,
-    logs: VecDeque<(String, Vec<u8>, f64)>,
-    log_bytes: usize,
+    logs: Rc<RefCell<LogHistory>>,
     children_waiting: Vec<ChildWait>,
     invokes_waiting: Vec<(String, Thread, MultiValue)>,
     unsupported: BTreeMap<String, u64>,
     assets: HashMap<String, AssetFetch>,
+    custom_assets: HashMap<String, Vec<u8>>,
+    custom_asset_bytes: usize,
     pending_assets: usize,
+    fps_cap: f64,
+    render_elapsed: f64,
+    render_phase: f64,
+    render_bindings: BTreeMap<u64,RenderBinding>,
+    render_binding_sequence: u64,
     actions: HashMap<String, BoundAction>,
+    pressed_keys: BTreeMap<String, Link>,
     action_order: u64,
     paths: HashMap<String, (Weak<RefCell<instance::Node>>, Vec<crate::types::Path2DControlPoint>)>,
     tweens: HashMap<String, Tween>,
@@ -39,14 +48,53 @@ struct Tween {
     elapsed: f64, started: f64, playback: &'static str, revision: u64,
 }
 struct BoundAction { _callback:Function, inputs:Vec<Value>, priority:i64, order:u64 }
-#[derive(Clone, Copy, PartialEq)]
-enum AssetFetch { Loading, Failure }
 #[derive(Clone)]
-struct AssetResource { key: String, content: String }
+struct RenderBinding { name:String, priority:i32, callback:Function, environment:Table, origin:String }
+#[derive(Clone, Copy, PartialEq)]
+enum AssetFetch { Loading, Failure, Success }
+#[derive(Clone)]
+struct AssetResource { key: String, content: String, accept_wav: bool }
 struct Change { node: Link, keys: Option<BTreeMap<&'static str, BTreeSet<String>>> }
 struct ChildWait { parent: String, name: Vec<u8>, thread: Thread, deadline: Option<f64> }
 enum Module { Loading { owner: Thread, waiters: Vec<Thread> }, Ready(Value), Failed(Value) }
 type State = Rc<RefCell<Model>>;
+struct LogRecord { level: String, message: Vec<u8>, time: f64 }
+#[derive(Default)]
+struct LogHistory { entries: VecDeque<Rc<LogRecord>>, bytes: usize }
+#[derive(Default)]
+struct LogGroup { history: Rc<RefCell<LogHistory>>, members: usize }
+pub(crate) struct LogNotification { pub(crate) from: String, record: Rc<LogRecord>, pub(crate) next: usize }
+#[derive(Default)]
+struct LogRegistryState { groups: HashMap<(String,String),LogGroup>, pending: VecDeque<LogNotification>, pending_bytes: usize }
+#[derive(Clone,Default)]
+pub(crate) struct LogRegistry(Rc<RefCell<LogRegistryState>>);
+impl LogRegistry {
+    pub(crate) fn attach(&self,lua:&Lua,side:&str,client:&str) {
+        self.0.borrow_mut().groups.entry((side.into(),client.into())).or_default().members+=1;
+        lua.set_app_data(self.clone());
+    }
+    fn history(&self,side:&str,client:&str)->Rc<RefCell<LogHistory>> {
+        self.0.borrow_mut().groups.entry((side.into(),client.into())).or_default().history.clone()
+    }
+    fn enqueue(&self,side:&str,client:&str,from:&str,record:Rc<LogRecord>)->Result<()> {
+        let mut state=self.0.borrow_mut();
+        if state.groups.get(&(side.into(),client.into())).is_none_or(|group|group.members<2){return Ok(())}
+        if state.pending.len()>=20000 || state.pending_bytes.saturating_add(record.message.len())>32*1024*1024 {
+            return Err(Error::runtime("BudgetExceeded: pending LogService events"));
+        }
+        state.pending_bytes+=record.message.len();
+        state.pending.push_back(LogNotification{from:from.into(),record,next:0});
+        Ok(())
+    }
+    pub(crate) fn pending(&self)->usize {self.0.borrow().pending.len()}
+    pub(crate) fn pop(&self)->Option<LogNotification> {
+        let mut state=self.0.borrow_mut();let item=state.pending.pop_front()?;
+        state.pending_bytes-=item.record.message.len();Some(item)
+    }
+    pub(crate) fn restore(&self,item:LogNotification) {
+        let mut state=self.0.borrow_mut();state.pending_bytes+=item.record.message.len();state.pending.push_front(item);
+    }
+}
 #[derive(Clone)]
 pub(crate) struct MessageSink(pub Rc<dyn Fn(String,Json)->Result<()>>);
 // Host ownership contains no Lua callback: execution always stays in the registering VM.
@@ -84,6 +132,7 @@ fn register_bindable(lua:&Lua,node:&Link,enabled:bool)->Result<()>{
 }
 const ENVS: &str = "emulator.native.environments";
 const ENV_OWNERS: &str = "emulator.native.environment.owners";
+const SCRIPT_THREADS: &str = "emulator.native.script.threads";
 const BASE_ENV: &str = "emulator.native.base.environment";
 const MAX_NODES: usize = 100_000;
 const MAX_SOURCE: usize = 8 * 1024 * 1024;
@@ -93,6 +142,14 @@ const MAX_ASSETS: usize = 4096;
 fn state(lua: &Lua) -> Option<State> { lua.app_data_ref::<State>().map(|s| s.clone()) }
 fn required(lua: &Lua) -> Result<State> { state(lua).ok_or_else(|| Error::runtime("UnsupportedApi: model runtime not installed")) }
 fn lookup(lua: &Lua, id: &str) -> Option<Link> { state(lua)?.borrow().nodes.get(id)?.upgrade() }
+pub(crate) fn get_instance(lua:&Lua,id:&str)->Result<Option<AnyUserData>> {
+    lookup(lua,id).map(|node|instance::wrapper(lua,node)).transpose()
+}
+pub(crate) fn instances(lua:&Lua,nil_only:bool)->Result<Table> {
+    let nodes=required(lua)?.borrow().nodes.values().filter_map(Weak::upgrade)
+        .filter(|node|!node.borrow().destroyed && (!nil_only || node.borrow().parent.upgrade().is_none())).collect();
+    instance::instance_list(lua,nodes)
+}
 fn now(lua: &Lua) -> f64 { crate::internal::<Table>(lua,"__rt").and_then(|t| t.get("now")).unwrap_or(0.0) }
 fn reserve_node(state: &mut Model) -> Result<()> {
     if state.nodes.len() >= MAX_NODES { state.nodes.retain(|_, node| node.strong_count() > 0); }
@@ -111,11 +168,176 @@ fn reserve_waiter(state: &mut Model) -> Result<()> {
 }
 pub(crate) fn unsupported(lua: &Lua, api: &str) -> Error {
     if let Some(state) = state(lua) { *state.borrow_mut().unsupported.entry(api.into()).or_default() += 1; }
-    Error::runtime(format!("UnsupportedApi: {api}"))
+    Error::lua_string(format!("UnsupportedApi: {api}"))
 }
 pub fn unsupported_calls(lua: &Lua) -> Result<BTreeMap<String, u64>> { Ok(required(lua)?.borrow().unsupported.clone()) }
+
+pub(crate) fn get_callback(node:&Link, property:&str)->Result<Value>{
+    let node=node.borrow();
+    let valid=match property {
+        "OnInvoke"=>instance::is_a(&node,"BindableFunction"),
+        "OnServerInvoke"|"OnClientInvoke"=>instance::is_a(&node,"RemoteFunction"),
+        _=>false,
+    };
+    if !valid{return Err(Error::lua_string(format!("{} is not a callback of {}",property,node.class)))}
+    Ok(node.properties.get(property).cloned().unwrap_or(Value::Nil))
+}
+
+pub(crate) fn script_source(node:&Link)->Result<Option<String>>{
+    let node=node.borrow();
+    if !instance::is_a(&node,"LuaSourceContainer"){return Err(Error::lua_string("LuaSourceContainer expected"))}
+    if !node.source_available{return Ok(None)}
+    Ok(Some(node.source.clone()))
+}
+
+pub(crate) fn scriptability(lua:&Lua,node:&Link,key:&str)->Result<Option<bool>>{
+    let n=node.borrow();
+    if let Some(value)=n.scriptable.get(key){return Ok(Some(*value))}
+    if instance::hidden_by_default(&n,key){return Ok(Some(false))}
+    if matches!(key,"Name"|"ClassName"|"Parent"|"Archivable") {return Ok(Some(true))}
+    drop(n);
+    Ok(default(lua,node,key)?.map(|_|true))
+}
+pub(crate) fn set_scriptability(lua:&Lua,node:&Link,key:&str,enabled:bool)->Result<Option<bool>>{
+    let previous=scriptability(lua,node,key)?;
+    if previous.is_some(){node.borrow_mut().scriptable.insert(key.into(),enabled);}
+    Ok(previous)
+}
+pub(crate) fn get_hidden_property(lua:&Lua,node:&Link,key:&str)->Result<(Value,bool)>{
+    let scriptable=scriptability(lua,node,key)?.ok_or_else(||instance::missing_member(&node.borrow(),key))?;
+    if key=="size_xml"&&node.borrow().class=="Fire" {
+        return Ok((read_property(lua,node,"Size")?.unwrap(),!scriptable))
+    }
+    let n=node.borrow();
+    let value=match key {
+        "Name"=>Some(Value::String(lua.create_string(instance::name_bytes(&n))?)),
+        "ClassName"=>Some(Value::String(lua.create_string(&n.class)?)),
+        "Archivable"=>Some(Value::Boolean(n.archivable)),
+        "Parent"=>Some(n.parent.upgrade().map(|parent|value(lua,parent)).transpose()?.unwrap_or(Value::Nil)),
+        _=>None,
+    };
+    drop(n);
+    Ok((match value {Some(value)=>value,None=>read_property(lua,node,key)?.ok_or_else(||instance::missing_member(&node.borrow(),key))?},!scriptable))
+}
+pub(crate) fn properties(lua:&Lua,node:&Link,hidden_only:bool)->Result<Table>{
+    let mut names=BTreeSet::new();
+    {
+        let node=node.borrow();
+        for (classes,properties,_) in COMPLETION_PROPERTIES {
+            if completion_class(&node,classes) {names.extend(properties.split_whitespace().map(str::to_owned));}
+        }
+        names.extend(node.properties.keys().cloned());
+        names.extend(node.scriptable.keys().cloned());
+        if node.class=="Fire" {names.insert("size_xml".into());}
+        if node.class=="Player" {names.extend(["SimulationRadius".into(),"MaximumSimulationRadius".into()]);}
+    }
+    let result=lua.create_table()?;
+    for name in names {
+        if scriptability(lua,node,&name)?.is_some_and(|scriptable|scriptable!=hidden_only) {
+            let (value,_)=get_hidden_property(lua,node,&name)?;
+            if !value.is_nil() {result.raw_set(name,value)?;}
+        }
+    }
+    Ok(result)
+}
+pub(crate) fn set_hidden_property(lua:&Lua,node:&Link,key:&str,value:&Value)->Result<bool>{
+    let scriptable=scriptability(lua,node,key)?.ok_or_else(||instance::missing_member(&node.borrow(),key))?;
+    let key=if key=="size_xml"&&node.borrow().class=="Fire"{"Size"}else{key};
+    if key=="Parent"{
+        let next=match value {Value::Nil=>None,Value::UserData(item)=>Some(item.borrow::<Instance>().map_err(|_|Error::lua_string("Parent must be an Instance or nil"))?.0.clone()),_=>return Err(Error::lua_string("Parent must be an Instance or nil"))};
+        parent(lua,node,next)?;return Ok(!scriptable)
+    }
+    if !write_property(lua,node,key,value)?{return Err(Error::lua_string(format!("Unable to assign property {key}")))}
+    Ok(!scriptable)
+}
+pub(crate) fn fire_click_detector(lua:&Lua,node:&Link,event:&str)->Result<()>{
+    if !instance::is_a(&node.borrow(),"ClickDetector"){return Err(Error::lua_string("ClickDetector expected"))}
+    if !matches!(event,"MouseClick"|"RightMouseClick"|"MouseHoverEnter"|"MouseHoverLeave"){return Err(Error::lua_string("invalid ClickDetector event"))}
+    let state=required(lua)?;
+    let player={let state=state.borrow();state.nodes.get(&state.client).and_then(Weak::upgrade)};
+    let player=player.map(|player|value(lua,player)).transpose()?.unwrap_or(Value::Nil);
+    fire(lua,node,event,args([player]))
+}
+pub(crate) fn fire_proximity_prompt(lua:&Lua,node:&Link)->Result<()>{
+    if !instance::is_a(&node.borrow(),"ProximityPrompt"){return Err(Error::lua_string("ProximityPrompt expected"))}
+    let state=required(lua)?;
+    let player={let state=state.borrow();state.nodes.get(&state.client).and_then(Weak::upgrade)}
+        .ok_or_else(||Error::lua_string("LocalPlayer is unavailable"))?;
+    fire(lua,node,"Triggered",args([value(lua,player)?]))
+}
+pub(crate) fn local_player(lua:&Lua)->Result<Link>{
+    let state=required(lua)?;let state=state.borrow();
+    if state.side!="client"{return Err(Error::lua_string("LocalPlayer is unavailable"))}
+    state.nodes.get(&state.client).and_then(Weak::upgrade).ok_or_else(||Error::lua_string("LocalPlayer is unavailable"))
+}
+pub(crate) fn fire_touch_interest(lua:&Lua,first:&Link,second:&Link,begin:bool)->Result<()>{
+    if !instance::is_a(&first.borrow(),"BasePart") || !instance::is_a(&second.borrow(),"BasePart") {
+        return Err(Error::lua_string("BasePart expected"))
+    }
+    let event=if begin {"Touched"} else {"TouchEnded"};
+    fire(lua,second,event,args([value(lua,first.clone())?]))?;
+    if !Rc::ptr_eq(first,second) {fire(lua,first,event,args([value(lua,second.clone())?]))?;}
+    Ok(())
+}
+pub(crate) fn set_fps_cap(lua:&Lua,cap:f64)->Result<()>{
+    if !cap.is_finite()||!(0.0..=1000.0).contains(&cap){return Err(Error::lua_string("FPS cap must be between 0 and 1000"))}
+    let state=required(lua)?;let mut state=state.borrow_mut();
+    if state.side!="client"{return Err(Error::lua_string("FPS cap requires a client realm"))}
+    state.fps_cap=cap;state.render_phase=0.0;
+    Ok(())
+}
+pub(crate) fn fps_cap(lua:&Lua)->Result<f64>{Ok(required(lua)?.borrow().fps_cap)}
+pub(crate) fn render_bindings(lua:&Lua)->Result<Table>{
+    let result=lua.create_table()?;
+    for binding in required(lua)?.borrow().render_bindings.values() {result.raw_set(binding.name.as_str(),binding.callback.clone())?;}
+    Ok(result)
+}
+pub(crate) fn register_custom_asset(lua:&Lua,bytes:Vec<u8>)->Result<String>{
+    let id=format!("rbxasset://emulator/{}",format!("{:x}",Sha256::digest(&bytes)));
+    let state=required(lua)?;let mut state=state.borrow_mut();
+    if !state.custom_assets.contains_key(&id){
+        if state.custom_assets.len()>=256||state.custom_asset_bytes.saturating_add(bytes.len())>8*1024*1024 {
+            return Err(Error::lua_string("BudgetExceeded: custom asset cache"))
+        }
+        state.custom_asset_bytes+=bytes.len();state.custom_assets.insert(id.clone(),bytes);
+    }
+    Ok(id)
+}
 pub(crate) fn calling_script(lua:&Lua)->Result<Value>{
     lua.named_registry_value::<Table>(ENV_OWNERS)?.raw_get(lua.globals())
+}
+pub(crate) fn script_from_thread(lua:&Lua,thread:Thread)->Result<Value>{
+    let owners:Table=lua.named_registry_value(ENV_OWNERS)?;
+    unsafe { lua.exec_raw((owners,thread),|state|{
+        ffi::lua_getfenv(state,2);ffi::lua_rawget(state,1);
+        ffi::lua_replace(state,1);ffi::lua_settop(state,1);
+    }) }
+}
+pub(crate) fn script_thread(lua:&Lua,node:&Link)->Result<Option<Thread>>{
+    if !instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(Error::lua_string("LuaSourceContainer expected"))}
+    let id=node.borrow().id.clone();
+    let thread:Option<Thread>=lua.named_registry_value::<Table>(SCRIPT_THREADS)?.raw_get(id)?;
+    Ok(thread.filter(|thread|!thread.is_finished()&&!thread.is_error()))
+}
+pub(crate) fn active_script_environment(lua:&Lua,node:&Link)->Result<Option<Table>>{
+    if !instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(Error::lua_string("LuaSourceContainer expected"))}
+    let state=required(lua)?;
+    let (id,realm_actor)={let state=state.borrow();(node.borrow().id.clone(),state.actor.clone())};
+    let mut parent=node.borrow().parent.upgrade();
+    while let Some(ancestor)=parent {
+        let ancestor=ancestor.borrow();
+        if ancestor.class=="Actor" {if ancestor.id!=realm_actor {return Ok(None)} break}
+        parent=ancestor.parent.upgrade();
+    }
+    let environment:Option<Table>=lua.named_registry_value::<Table>(ENVS)?.raw_get(id.as_str())?;
+    let Some(environment)=environment else{return Err(Error::lua_string("Script is not currently running"))};
+    let active_module=matches!(state.borrow().modules.get(&id),Some(Module::Loading{..}|Module::Ready(_)));
+    let active_thread=script_thread(lua,node)?.is_some();
+    let active_child=if active_thread||active_module {false} else {
+        crate::scheduler::running_game_environments(lua)?.iter().any(|other|other.to_pointer()==environment.to_pointer())
+    };
+    if !active_thread&&!active_module&&!active_child {return Err(Error::lua_string("Script is not currently running"))}
+    Ok(Some(environment))
 }
 pub(crate) fn scripts(lua:&Lua,loaded_only:bool)->Result<Table>{
     let state=required(lua)?;
@@ -125,6 +347,27 @@ pub(crate) fn scripts(lua:&Lua,loaded_only:bool)->Result<Table>{
             else{matches!(node.borrow().class.as_str(),"Script"|"LocalScript"|"ModuleScript")};
         present.then_some(node)
     }).collect()};
+    instance::instance_list(lua,nodes)
+}
+pub(crate) fn running_scripts(lua:&Lua)->Result<Table>{
+    let owners:Table=lua.named_registry_value(ENV_OWNERS)?;
+    let mut seen=HashSet::new();
+    let mut nodes=Vec::new();
+    for env in crate::scheduler::running_game_environments(lua)? {
+        if let Value::UserData(value)=owners.raw_get::<Value>(env)? {
+            if let Ok(script)=value.borrow::<Instance>() {
+                let node=script.0.clone();
+                if seen.insert(Rc::as_ptr(&node) as usize){nodes.push(node)}
+            }
+        }
+    }
+    let state=required(lua)?;let state=state.borrow();
+    for (id,module) in &state.modules {
+        if !matches!(module,Module::Ready(_)){continue}
+        if let Some(node)=state.nodes.get(id).and_then(Weak::upgrade) {
+            if seen.insert(Rc::as_ptr(&node) as usize){nodes.push(node)}
+        }
+    }
     instance::instance_list(lua,nodes)
 }
 pub(crate) fn guard_write(lua: &Lua) -> Result<()> {
@@ -157,7 +400,7 @@ fn str_value(lua: &Lua, text: &str) -> Result<Value> { Ok(Value::String(lua.crea
 fn signal(lua: &Lua, node: &Link, name: &str) -> Result<AnyUserData> {
     if let Some(event) = node.borrow().signals.get(name) { return Ok(event.clone()); }
     let label=if let Some(name)=name.strip_prefix("property:"){format!("{name}Changed")}else if let Some(name)=name.strip_prefix("attribute:"){format!("{name}AttributeChanged")}else{name.into()};
-    let event = crate::scheduler::new_named_signal(lua,&label)?;
+    let event = crate::scheduler::new_named_signal(lua,&label,&node.borrow().class,name)?;
     node.borrow_mut().signals.insert(name.into(), event.clone());
     if name=="Event"&&node.borrow().class=="BindableEvent"{
         if let Some(registry)=lua.app_data_ref::<BindableRegistry>().map(|registry|registry.clone()){
@@ -171,6 +414,40 @@ fn signal(lua: &Lua, node: &Link, name: &str) -> Result<AnyUserData> {
 fn fire(lua: &Lua, node: &Link, name: &str, args: MultiValue) -> Result<()> {
     let event = node.borrow().signals.get(name).cloned();
     if let Some(event) = event { crate::scheduler::fire_signal(lua, &event, args)?; }
+    Ok(())
+}
+
+pub(crate) fn keyboard_input(lua: &Lua, key: &str, down: bool) -> Result<()> {
+    if key.is_empty() || key.len()>48 || !key.bytes().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(Error::lua_string("Invalid keyboard key"));
+    }
+    let item = |family: &str, name: &str| -> Result<Value> {
+        crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":family,"name":name}))?
+            .ok_or_else(||Error::lua_string("Invalid keyboard key"))
+    };
+    let key_code = item("KeyCode",key)?;
+    let state=required(lua)?;
+    if state.borrow().side!="client" {return Err(Error::lua_string("Keyboard input requires a client VM"))}
+    let service=lookup(lua,"UserInputService").ok_or_else(||Error::runtime("UserInputService is unavailable"))?;
+    let node=if down {
+        if state.borrow().pressed_keys.contains_key(key) {return Ok(())}
+        let node=instance::new_node("InputObject")?;
+        {
+            let mut node=node.borrow_mut();
+            node.properties.insert("KeyCode".into(),key_code);
+            node.properties.insert("UserInputType".into(),item("UserInputType","Keyboard")?);
+            node.properties.insert("Position".into(),crate::types::decode_value(lua,&json!({"tag":"Vector3","x":0,"y":0,"z":0}))?.unwrap());
+            node.properties.insert("Delta".into(),crate::types::decode_value(lua,&json!({"tag":"Vector3","x":0,"y":0,"z":0}))?.unwrap());
+        }
+        state.borrow_mut().pressed_keys.insert(key.into(),node.clone());
+        node
+    } else {
+        let Some(node)=state.borrow_mut().pressed_keys.remove(key) else{return Ok(())};
+        node
+    };
+    node.borrow_mut().properties.insert("UserInputState".into(),item("UserInputState",if down{"Begin"}else{"End"})?);
+    let event=service.borrow().signals.get(if down{"InputBegan"}else{"InputEnded"}).cloned();
+    if let Some(event)=event {crate::scheduler::fire_input_signal(lua,&event,args([value(lua,node)?,Value::Boolean(false)]))?;}
     Ok(())
 }
 fn changed(lua: &Lua, node: &Link, key: &str) -> Result<()> {
@@ -207,6 +484,15 @@ pub(crate) fn parent(lua: &Lua, node: &Link, target: Option<Link>) -> Result<()>
     if previous.as_ref().zip(target.as_ref()).is_some_and(|(a,b)| Rc::ptr_eq(a,b)) || previous.is_none() && target.is_none() { return Ok(()); }
     let descendants = instance::descendants(node);
     instance::set_parent(node, target.clone())?;
+    if target.is_none() {
+        if let Some(state) = state(lua) {
+            let mut state = state.borrow_mut();
+            let weak = Rc::downgrade(node);
+            state.recent_nil.retain(|entry| entry.strong_count() > 0 && !Weak::ptr_eq(entry, &weak));
+            state.recent_nil.push_front(weak);
+            state.recent_nil.truncate(100);
+        }
+    }
     if let Some(old) = &previous { fire(lua, old, "ChildRemoved", args([value(lua,node.clone())?]))?; }
     if let Some(new) = &target { fire(lua, new, "ChildAdded", args([value(lua,node.clone())?]))?; }
     for (ancestor, event_name) in [(previous.clone(),"DescendantRemoving"),(target.clone(),"DescendantAdded")] {
@@ -257,8 +543,10 @@ fn event_class(name: &str) -> Option<&'static str> {
         "Loaded" => Some("DataModel"), "Event" => Some("BindableEvent"), "OnServerEvent"|"OnClientEvent" => Some("BaseRemoteEvent"),
         "PlayerAdded"|"PlayerRemoving" => Some("Players"), "CharacterAdded"|"CharacterRemoving"|"Idled" => Some("Player"),
         "Heartbeat"|"Stepped"|"RenderStepped"|"PreSimulation"|"PostSimulation"|"PreRender" => Some("RunService"),
-        "MessageOut" => Some("LogService"), "Died"|"StateChanged" => Some("Humanoid"),
+        "MessageOut" => Some("LogService"), "Died"|"StateChanged" => Some("Humanoid"), "Touched"|"TouchEnded" => Some("BasePart"),
         "Error" => Some("ScriptContext"), "AssetFetchFailed" => Some("ContentProvider"),
+        "MouseClick"|"RightMouseClick"|"MouseHoverEnter"|"MouseHoverLeave" => Some("ClickDetector"),
+        "Triggered"|"TriggerEnded"|"PromptButtonHoldBegan"|"PromptButtonHoldEnded"|"PromptShown"|"PromptHidden"|"IndicatorShown"|"IndicatorHidden" => Some("ProximityPrompt"),
         "InputBegan"|"InputEnded"|"InputChanged"|"WindowFocused"|"WindowFocusReleased" => Some("UserInputService"),
         _=>None,
     }
@@ -268,7 +556,15 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
     let n=node.borrow();
     let is=|class| instance::is_a(&n,class);
     let result=match key {
-        "Enabled" if is("BaseScript")||is("LayerCollector") => Some(Value::Boolean(true)),
+        "Enabled" if is("BaseScript")||is("LayerCollector")||is("Fire")||is("ProximityPrompt") => Some(Value::Boolean(true)),
+        "Size" if is("Fire")=>Some(Value::Number(5.0)),
+        "MaxActivationDistance" if is("ClickDetector")=>Some(Value::Number(32.0)),
+        "MaxActivationDistance" if is("ProximityPrompt")=>Some(Value::Number(10.0)),
+        "HoldDuration" if is("ProximityPrompt")=>Some(Value::Number(0.0)),
+        "RequiresLineOfSight"|"ClickablePrompt" if is("ProximityPrompt")=>Some(Value::Boolean(true)),
+        "ActionText"|"ObjectText" if is("ProximityPrompt")=>Some(str_value(lua,"")?),
+        "KeyboardKeyCode" if is("ProximityPrompt")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"KeyCode","name":"E"}))?,
+        "GamepadKeyCode" if is("ProximityPrompt")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"KeyCode","name":"ButtonX"}))?,
         "Disabled" if is("BaseScript") => Some(Value::Boolean(false)),
         "OnInvoke" if is("BindableFunction") => Some(Value::Nil),
         "OnServerInvoke"|"OnClientInvoke" if is("RemoteFunction")=>Some(Value::Nil),
@@ -278,9 +574,13 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "TweenInfo" if is("Tween")=>Some(crate::types::TweenInfo{time:1.,style:"Quad".into(),direction:"Out".into(),repeat_count:0,reverses:false,delay:0.}.into_lua(lua)?),
         "Character" if is("Player")=>Some(Value::Nil),
         "AnimationId" if is("Animation")=>Some(str_value(lua,"")?),
+        "SoundId" if is("Sound")=>Some(str_value(lua,"")?),
         "Looped" if is("AnimationTrack")=>Some(Value::Boolean(false)),
         "Priority" if is("AnimationTrack")=>crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"AnimationPriority","name":"Core"}))?,
         "UserId"|"AccountAge" if is("Player")=>Some(Value::Integer(0)),
+        // Historical Studio defaults; runtime adaptation and ownership need a physics model.
+        "SimulationRadius" if is("Player")=>Some(Value::Number(10.0)),
+        "MaximumSimulationRadius" if is("Player")=>Some(Value::Number(1000.0)),
         "DisplayName" if is("Player")=>Some(Value::String(lua.create_string(instance::name_bytes(&n))?)),
         "CurrentCamera" if is("Workspace")=>Some(Value::Nil),
         "ViewportSize" if is("Camera")=>Some(crate::types::Vector([1.0,1.0]).into_lua(lua)?),
@@ -348,25 +648,68 @@ pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>>
     if instance::is_a(&node.borrow(),"BasePart")&&node.borrow().class!="Terrain"{
         match key{"Position"=>return Ok(Some(crate::spatial::position_value(node)?)),"CFrame"|"ExtentsCFrame"=>return Ok(Some(crate::spatial::part_frame(node)?.into_lua(lua)?)),"ExtentsSize"=>return Ok(Some(crate::spatial::extents_value(node)?)),_=>{}}
     }
+    if key=="Source"&&instance::is_a(&node.borrow(),"LuaSourceContainer") {
+        if crate::executor::thread_identity(lua)!=8{return Err(Error::lua_string("The current thread cannot read Source"))}
+        let node=node.borrow();
+        if !node.source_available{return Err(Error::lua_string("Source is unavailable in this VM"))}
+        return Ok(Some(Value::String(lua.create_string(&node.source)?)))
+    }
     if let Some(value)=node.borrow().properties.get(key){return Ok(Some(value.clone()))}
     if key=="RequestQueueSize"&&node.borrow().class=="ContentProvider" {return Ok(Some(Value::Integer(required(lua)?.borrow().pending_assets as i64)))}
-    if key=="Source"&&instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(unsupported(lua,"LuaSourceContainer.Source runtime capability"))}
     if key=="LocalPlayer"&&node.borrow().class=="Players" {
         let s=required(lua)?; let s=s.borrow();
         return Ok(Some(if s.side=="client" {s.nodes.get(&s.client).and_then(Weak::upgrade).map(|n|value(lua,n)).transpose()?.unwrap_or(Value::Nil)}else{Value::Nil}));
     }
     if key=="DistributedGameTime"&&node.borrow().class=="Workspace"{return Ok(Some(Value::Number(now(lua))))}
     if key=="InstanceCount"&&node.borrow().class=="Stats"{return Ok(Some(Value::Integer(required(lua)?.borrow().nodes.values().filter(|node|node.strong_count()>0).count() as i64)))}
-    if event_class(key).is_some_and(|class|instance::is_a(&node.borrow(),class)){return Ok(Some(Value::UserData(signal(lua,node,key)?)))}
+    if event_class(key).is_some_and(|class|class.split('|').any(|class|instance::is_a(&node.borrow(),class))){return Ok(Some(Value::UserData(signal(lua,node,key)?)))}
     default(lua,node,key)
 }
 
 pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bool> {
     if state(lua).is_none(){return Ok(false)}
     guard_write(lua)?;
+    if key=="Source"&&instance::is_a(&node.borrow(),"LuaSourceContainer") {
+        if crate::executor::thread_identity(lua)!=8{return Err(Error::lua_string("The current thread cannot write Source"))}
+        let Value::String(source)=new else{return Err(Error::lua_string("Source must be a string"))};
+        let source=source.to_str().map_err(|_|Error::lua_string("Source must be valid UTF-8"))?;
+        if source.len()>MAX_SOURCE{return Err(Error::runtime("BudgetExceeded: source size"))}
+        let changed_source={let mut node=node.borrow_mut();let changed=node.source!=source.as_ref()||!node.source_available;node.source=source.to_string();node.source_available=true;node.source_initialized=true;changed};
+        if changed_source {
+            // Source edits are local to this VM; do not put script source onto the replication wire.
+            fire(lua,node,"Changed",args([str_value(lua,"Source")?]))?;
+            fire(lua,node,"property:Source",MultiValue::new())?;
+        }
+        return Ok(true)
+    }
+    if node.borrow().class=="InputObject" && matches!(key,"KeyCode"|"UserInputType"|"UserInputState"|"Position"|"Delta") {
+        return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only")));
+    }
+    if key=="Size"&&node.borrow().class=="Fire"{
+        let size=lua.coerce_number(new.clone())?.ok_or_else(||Error::lua_string("Fire.Size must be a number"))?;
+        let next=Value::Number((size as f32).clamp(2.,30.) as f64);
+        if read_property(lua,node,key)?.as_ref()!=Some(&next){node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;}
+        return Ok(true)
+    }
+    if node.borrow().class=="Player"&&matches!(key,"SimulationRadius"|"MaximumSimulationRadius"){
+        let radius=lua.coerce_number(new.clone())?.ok_or_else(||Error::lua_string(format!("{key} must be a number")))?;
+        let next=Value::Number(radius as f32 as f64);
+        if read_property(lua,node,key)?.as_ref()!=Some(&next){node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;}
+        return Ok(true)
+    }
     if instance::is_a(&node.borrow(),"TweenBase")&&matches!(key,"Instance"|"TweenInfo"|"PlaybackState"){return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only")))}
     if node.borrow().class=="AnimationTrack"&&animation::write(lua,node,key,new)?{return Ok(true)}
     if key=="AnimationId"&&node.borrow().class=="Animation"&&!matches!(new,Value::String(_)){return Err(Error::lua_string("AnimationId must be a string"))}
+    if node.borrow().class=="ProximityPrompt" {
+        let valid=match key {
+            "Enabled"|"RequiresLineOfSight"|"ClickablePrompt"=>matches!(new,Value::Boolean(_)),
+            "HoldDuration"|"MaxActivationDistance"=>matches!(new,Value::Number(_)|Value::Integer(_)),
+            "ActionText"|"ObjectText"=>matches!(new,Value::String(_)),
+            "KeyboardKeyCode"|"GamepadKeyCode"=>crate::types::encode_value(new)?.is_some_and(|value|value["tag"]=="EnumItem"&&value["enum"]=="KeyCode"),
+            _=>true,
+        };
+        if !valid{return Err(Error::lua_string(format!("Unable to assign property {key}. Invalid value")))}
+    }
     if key=="Character"&&node.borrow().class=="Player" {
         let next=match new{Value::Nil=>None,Value::UserData(value)=>Some(value.borrow::<Instance>().map_err(|_|Error::lua_string("Character must be a Model"))?.0.clone()),_=>return Err(Error::lua_string("Character must be a Model"))};
         if next.as_ref().is_some_and(|node|!instance::is_a(&node.borrow(),"Model")){return Err(Error::lua_string("Character must be a Model"))}
@@ -449,6 +792,7 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
         }
         if key=="CollisionGroup"{let group=lua.coerce_string(new.clone())?.ok_or_else(||Error::lua_string("Unable to assign property CollisionGroup. String expected"))?;let next=Value::String(group);if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)}
     }
+    if key=="SoundId" && node.borrow().class=="Sound" && !matches!(new,Value::String(_)) {return Err(Error::lua_string("Unable to assign property SoundId. String expected"))}
     match key {
         "Name"=>{if let Value::String(v)=new{if !instance::set_name(&mut node.borrow_mut(),&v.as_bytes()){return Ok(true)}}else{return Err(Error::lua_string("Name must be a string"))}},
         "Archivable"=>{if let Value::Boolean(v)=new{if node.borrow().archivable==*v{return Ok(true)}node.borrow_mut().archivable=*v}else{return Err(Error::lua_string("Archivable must be a boolean"))}},
@@ -538,7 +882,7 @@ fn emit(lua:&Lua,kind:&str,payload:Json)->Result<()>{
     else {crate::internal::<Function>(lua,"__host_emit")?.call((kind,lua.to_value(&payload)?))}
 }
 
-fn env(lua:&Lua,node:&Link)->Result<Table>{
+pub(crate) fn env(lua:&Lua,node:&Link)->Result<Table>{
     let table:Table=lua.named_registry_value(ENVS)?;let id=node.borrow().id.clone();
     if let Value::Table(e)=table.raw_get(id.as_str())?{return Ok(e)}
     let base:Table=lua.named_registry_value(BASE_ENV)?;
@@ -559,7 +903,7 @@ fn compile(lua:&Lua,node:&Link)->Result<Function>{let n=node.borrow();if n.sourc
 fn clone_node(lua:&Lua,node:&Link)->Result<Option<Link>>{
     if !node.borrow().archivable{return Ok(None)}
     let n=node.borrow();let result=instance::create_node(lua,&n.class)?;created(lua,&result)?;
-    {let mut r=result.borrow_mut();r.name=n.name.clone();r.raw_name=n.raw_name.clone();r.source=n.source.clone();r.linked_source=n.linked_source.clone();r.attributes=n.attributes.clone();r.properties=n.properties.clone();r.properties.retain(|_,v|!matches!(v,Value::Function(_)));}
+    {let mut r=result.borrow_mut();r.name=n.name.clone();r.raw_name=n.raw_name.clone();r.source=n.source.clone();r.source_available=n.source_available;r.source_initialized=n.source_initialized;r.linked_source=n.linked_source.clone();r.attributes=n.attributes.clone();r.properties=n.properties.clone();r.properties.retain(|_,v|!matches!(v,Value::Function(_)));}
     let children=n.children.clone();drop(n);
     let points=required(lua)?.borrow().paths.get(&node.borrow().id).map(|(_,points)|points.clone());
     if let Some(points)=points{set_path_points(lua,&result,points)?;}
@@ -595,29 +939,59 @@ fn asset_resource(value:Value)->Result<AssetResource>{
     if content.len()>2048{return Err(Error::runtime("BudgetExceeded: asset identifier length"))}
     let numeric=content.strip_prefix("rbxassetid://").unwrap_or(&content);
     let key=numeric.parse::<u64>().map(|id|id.to_string()).unwrap_or_else(|_|content.clone());
-    Ok(AssetResource{key,content})
+    Ok(AssetResource{key,content,accept_wav:true})
 }
 fn content_id(_lua:&Lua,value:Value)->Result<String>{Ok(asset_resource(value)?.key)}
 fn asset_enum(lua:&Lua,name:&str)->Result<Value>{
     crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"AssetFetchStatus","name":name}))?.ok_or_else(||Error::runtime("AssetFetchStatus unavailable"))
 }
 fn asset_status(lua:&Lua,key:&str)->Result<Value>{
-    let name=match required(lua)?.borrow().assets.get(key){Some(AssetFetch::Loading)=>"Loading",Some(AssetFetch::Failure)=>"Failure",None if key.is_empty()=>"Failure",None=>"None"};
+    let name=match required(lua)?.borrow().assets.get(key){Some(AssetFetch::Loading)=>"Loading",Some(AssetFetch::Failure)=>"Failure",Some(AssetFetch::Success)=>"Success",None if key.is_empty()=>"Failure",None=>"None"};
     asset_enum(lua,name)
 }
-fn offline_asset(lua:&Lua,resource:&AssetResource)->Result<bool>{
-    let state=required(lua)?;let mut model=state.borrow_mut();
-    if model.assets.get(&resource.key)==Some(&AssetFetch::Failure){return Ok(false)}
+fn valid_pcm_wav(bytes:&[u8])->bool {
+    if bytes.len()<12 || &bytes[..4]!=b"RIFF" || &bytes[8..12]!=b"WAVE" {return false}
+    let u16_at=|at:usize|->Option<u16>{Some(u16::from_le_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?))};
+    let u32_at=|at:usize|->Option<u32>{Some(u32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))};
+    if u32_at(4).and_then(|n|usize::try_from(n).ok()).and_then(|n|n.checked_add(8))!=Some(bytes.len()) {return false}
+    let mut cursor=12usize;let mut format=None;let mut data=None;
+    while cursor<bytes.len() {
+        let Some(header_end)=cursor.checked_add(8) else{return false};
+        if header_end>bytes.len(){return false}
+        let Some(size)=u32_at(cursor+4).and_then(|n|usize::try_from(n).ok()) else{return false};
+        let Some(end)=header_end.checked_add(size) else{return false};
+        let Some(next)=end.checked_add(size&1) else{return false};
+        if next>bytes.len(){return false}
+        match &bytes[cursor..cursor+4] {
+            b"fmt "=>{
+                if format.is_some()||size<16{return false}
+                let (Some(code),Some(channels),Some(rate),Some(byte_rate),Some(align),Some(bits))=(u16_at(header_end),u16_at(header_end+2),u32_at(header_end+4),u32_at(header_end+8),u16_at(header_end+12),u16_at(header_end+14)) else{return false};
+                if code!=1 || !(1..=8).contains(&channels) || rate==0 || !matches!(bits,8|16|24|32) {return false}
+                let expected_align=u32::from(channels)*u32::from(bits/8);
+                if u32::from(align)!=expected_align || rate.checked_mul(expected_align)!=Some(byte_rate) {return false}
+                format=Some(expected_align as usize);
+            },
+            b"data"=>{if data.replace(size).is_some(){return false}},
+            _=>{}
+        }
+        cursor=next;
+    }
+    matches!((format,data),(Some(align),Some(size)) if size%align==0)
+}
+fn offline_asset(lua:&Lua,resource:&AssetResource)->Result<Option<AssetFetch>>{
+    let state=required(lua)?;
+    let mut model=state.borrow_mut();
+    let status=if resource.accept_wav && model.custom_assets.get(&resource.key).is_some_and(|bytes|valid_pcm_wav(bytes)){AssetFetch::Success}else{AssetFetch::Failure};
+    if model.assets.get(&resource.key)==Some(&status){return Ok(None)}
     if !model.assets.contains_key(&resource.key)&&model.assets.len()>=MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: offline asset cache"))}
     model.assets.insert(resource.key.clone(),AssetFetch::Loading);
-    // There are no configured asset bytes or network provider. Cache the actual
-    // failed offline lookup; never manufacture a successful fetch.
-    model.assets.insert(resource.key.clone(),AssetFetch::Failure);
-    Ok(true)
+    model.assets.insert(resource.key.clone(),status);
+    Ok(Some(status))
 }
-fn asset_failed(lua:&Lua,node:&Link,resource:&AssetResource)->Result<()>{
-    fire(lua,node,&format!("{}AssetFetchStatusChanged",resource.key),args([asset_enum(lua,"Failure")?]))?;
-    fire(lua,node,"AssetFetchFailed",args([str_value(lua,&resource.content)?]))?;
+fn asset_changed(lua:&Lua,node:&Link,resource:&AssetResource,status:AssetFetch)->Result<()>{
+    let name=match status{AssetFetch::Success=>"Success",_=>"Failure"};
+    fire(lua,node,&format!("{}AssetFetchStatusChanged",resource.key),args([asset_enum(lua,name)?]))?;
+    if status==AssetFetch::Failure {fire(lua,node,"AssetFetchFailed",args([str_value(lua,&resource.content)?]))?;}
     Ok(())
 }
 fn preload_resources(input:Value)->Result<Vec<AssetResource>>{
@@ -636,7 +1010,7 @@ fn preload_resources(input:Value)->Result<Vec<AssetResource>>{
                 inspected+=1;if inspected>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload Instance count"))}
                 let node=node.borrow();
                 for property in ["Image","Texture","TextureID","MeshId","SoundId","AnimationId","ColorMapContent"]{
-                    if let Some(Value::String(value))=node.properties.get(property){if !value.as_bytes().is_empty(){resources.push(asset_resource(Value::String(value.clone()))?);}}
+                    if let Some(Value::String(value))=node.properties.get(property){if !value.as_bytes().is_empty(){let mut resource=asset_resource(Value::String(value.clone()))?;resource.accept_wav=property=="SoundId" && instance::is_a(&node,"Sound");resources.push(resource);}}
                 }
                 if nodes.len()+node.children.len()>MAX_ASSETS{return Err(Error::runtime("BudgetExceeded: preload Instance count"))}
                 nodes.extend(node.children.iter().rev().cloned());
@@ -661,22 +1035,22 @@ fn preload_async(lua:&Lua,mut values:MultiValue)->Result<NativeCall>{
     let caller=lua.current_thread();let environment=lua.globals();
     let work=lua.create_function(move|lua,()|{
         let mut completed=0;
-        let result=(||->Result<Vec<AssetResource>>{
-            let mut failures=Vec::new();
+        let result=(||->Result<Vec<(AssetResource,AssetFetch)>>{
+            let mut updates=Vec::new();
             for resource in &resources{
-                if offline_asset(lua,resource)?{failures.push(resource.clone());}
+                if let Some(status)=offline_asset(lua,resource)?{updates.push((resource.clone(),status));}
                 let state=required(lua)?;let pending=state.borrow().pending_assets;state.borrow_mut().pending_assets=pending.saturating_sub(1);completed+=1;
                 if let Some(callback)=&callback{
-                    crate::scheduler::spawn_with(lua,Value::Function(callback.clone()),args([str_value(lua,&resource.content)?,asset_enum(lua,"Failure")?]),Some("serial"),None)?;
+                    crate::scheduler::spawn_with(lua,Value::Function(callback.clone()),args([str_value(lua,&resource.content)?,asset_status(lua,&resource.key)?]),Some("serial"),None)?;
                 }
             }
-            Ok(failures)
+            Ok(updates)
         })();
         let state=required(lua)?;let pending=state.borrow().pending_assets;state.borrow_mut().pending_assets=pending.saturating_sub(count-completed);
         match result{
-            Ok(failures)=>{
+            Ok(updates)=>{
                 crate::scheduler::schedule(lua,caller.clone(),MultiValue::new(),None)?;
-                for resource in failures{asset_failed(lua,&node,&resource)?;}
+                for (resource,status) in updates{asset_changed(lua,&node,&resource,status)?;}
             },
             Err(error)=>crate::scheduler::schedule_error(lua,caller.clone(),str_value(lua,&error.to_string())?)?,
         }
@@ -689,7 +1063,7 @@ fn preload_async(lua:&Lua,mut values:MultiValue)->Result<NativeCall>{
 }
 
 const UNSUPPORTED:&[(&str,&CStr)]=&[("InspectPlayerFromHumanoidDescription",c"InspectPlayerFromHumanoidDescription"),("CloseInspectMenu",c"CloseInspectMenu"),("GetRealPhysicsFPS",c"GetRealPhysicsFPS"),("Blockcast",c"Blockcast"),("Kick",c"Kick"),("Clear",c"Clear"),("PostAsync",c"PostAsync"),("PostAsyncFullUrl",c"PostAsyncFullUrl"),("PromptRobloxPurchase",c"PromptRobloxPurchase"),("PromptThirdPartyPurchase",c"PromptThirdPartyPurchase")];
-const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
+const METHODS:&[(&str,&CStr)]=&[("Clone",c"Clone"),("GetPropertyChangedSignal",c"GetPropertyChangedSignal"),("GetAttributeChangedSignal",c"GetAttributeChangedSignal"),("GetPlayers",c"GetPlayers"),("GetNetworkPing",c"GetNetworkPing"),("IsClient",c"IsClient"),("IsServer",c"IsServer"),("IsStudio",c"IsStudio"),("IsRunning",c"IsRunning"),("BindToRenderStep",c"BindToRenderStep"),("UnbindFromRenderStep",c"UnbindFromRenderStep"),("IsLoaded",c"IsLoaded"),("FireServer",c"FireServer"),("FireClient",c"FireClient"),("FireAllClients",c"FireAllClients"),("SendMessage",c"SendMessage"),("BindToMessage",c"BindToMessage"),("BindToMessageParallel",c"BindToMessageParallel"),("GetLogHistory",c"GetLogHistory"),("JSONDecode",c"JSONDecode"),("QueryDescendants",c"QueryDescendants"),("ComputeStringHash",c"ComputeStringHash")];
 pub(crate) fn method_names()->Vec<(&'static str,&'static CStr)>{METHODS.iter().chain(UNSUPPORTED.iter()).chain(PATH_METHODS.iter()).chain(TWEEN_METHODS.iter()).chain(INPUT_METHODS.iter()).chain(SPATIAL_METHODS.iter()).chain(animation::METHODS.iter()).copied().chain([("BindAction",c"BindAction"),("BindActionAtPriority",c"BindActionAtPriority"),("UnbindAction",c"UnbindAction"),("UnbindAllActions",c"UnbindAllActions"),("GetBoundActionInfo",c"GetBoundActionInfo"),("GetAllBoundActionInfo",c"GetAllBoundActionInfo"),("GetStyled",c"GetStyled"),("GenerateGUID",c"GenerateGUID"),("GetFocusedTextBox",c"GetFocusedTextBox"),("IsTenFootInterface",c"IsTenFootInterface"),("GetPlatform",c"GetPlatform"),("GetPlayerFromCharacter",c"GetPlayerFromCharacter"),("GetMemoryUsageMbForTag",c"GetMemoryUsageMbForTag"),("GetServerTimeNow",c"GetServerTimeNow"),("RequestLimitedAsync",c"RequestLimitedAsync"),("GetRobuxBalance",c"GetRobuxBalance"),("PerformPurchaseV2",c"PerformPurchaseV2"),("ScreenPointToRay",c"ScreenPointToRay"),("ViewportPointToRay",c"ViewportPointToRay"),("GetAssetFetchStatus",c"GetAssetFetchStatus"),("GetAssetFetchStatusChangedSignal",c"GetAssetFetchStatusChangedSignal"),("Preload",c"Preload"),("PromptPurchase",c"PromptPurchase"),("PromptRealWorldCommerceBrowser",c"PromptRealWorldCommerceBrowser")]).collect()}
 const SPATIAL_METHODS:&[(&str,&CStr)]=&[("Raycast",c"Raycast"),("GetPartBoundsInBox",c"GetPartBoundsInBox"),("GetPartBoundsInRadius",c"GetPartBoundsInRadius")];
 const PATH_METHODS:&[(&str,&CStr)]=&[("SetControlPoints",c"SetControlPoints"),("GetControlPoints",c"GetControlPoints"),("GetControlPoint",c"GetControlPoint"),("InsertControlPoint",c"InsertControlPoint"),("UpdateControlPoint",c"UpdateControlPoint"),("RemoveControlPoint",c"RemoveControlPoint"),("GetLength",c"GetLength"),("GetPositionOnCurve",c"GetPositionOnCurve"),("GetPositionOnCurveArcLength",c"GetPositionOnCurveArcLength"),("GetTangentOnCurve",c"GetTangentOnCurve"),("GetTangentOnCurveArcLength",c"GetTangentOnCurveArcLength")];
@@ -701,11 +1075,11 @@ pub(crate) fn method_class(name:&str)->Option<&'static str>{
         "Clone"|"GetPropertyChangedSignal"|"GetAttributeChangedSignal"|"QueryDescendants"|"WaitForChild"=>"Instance",
         "GetPlayers"|"GetPlayerFromCharacter"=>"Players","GetNetworkPing"|"Kick"=>"Player",
         "GetMemoryUsageMbForTag"=>"Stats","GetServerTimeNow"=>"Workspace",
-        "IsClient"|"IsServer"|"IsStudio"|"IsRunning"=>"RunService","IsLoaded"=>"DataModel",
+        "IsClient"|"IsServer"|"IsStudio"|"IsRunning"|"BindToRenderStep"|"UnbindFromRenderStep"=>"RunService","IsLoaded"=>"DataModel",
         "Fire"=>"BindableEvent","Invoke"=>"BindableFunction",
         "FireServer"|"FireClient"|"FireAllClients"=>"BaseRemoteEvent","InvokeServer"|"InvokeClient"=>"RemoteFunction",
         "SendMessage"|"BindToMessage"|"BindToMessageParallel"=>"Actor",
-        "GetLogHistory"=>"LogService","JSONEncode"|"JSONDecode"|"GenerateGUID"=>"HttpService","ComputeStringHash"=>"EncodingService",
+        "GetLogHistory"=>"LogService","JSONEncode"|"JSONDecode"|"GenerateGUID"|"GetAsync"|"RequestAsync"=>"HttpService","HttpGet"=>"DataModel","ComputeStringHash"=>"EncodingService",
         "InspectPlayerFromHumanoidDescription"|"CloseInspectMenu"|"IsTenFootInterface"=>"GuiService",
         "GetFocusedTextBox"|"GetPlatform"|"IsKeyDown"|"IsMouseButtonPressed"|"GetKeysPressed"=>"UserInputService",
         "Create"|"GetValue"=>"TweenService", "Play"=>"TweenBase|AnimationTrack", "Pause"|"Cancel"=>"TweenBase",
@@ -714,7 +1088,7 @@ pub(crate) fn method_class(name:&str)->Option<&'static str>{
         "GetAssetFetchStatusChangedSignal"|"GetAssetFetchStatus"|"PreloadAsync"|"Preload"=>"ContentProvider",
         "GetRealPhysicsFPS"=>"Workspace","Raycast"|"Blockcast"|"GetPartBoundsInBox"|"GetPartBoundsInRadius"=>"WorldRoot",
         "ScreenPointToRay"|"ViewportPointToRay"=>"Camera","GetStyled"=>"Instance","Clear"=>"Terrain",
-        "PostAsync"|"PostAsyncFullUrl"|"RequestLimitedAsync"=>"HttpRbxApiService",
+        "PostAsync"=>"HttpService|HttpRbxApiService","PostAsyncFullUrl"|"RequestLimitedAsync"=>"HttpRbxApiService",
         "PromptPurchase"|"GetRobuxBalance"|"PerformPurchaseV2"|"PromptRobloxPurchase"|"PromptThirdPartyPurchase"=>"MarketplaceService",
         "PromptRealWorldCommerceBrowser"=>"CommerceService",
         _=>return None,
@@ -925,8 +1299,9 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
     instance::register_method(m,"Raycast",|lua,this,args:MultiValue|crate::spatial::raycast(lua,&this.0,args));
     instance::register_method(m,"GetPartBoundsInBox",|lua,this,args:MultiValue|crate::spatial::bounds(lua,&this.0,args,false));
     instance::register_method(m,"GetPartBoundsInRadius",|lua,this,args:MultiValue|crate::spatial::bounds(lua,&this.0,args,true));
-    for name in ["IsKeyDown","IsMouseButtonPressed"]{instance::register_method(m,name,move|_,_,value:Value|{enum_name(&value,if name=="IsKeyDown"{"KeyCode"}else{"UserInputType"})?;Ok(false)});}
-    instance::register_method(m,"GetKeysPressed",|lua,_,()|lua.create_table());
+    instance::register_method(m,"IsKeyDown",|lua,_,value:Value|{let name=enum_name(&value,"KeyCode")?;Ok(required(lua)?.borrow().pressed_keys.contains_key(&name))});
+    instance::register_method(m,"IsMouseButtonPressed",|_,_,value:Value|{enum_name(&value,"UserInputType")?;Ok(false)});
+    instance::register_method(m,"GetKeysPressed",|lua,_,()|{let entries:Vec<_>=required(lua)?.borrow().pressed_keys.values().cloned().collect();instance::instance_list(lua,entries)});
     instance::register_method(m,"GetValue",|lua,_,values:MultiValue|{
         let a=values.front().ok_or_else(||Error::lua_string("Argument 1 missing or nil"))?;let alpha=lua.coerce_number(a.clone())?.ok_or_else(||asset_cast(a,"float"))?;
         let style=enum_name(values.get(1).unwrap_or(&Value::Nil),"EasingStyle")?;let direction=enum_name(values.get(2).unwrap_or(&Value::Nil),"EasingDirection")?;Ok(tween_ease(alpha,&style,&direction))
@@ -1043,7 +1418,7 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
     });
     instance::register_method(m,"Preload",|lua,this,input:Value|{
         guard_write(lua)?;let resource=asset_resource(input)?;
-        if offline_asset(lua,&resource)?{asset_failed(lua,&this.0,&resource)?;}Ok(())
+        if let Some(status)=offline_asset(lua,&resource)?{asset_changed(lua,&this.0,&resource,status)?;}Ok(())
     });
     for name in ["ScreenPointToRay","ViewportPointToRay"]{instance::register_method(m,name,|lua,this,values:MultiValue|{
         let number=|index:usize,default:Option<f32>|->Result<f32>{
@@ -1064,6 +1439,19 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
     instance::register_method(m,"GetPlayers",|lua,this,()|instance::instance_list(lua,this.0.borrow().children.iter().filter(|n|n.borrow().class=="Player").cloned().collect()));
     instance::register_method(m,"GetNetworkPing",|_,this,()|Ok(this.0.borrow().properties.get("NetworkPing").cloned().unwrap_or(Value::Number(0.0))));
     for (name, expected) in [("IsClient","client"),("IsServer","server")] {instance::register_method(m,name,move|lua,_,()|Ok(required(lua)?.borrow().side==expected));}
+    instance::register_method(m,"BindToRenderStep",|lua,_,(name,priority,callback):(String,i32,Function)|{
+        let state=required(lua)?;
+        if state.borrow().side!="client"{return Err(Error::lua_string("BindToRenderStep can only be called from client"))}
+        if name.len()>4096 || state.borrow().render_bindings.len()>=MAX_WAITERS{return Err(Error::runtime("BudgetExceeded: render bindings"))}
+        let environment=lua.globals();let origin=crate::scheduler::current_origin(lua);
+        let mut state=state.borrow_mut();state.render_binding_sequence+=1;let id=state.render_binding_sequence;
+        state.render_bindings.insert(id,RenderBinding{name,priority,callback,environment,origin});
+        Ok(())
+    });
+    instance::register_method(m,"UnbindFromRenderStep",|lua,_,name:String|{
+        required(lua)?.borrow_mut().render_bindings.retain(|_,binding|binding.name!=name);
+        Ok(())
+    });
     instance::register_method(m,"IsStudio",|lua,_,()|Ok(required(lua)?.borrow().studio));
     instance::register_method(m,"IsRunning",|_,_,()|Ok(true));instance::register_method(m,"IsLoaded",|_,_,()|Ok(true));
     instance::register_method(m,"FireServer",|lua,this,values:MultiValue|{if required(lua)?.borrow().side!="client"{return Err(Error::lua_string("FireServer can only be called from client"))}emit(lua,"remote_event",json!({"remoteId":this.0.borrow().id,"target":"server","args":encode_args(lua,values)?}))});
@@ -1095,20 +1483,33 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
     for (name,_) in UNSUPPORTED {let method=*name;instance::register_method(m,*name,move|lua,this,_:MultiValue|Err::<Value,_>(unsupported(lua,&format!("{}.{method}",this.0.borrow().class))));}
 }
 
-fn log_history(lua:&Lua)->Result<Table>{let out=lua.create_table()?;for(i,(level,message,time))in required(lua)?.borrow().logs.iter().enumerate(){let row=lua.create_table()?;row.set("message",lua.create_string(message)?)?;row.set("messageType",message_type(lua,level)?)?;row.set("timestamp",*time)?;out.raw_set(i+1,row)?;}Ok(out)}
+fn log_history(lua:&Lua)->Result<Table>{
+    let history=required(lua)?.borrow().logs.clone();let history=history.borrow();let out=lua.create_table()?;
+    for(i,entry)in history.entries.iter().enumerate(){let row=lua.create_table()?;row.set("message",lua.create_string(&entry.message)?)?;row.set("messageType",message_type(lua,&entry.level)?)?;row.set("timestamp",entry.time)?;out.raw_set(i+1,row)?;}Ok(out)
+}
 fn message_type(lua:&Lua,level:&str)->Result<Value>{let name=match level{"warn"=>"MessageWarning","error"=>"MessageError",_=>"MessageOutput"};crate::types::decode_value(lua,&json!({"tag":"EnumItem","enum":"MessageType","name":name}))?.ok_or_else(||Error::runtime("MessageType unavailable"))}
-pub(crate) fn log(lua:&Lua,level:&str,message:&[u8])->Result<()>{
-    let s=required(lua)?;
-    {
-        let mut s=s.borrow_mut();
-        s.log_bytes+=message.len();
-        s.logs.push_back((level.into(),message.into(),now(lua)));
-        while s.logs.len()>1000||s.log_bytes>8*1024*1024 {
-            if let Some((_,removed,_))=s.logs.pop_front(){s.log_bytes-=removed.len();}else{break;}
-        }
-    }
+fn log_signal(lua:&Lua,level:&str,message:&[u8])->Result<()>{
     if let Some(n)=lookup(lua,"LogService"){fire(lua,&n,"MessageOut",args([Value::String(lua.create_string(message)?),message_type(lua,level)?]))?;}
     Ok(())
+}
+pub(crate) fn deliver_log(lua:&Lua,item:&LogNotification)->Result<()> {
+    if let Some(n)=lookup(lua,"LogService"){
+        let event=n.borrow().signals.get("MessageOut").cloned();
+        if let Some(event)=event {crate::scheduler::fire_host_signal(lua,&event,args([Value::String(lua.create_string(&item.record.message)?),message_type(lua,&item.record.level)?]))?;}
+    }
+    Ok(())
+}
+pub(crate) fn log(lua:&Lua,level:&str,message:&[u8])->Result<()>{
+    let s=required(lua)?;let (history,realm,side,client)={let s=s.borrow();(s.logs.clone(),s.realm.clone(),s.side.clone(),s.client.clone())};
+    let record=Rc::new(LogRecord{level:level.into(),message:message.into(),time:now(lua)});
+    if let Some(registry)=lua.app_data_ref::<LogRegistry>().map(|registry|registry.clone()){registry.enqueue(&side,&client,&realm,record.clone())?;}
+    {
+        let mut history=history.borrow_mut();history.bytes+=message.len();history.entries.push_back(record);
+        while history.entries.len()>1000||history.bytes>8*1024*1024 {
+            if let Some(removed)=history.entries.pop_front(){history.bytes-=removed.message.len();}else{break;}
+        }
+    }
+    log_signal(lua,level,message)
 }
 pub(crate) fn script_error(lua:&Lua,message:&str,thread:&Thread)->Result<()>{
     use std::fmt::Write as _;
@@ -1151,14 +1552,14 @@ pub(crate) fn script_error(lua:&Lua,message:&str,thread:&Thread)->Result<()>{
     fire(lua,&context,"Error",args([str_value(lua,message)?,str_value(lua,&trace)?,owner]))
 }
 
-fn snapshot(lua:&Lua,node:&Link)->Result<Json>{let n=node.borrow();let props=lua.create_table()?;for(k,v)in &n.properties{if !matches!(v,Value::Function(_)){props.raw_set(k.as_str(),v.clone())?;}}props.raw_set("Archivable",n.archivable)?;let attrs=lua.create_table()?;for(k,v)in &n.attributes{attrs.raw_set(k.as_str(),instance::attribute_value(lua,v)?)?;}Ok(json!({"id":n.id,"class":n.class,"name":n.name,"nameBytes":n.raw_name,"parent":n.parent.upgrade().map(|p|p.borrow().id.clone()),"source":n.source,"linkedSource":n.linked_source,"destroyed":n.destroyed,"properties":encode(lua,Value::Table(props),&mut HashSet::new())?,"attributes":encode(lua,Value::Table(attrs),&mut HashSet::new())?}))}
+fn snapshot(lua:&Lua,node:&Link)->Result<Json>{let n=node.borrow();let props=lua.create_table()?;for(k,v)in &n.properties{if !matches!(v,Value::Function(_)){props.raw_set(k.as_str(),v.clone())?;}}props.raw_set("Archivable",n.archivable)?;let attrs=lua.create_table()?;for(k,v)in &n.attributes{attrs.raw_set(k.as_str(),instance::attribute_value(lua,v)?)?;}Ok(json!({"id":n.id,"class":n.class,"name":n.name,"nameBytes":n.raw_name,"parent":n.parent.upgrade().map(|p|p.borrow().id.clone()),"source":n.source_available.then_some(&n.source),"sourceInitialized":n.source_initialized,"linkedSource":n.linked_source,"destroyed":n.destroyed,"properties":encode(lua,Value::Table(props),&mut HashSet::new())?,"attributes":encode(lua,Value::Table(attrs),&mut HashSet::new())?}))}
 
 // Keep complete host metadata while applying only the writer's changed keys.
 pub(crate) fn merge_replica(previous:Option<&Json>,incoming:&Json)->Json{
     let Some(keys)=incoming.get("$changed") else{return incoming.clone()};
     let Some(previous)=previous else{let mut full=incoming.clone();full.as_object_mut().unwrap().remove("$changed");return full};
     let mut result=previous.clone();result.as_object_mut().unwrap().remove("$changed");
-    for field in ["id","class","name","parent","source","linkedSource","destroyed"]{
+    for field in ["id","class","name","parent","source","sourceInitialized","linkedSource","destroyed"]{
         if result.get(field).is_none()||keys["fields"].as_array().is_some_and(|fields|fields.iter().any(|key|key==field)){result[field]=incoming[field].clone();}
     }
     if previous.get("name").is_none()||selected(incoming,"fields","name"){result["nameBytes"]=incoming["nameBytes"].clone();}
@@ -1183,7 +1584,8 @@ fn ensure(lua:&Lua,nodes:&[Json])->Result<Vec<Link>>{
         let n=if let Some(n)=lookup(lua,id){n}else{
             reserve_node(&mut s.borrow_mut())?;
             let n=instance::create_node(lua,node["class"].as_str().unwrap_or("Folder"))?;
-            n.borrow_mut().id=id.into();s.borrow_mut().nodes.insert(id.into(),Rc::downgrade(&n));n
+            {let mut value=n.borrow_mut();value.id=id.into();if instance::is_a(&value,"LuaSourceContainer") && node.get("source").and_then(Json::as_str).is_none(){value.source_available=false;}}
+            s.borrow_mut().nodes.insert(id.into(),Rc::downgrade(&n));n
         };held.push(n);
     }Ok(held)
 }
@@ -1196,8 +1598,8 @@ fn load_nodes(lua:&Lua,nodes:Vec<Json>,wire:bool)->Result<()>{
             let renamed=instance::set_name(&mut n.borrow_mut(),name);if renamed&&wire{changed(lua,n,"Name")?;}
         }
     }
-    if selected(node,"fields","source"){if let Some(source)=node["source"].as_str(){n.borrow_mut().source=source.into();}}
-    if selected(node,"fields","linkedSource"){if let Some(source)=node["linkedSource"].as_str(){n.borrow_mut().linked_source=source.into();}}
+    if selected(node,"fields","source"){match node.get("source"){Some(Json::String(source))=>{let mut n=n.borrow_mut();n.source=source.clone();n.source_available=true;n.source_initialized=node["sourceInitialized"].as_bool().unwrap_or(true);},Some(Json::Null)=>{let mut n=n.borrow_mut();n.source.clear();n.source_available=false;n.source_initialized=false;},_=>{}}}
+    if selected(node,"fields","linkedSource"){match node.get("linkedSource"){Some(Json::String(source))=>n.borrow_mut().linked_source=source.clone(),Some(Json::Null)=>n.borrow_mut().linked_source.clear(),_=>{}}}
     if let Some(properties)=node.get("properties"){
         let props=if wire{decode(lua,properties)?}else{lua.to_value(properties)?};
         if let Value::Table(props)=props{
@@ -1233,35 +1635,31 @@ fn load_nodes(lua:&Lua,nodes:Vec<Json>,wire:bool)->Result<()>{
     mark(lua,n);
 }for(node,n)in nodes.iter().zip(&held){if selected(node,"fields","destroyed")&&node["destroyed"].as_bool()==Some(true){destroy(lua,n)?;}else if selected(node,"fields","parent"){let p=node["parent"].as_str().and_then(|id|lookup(lua,id));parent(lua,n,p)?;}}Ok(())}
 
-pub fn install(lua:&Lua)->Result<()>{
+#[cfg(all(test, emulator_local_tests))]
+pub fn install(lua:&Lua)->Result<()>{install_impl(lua,true)}
+pub fn install_native_host(lua:&Lua)->Result<()>{install_impl(lua,false)}
+fn install_impl(lua:&Lua,expose_private_callbacks:bool)->Result<()>{
     lua.set_named_registry_value(BASE_ENV,lua.globals())?;
-    let config:Table=crate::internal(lua,"__config")?;let s=Rc::new(RefCell::new(Model{realm:config.get("realmId")?,side:config.get("side")?,client:config.get::<Option<String>>("clientId")?.unwrap_or_default(),actor:config.get::<Option<String>>("actorId")?.unwrap_or_default(),studio:config.get::<Option<bool>>("isStudio")?.unwrap_or(false),..Default::default()}));
+    let config:Table=crate::internal(lua,"__config")?;let side:String=config.get("side")?;let client=config.get::<Option<String>>("clientId")?.unwrap_or_default();
+    let logs=lua.app_data_ref::<LogRegistry>().map(|registry|registry.history(&side,&client)).unwrap_or_default();
+    let s=Rc::new(RefCell::new(Model{realm:config.get("realmId")?,side,client,logs,actor:config.get::<Option<String>>("actorId")?.unwrap_or_default(),studio:config.get::<Option<bool>>("isStudio")?.unwrap_or(false),..Default::default()}));
     lua.set_app_data(s.clone());
     let envs=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","v")?;envs.set_metatable(Some(mt))?;lua.set_named_registry_value(ENVS,envs)?;
     let owners=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","k")?;owners.set_metatable(Some(mt))?;lua.set_named_registry_value(ENV_OWNERS,owners)?;
+    let threads=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","v")?;threads.set_metatable(Some(mt))?;lua.set_named_registry_value(SCRIPT_THREADS,threads)?;
     instance::install(lua)?;
     let game:AnyUserData=lua.globals().get("game")?;let game=game.borrow::<Instance>()?.0.clone();game.borrow_mut().id="game".into();s.borrow_mut().nodes.insert("game".into(),Rc::downgrade(&game));
     for child in &game.borrow().children{let id=child.borrow().class.clone();child.borrow_mut().id=id.clone();s.borrow_mut().nodes.insert(id,Rc::downgrade(child));}
     let terrain=instance::new_node("Terrain")?;terrain.borrow_mut().id="Terrain".into();
     instance::set_parent(&terrain,lookup(lua,"Workspace"))?;s.borrow_mut().nodes.insert("Terrain".into(),Rc::downgrade(&terrain));
-    let model=lua.create_table()?;
-    model.set("seed",lua.create_function(|lua,v:Value|seed(lua,&lua.from_value::<Vec<Json>>(v)?))?)?;
-    model.set("applyChanges",lua.create_function(|lua,v:Value|apply_changes(lua,&lua.from_value::<Vec<Json>>(v)?))?)?;
-    model.set("exportChanges",lua.create_function(|lua,()|lua.to_value(&export_changes(lua)?))?)?;
-    model.set("get",lua.create_function(|lua,id:String|lookup(lua,&id).map(|n|instance::wrapper(lua,n)).transpose())?)?;
-    model.set("getInstances",lua.create_function(|lua,()|{let nodes=required(lua)?.borrow().nodes.values().filter_map(Weak::upgrade).filter(|n|!n.borrow().destroyed).collect();instance::instance_list(lua,nodes)})?)?;
-    model.set("getNilInstances",lua.create_function(|lua,()|{let nodes=required(lua)?.borrow().nodes.values().filter_map(Weak::upgrade).filter(|n|!n.borrow().destroyed&&n.borrow().parent.upgrade().is_none()).collect();instance::instance_list(lua,nodes)})?)?;
-    model.set("getUnsupportedCalls",lua.create_function(|lua,()|{let table=lua.create_table()?;for(name,count)in unsupported_calls(lua)?{table.set(name,count)?;}table.set_readonly(true);Ok(table)})?)?;
-    model.set("getEnvironment",lua.create_function(|lua,u:AnyUserData|env(lua,&u.borrow::<Instance>()?.0))?)?;
-    model.set("runScript",lua.create_function(|lua,id:String|run_script(lua,&id))?)?;
-    model.set("log",lua.create_function(|lua,(level,message):(String,mlua::LuaString)|log(lua,&level,&message.as_bytes()))?)?;
-    model.set("encode",lua.create_function(|lua,v:Value|lua.to_value(&encode(lua,v,&mut HashSet::new())?))?)?;
-    model.set("decode",lua.create_function(|lua,v:Value|decode(lua,&lua.from_value(v)?))?)?;
-    model.set("encodeTuple",lua.create_function(|lua,v:MultiValue|lua.to_value(&encode_args(lua,v)?))?)?;
-    model.set("decodeTuple",lua.create_function(|lua,v:Value|{let args=decode_args(lua,&lua.from_value(v)?)?;let table=lua.create_table()?;table.set("n",args.len())?;for(i,v)in args.into_iter().enumerate(){table.raw_set(i+1,v)?;}Ok(table)})?)?;
-    model.set("frame",lua.create_function(|lua,dt:f64|frame(lua,dt))?)?;
-    model.set("deliver",lua.create_function(|lua,(kind,payload):(String,Value)|deliver(lua,&kind,lua.from_value(payload)?))?)?;
-    lua.globals().set("__model",model)?;
+    if expose_private_callbacks {
+        let model=lua.create_table()?;
+        model.set("get",lua.create_function(|lua,id:String|get_instance(lua,&id))?)?;
+        model.set("getInstances",lua.create_function(|lua,()|instances(lua,false))?)?;
+        model.set("getNilInstances",lua.create_function(|lua,()|instances(lua,true))?)?;
+        model.set("getEnvironment",lua.create_function(|lua,u:AnyUserData|env(lua,&u.borrow::<Instance>()?.0))?)?;
+        lua.globals().set("__model",model)?;
+    }
     let require=unsafe{raw_function(lua,raw_require,c"require")?};lua.globals().set("require",require)?;
     if matches!(lua.globals().get::<Value>("shared")?,Value::Nil){lua.globals().set("shared",lua.create_table()?)?;}
     Ok(())
@@ -1273,10 +1671,39 @@ pub fn apply_changes(lua:&Lua,nodes:&[Json])->Result<()>{let s=required(lua)?;s.
 pub fn run_script(lua:&Lua,id:&str)->Result<Thread>{
     let n=lookup(lua,id).ok_or_else(||Error::runtime("Script unavailable"))?;let f=compile(lua,&n)?;let thread=lua.create_thread(f.clone())?;
     thread_environment(lua,&thread,&n)?;
+    lua.named_registry_value::<Table>(SCRIPT_THREADS)?.raw_set(id,thread.clone())?;
     let name=n.borrow().name.clone();crate::scheduler::set_script_category(lua,&thread,&f,&name)?;
     crate::scheduler::spawn_with(lua,Value::Thread(thread),MultiValue::new(),Some("serial"),Some("game"))
 }
-pub fn frame(lua:&Lua,dt:f64)->Result<()>{poll_children(lua)?;advance_tweens(lua)?;animation::frame(lua)?;let n=lookup(lua,"RunService").ok_or_else(||Error::runtime("RunService unavailable"))?;for event in ["PreSimulation","PostSimulation","Heartbeat"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}fire(lua,&n,"Stepped",args([Value::Number(now(lua)),Value::Number(dt)]))?;if required(lua)?.borrow().side=="client"{for event in ["PreRender","RenderStepped"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}}Ok(())}
+pub fn frame(lua:&Lua,dt:f64)->Result<()>{
+    poll_children(lua)?;advance_tweens(lua)?;animation::frame(lua)?;
+    let n=lookup(lua,"RunService").ok_or_else(||Error::runtime("RunService unavailable"))?;
+    for event in ["PreSimulation","PostSimulation","Heartbeat"]{fire(lua,&n,event,args([Value::Number(dt)]))?;}
+    fire(lua,&n,"Stepped",args([Value::Number(now(lua)),Value::Number(dt)]))?;
+    let state=required(lua)?;
+    let render_delta={let mut state=state.borrow_mut();
+        if state.side!="client" {None} else {
+            state.render_elapsed+=dt;
+            state.render_phase+=dt;
+            if state.fps_cap==0.0||state.render_phase+1e-9>=1.0/state.fps_cap {
+                let elapsed=state.render_elapsed;state.render_elapsed=0.0;
+                state.render_phase=if state.fps_cap==0.0{0.0}else{(state.render_phase-1.0/state.fps_cap).max(0.0)%(1.0/state.fps_cap)};
+                Some(elapsed)
+            }else{None}
+        }
+    };
+    if let Some(elapsed)=render_delta {
+        let mut bindings:Vec<_>=state.borrow().render_bindings.iter().map(|(id,binding)|(*id,binding.clone())).collect();
+        bindings.sort_by_key(|(_,binding)|binding.priority);
+        for (id,binding) in bindings {
+            if state.borrow().render_bindings.contains_key(&id) {
+                crate::scheduler::fire_render_callback(lua,binding.callback,binding.environment,&binding.origin,args([Value::Number(elapsed)]))?;
+            }
+        }
+        for event in ["PreRender","RenderStepped"]{fire(lua,&n,event,args([Value::Number(elapsed)]))?;}
+    }
+    Ok(())
+}
 pub(crate) fn animation_authorized(lua:&Lua,payload:&Json,client:Option<&str>)->Result<bool>{animation::authorized(lua,payload,client)}
 pub fn deliver(lua:&Lua,kind:&str,payload:Json)->Result<()>{
     if kind=="animation"{return animation::deliver(lua,&payload)}
@@ -1588,6 +2015,84 @@ unsafe extern "C-unwind" fn raw_require(state:*mut ffi::lua_State)->std::ffi::c_
 })}}
 
 unsafe fn raw_function(lua:&Lua,callback:ffi::lua_CFunction,name:&'static CStr)->Result<Function>{unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunctiond(state,callback,name.as_ptr()))}}
+fn http_service_receiver(lua:&Lua,values:&mut MultiValue,name:&str)->Result<()> {
+    if !instance::has_instance_self(values) {return Err(Error::lua_string(format!("Expected ':' not '.' calling member function {name}")))}
+    let node=object_arg(values)?;
+    instance::validate_method(&node.borrow(),name)?;
+    if node.borrow().class!="HttpService" {return Err(unsupported(lua,&format!("{}.{name}",node.borrow().class)))}
+    if required(lua)?.borrow().side!="server" {return Err(Error::lua_string("Http requests can only be executed by game server"))}
+    Ok(())
+}
+fn http_string(value:Option<Value>,name:&str)->Result<mlua::LuaString>{
+    match value {Some(Value::String(value))=>Ok(value),_=>Err(Error::lua_string(format!("{name} must be a string")))}
+}
+fn http_headers(lua:&Lua,value:Option<Value>)->Result<Table>{
+    let output=lua.create_table()?;
+    match value.unwrap_or(Value::Nil) {
+        Value::Nil=>{},
+        Value::Table(input)=>{
+            let mut count=0usize;let mut bytes=0usize;
+            for pair in input.pairs::<Value,Value>() {
+                let (key,value)=pair?;
+                let (Value::String(name),Value::String(text))=(&key,&value) else{return Err(Error::lua_string("headers must contain string keys and values"))};
+                count+=1;bytes=bytes.saturating_add(name.as_bytes().len()).saturating_add(text.as_bytes().len()).saturating_add(4);
+                if count>128||bytes>64*1024{return Err(Error::lua_string("HTTP request headers exceed limit"))}
+                output.raw_set(key,value)?;
+            }
+        },
+        _=>return Err(Error::lua_string("headers must be a table")),
+    }
+    Ok(output)
+}
+fn http_has_header(headers:&Table,name:&str)->Result<bool>{
+    for pair in headers.clone().pairs::<Value,Value>() {
+        let (key,_)=pair?;
+        if let Value::String(key)=key {if key.to_str().is_ok_and(|key|key.eq_ignore_ascii_case(name)){return Ok(true)}}
+    }
+    Ok(false)
+}
+unsafe extern "C-unwind" fn raw_http_request(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
+    http_service_receiver(lua,&mut values,"RequestAsync")?;
+    let Some(Value::Table(options))=values.pop_front() else{return Err(Error::lua_string("requestOptions must be a table"))};
+    let method=match options.raw_get::<Value>("Method")? {
+        Value::Nil=>"GET".to_owned(),
+        Value::String(value) if value.as_bytes().len()<=16=>value.to_str()?.to_ascii_uppercase(),
+        _=>return Err(Error::lua_string("Method must be a short string")),
+    };
+    if matches!(method.as_str(),"GET"|"HEAD") && !options.raw_get::<Value>("Body")?.is_nil() {return Err(Error::lua_string("GET and HEAD requests cannot have a body"))}
+    let compression=options.raw_get::<Value>("Compress")?;
+    if !compression.is_nil() && enum_name(&compression,"HttpCompression")?!="None" {return Err(unsupported(lua,"HttpService.RequestAsync compression"))}
+    if !options.raw_get::<Value>("Timeout")?.is_nil() {return Err(unsupported(lua,"HttpService.RequestAsync timeout"))}
+    crate::network::submit(lua,options,crate::network::ResponseKind::HttpServiceRequest)
+})}}
+unsafe extern "C-unwind" fn raw_http_get_async(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
+    http_service_receiver(lua,&mut values,"GetAsync")?;
+    let url=http_string(values.pop_front(),"url")?;
+    let nocache=match values.pop_front().unwrap_or(Value::Nil){Value::Nil=>false,Value::Boolean(value)=>value,_=>return Err(Error::lua_string("nocache must be a boolean"))};
+    let headers=http_headers(lua,values.pop_front())?;
+    if nocache && !http_has_header(&headers,"Cache-Control")? {headers.raw_set("Cache-Control","no-cache")?;}
+    let options=lua.create_table()?;options.raw_set("Url",url)?;options.raw_set("Method","GET")?;options.raw_set("Headers",headers)?;
+    crate::network::submit(lua,options,crate::network::ResponseKind::HttpServiceGet)
+})}}
+unsafe extern "C-unwind" fn raw_http_post_async(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
+    http_service_receiver(lua,&mut values,"PostAsync")?;
+    let url=http_string(values.pop_front(),"url")?;let body=http_string(values.pop_front(),"data")?;
+    let content=values.pop_front().unwrap_or(Value::Nil);
+    let content=if content.is_nil(){"ApplicationJson".to_owned()}else{enum_name(&content,"HttpContentType")?};
+    let content=match content.as_str(){"ApplicationJson"=>"application/json","ApplicationXml"=>"application/xml","ApplicationUrlEncoded"=>"application/x-www-form-urlencoded","TextPlain"=>"text/plain","TextXml"=>"text/xml",_=>return Err(Error::lua_string("invalid HttpContentType"))};
+    match values.pop_front().unwrap_or(Value::Nil){Value::Nil|Value::Boolean(false)=>{},Value::Boolean(true)=>return Err(unsupported(lua,"HttpService.PostAsync compression")),_=>return Err(Error::lua_string("compress must be a boolean"))}
+    let headers=http_headers(lua,values.pop_front())?;
+    if !http_has_header(&headers,"Content-Type")? {headers.raw_set("Content-Type",content)?;}
+    let options=lua.create_table()?;options.raw_set("Url",url)?;options.raw_set("Method","POST")?;options.raw_set("Body",body)?;options.raw_set("Headers",headers)?;
+    crate::network::submit(lua,options,crate::network::ResponseKind::HttpServicePost)
+})}}
+unsafe extern "C-unwind" fn raw_game_http_get(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{Lua::invoke_native_callback(state,|lua,mut values|{
+    let node=object_arg(&mut values)?;instance::validate_method(&node.borrow(),"HttpGet")?;
+    if crate::scheduler::current_origin(lua)!="executor" {return Err(unsupported(lua,"game.HttpGet outside executor"))}
+    let url=http_string(values.pop_front(),"url")?;
+    let options=lua.create_table()?;options.raw_set("Url",url)?;options.raw_set("Method","GET")?;
+    crate::network::submit(lua,options,crate::network::ResponseKind::GameHttpGet)
+})}}
 unsafe extern "C-unwind" fn raw_preload_async(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
     Lua::invoke_native_callback(state,|lua,values|{
         if !instance::has_instance_self(&values){return Err(Error::lua_string("Expected ':' not '.' calling member function PreloadAsync"))}
@@ -1602,13 +2107,13 @@ unsafe extern "C-unwind" fn raw_namecall(state:*mut ffi::lua_State)->std::ffi::c
         if name.is_null(){return Err(Error::lua_string("attempt to call an unknown method"))}
         let name=CStr::from_ptr(name).to_str().map_err(Error::external)?;
         let node=object_arg(&mut values)?;instance::validate_method(&node.borrow(),name)?;
-        let callback=match name{"JSONEncode"=>raw_json_encode,"Fire"=>raw_fire,"WaitForChild"=>raw_wait_for_child,"Invoke"=>raw_invoke,"InvokeServer"=>raw_invoke_server,"InvokeClient"=>raw_invoke_client,"PreloadAsync"=>raw_preload_async,_=>callback};
+        let callback=match name{"JSONEncode"=>raw_json_encode,"Fire"=>raw_fire,"WaitForChild"=>raw_wait_for_child,"Invoke"=>raw_invoke,"InvokeServer"=>raw_invoke_server,"InvokeClient"=>raw_invoke_client,"PreloadAsync"=>raw_preload_async,"RequestAsync"=>raw_http_request,"GetAsync"=>raw_http_get_async,"PostAsync"=>raw_http_post_async,"HttpGet"=>raw_game_http_get,_=>callback};
         Ok(NativeCall::Dispatch(callback))
     })
 }}
 pub(crate) fn install_yielding_methods(lua:&Lua,game:&AnyUserData,methods:&Table)->Result<()>{unsafe{
     methods.raw_set("PreloadAsync",raw_function(lua,raw_preload_async,c"PreloadAsync")?)?;
-    for(name,cname,callback)in[("JSONEncode",c"JSONEncode",raw_json_encode as ffi::lua_CFunction),("Fire",c"Fire",raw_fire),("WaitForChild",c"WaitForChild",raw_wait_for_child),("Invoke",c"Invoke",raw_invoke),("InvokeServer",c"InvokeServer",raw_invoke_server),("InvokeClient",c"InvokeClient",raw_invoke_client)]{methods.raw_set(name,raw_function(lua,callback,cname)?)?;}
+    for(name,cname,callback)in[("JSONEncode",c"JSONEncode",raw_json_encode as ffi::lua_CFunction),("Fire",c"Fire",raw_fire),("WaitForChild",c"WaitForChild",raw_wait_for_child),("Invoke",c"Invoke",raw_invoke),("InvokeServer",c"InvokeServer",raw_invoke_server),("InvokeClient",c"InvokeClient",raw_invoke_client),("RequestAsync",c"RequestAsync",raw_http_request),("GetAsync",c"GetAsync",raw_http_get_async),("PostAsync",c"PostAsync",raw_http_post_async),("HttpGet",c"HttpGet",raw_game_http_get)]{methods.raw_set(name,raw_function(lua,callback,cname)?)?;}
     let original:Function=game.metatable()?.get("__namecall")?;
     let replacement:Function=lua.exec_raw(original,|state|{ffi::lua_getupvalue(state,1,1);ffi::lua_pushvalue(state,1);ffi::lua_pushcclosurek(state,raw_namecall,std::ptr::null(),2,None);ffi::lua_remove(state,1);})?;
     lua.exec_raw::<()>((game.clone(),replacement),|state|{ffi::lua_getmetatable(state,1);ffi::lua_pushvalue(state,2);ffi::lua_rawsetfield(state,-2,c"__namecall".as_ptr());ffi::lua_settop(state,0);})?;Ok(())
@@ -1650,7 +2155,7 @@ const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
     ("ContentProvider", "RequestQueueSize", "number"),
     ("Path2D", "Closed Visible", "boolean"), ("Path2D", "Thickness", "number"), ("Path2D", "Color3", "Color3"),
 ];
-const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Completed Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased AnimationPlayed Stopped Ended DidLoop KeyframeReached";
+const COMPLETION_EVENTS: &str = "ChildAdded ChildRemoved DescendantAdded DescendantRemoving AncestryChanged Changed Destroying AttributeChanged Loaded Completed Event OnServerEvent OnClientEvent PlayerAdded PlayerRemoving CharacterAdded CharacterRemoving Idled Heartbeat Stepped RenderStepped PreSimulation PostSimulation PreRender MessageOut AssetFetchFailed Died StateChanged Touched TouchEnded Error InputBegan InputEnded InputChanged WindowFocused WindowFocusReleased AnimationPlayed Stopped Ended DidLoop KeyframeReached";
 
 fn completion_class(node: &instance::Node, classes: &str) -> bool { classes.split('|').any(|class| instance::is_a(node, class)) }
 fn completion_label(label: &str) -> bool { !label.is_empty() && label.len() <= 256 && !label.contains('\0') }
@@ -1710,7 +2215,7 @@ pub(crate) fn completions(lua: &Lua, path: &[String]) -> Result<Vec<Json>> {
         let (Value::String(name),Value::Function(_)) = entry? else { continue; };
         let Ok(name) = name.to_str() else { continue; };
         if !completion_label(&name) || !instance::method_class(&name).is_some_and(|class|class.split('|').any(|class|instance::is_a(&node,class))) { continue; }
-        let info = if UNSUPPORTED.iter().any(|(method,_)|*method == &*name) { "Known method; this emulator reports UnsupportedApi" } else { "Native Instance method in the selected VM" };
+        let info = if UNSUPPORTED.iter().any(|(method,_)|*method == &*name) && !(&*name == "PostAsync" && node.class == "HttpService") { "Known method; this emulator reports UnsupportedApi" } else { "Native Instance method in the selected VM" };
         items.insert(name.to_string(), completion_item(&name,"method","function",info));
     }
     for child in node.children.iter().take(4096) {
@@ -1734,8 +2239,17 @@ fn inspect_reference(node: &instance::Node) -> Json {
 }
 fn inspect_row(node: &Link) -> Json {
     let node = node.borrow();
-    json!({"id":node.id,"name":crate::console::display_bytes(node.name.as_bytes(),512),"class":node.class,
+    json!({"id":node.id,"objectId":node.cache_id.to_string(),"name":crate::console::display_bytes(node.name.as_bytes(),512),"class":node.class,
         "hasChildren":node.children.iter().any(|child| !child.borrow().destroyed)})
+}
+
+pub(crate) fn inspect_source(lua: &Lua, id: &str, object_id: &str) -> Result<Json> {
+    let node=lookup(lua,id).filter(|node|!node.borrow().destroyed).ok_or_else(||Error::runtime("Instance unavailable in selected VM"))?;
+    let node=node.borrow();
+    if node.cache_id.to_string()!=object_id {return Err(Error::runtime("Instance changed; refresh Runtime Explorer"))}
+    if !matches!(node.class.as_str(),"Script"|"LocalScript"|"ModuleScript") {return Err(Error::runtime("Selected instance is not a script"))}
+    if !node.source_available || (node.source.is_empty() && !node.linked_source.is_empty()) {return Err(Error::runtime("Script source is unavailable in this VM"))}
+    Ok(json!({"id":node.id,"objectId":object_id,"name":node.name,"class":node.class,"source":node.source}))
 }
 
 pub(crate) fn inspect_tree(lua: &Lua, parent: Option<&str>, offset: usize) -> Result<Json> {
@@ -1760,6 +2274,41 @@ pub(crate) fn inspect_tree(lua: &Lua, parent: Option<&str>, offset: usize) -> Re
     Ok(json!({"items":items,"total":total,"nextOffset":(end < total).then_some(end)}))
 }
 
+pub(crate) fn inspect_game_root(lua: &Lua) -> Result<Json> {
+    let game = lookup(lua, "game").filter(|node| !node.borrow().destroyed);
+    let items: Vec<Json> = game.iter().map(inspect_row).collect();
+    Ok(json!({"total":items.len(),"items":items,"nextOffset":null}))
+}
+
+pub(crate) fn inspect_nil_instances(lua: &Lua, offset: usize) -> Result<Json> {
+    let state = required(lua)?;
+    let model = state.borrow();
+    let mut nodes: Vec<Link> = model.nodes.values().filter_map(Weak::upgrade).filter(|node| {
+        let node = node.borrow();
+        node.id != "game" && !node.destroyed && node.parent.upgrade().is_none()
+    }).collect();
+    let total = nodes.len();
+    let priority: HashMap<u64, usize> = model.recent_nil.iter().enumerate().filter_map(|(index, node)| {
+        node.upgrade().and_then(|node| {
+            let node = node.borrow();
+            (!node.destroyed && node.parent.upgrade().is_none()).then_some((node.cache_id, index))
+        })
+    }).collect();
+    let compare = |a: &Link, b: &Link| { let a=a.borrow();let b=b.borrow();
+        (priority.get(&a.cache_id).copied().unwrap_or(usize::MAX), &a.name, &a.class, &a.id)
+            .cmp(&(priority.get(&b.cache_id).copied().unwrap_or(usize::MAX), &b.name, &b.class, &b.id))
+    };
+    // The UI requests only one page; sorting the unused tail wastes work.
+    let end = offset.saturating_add(INSPECT_PAGE_SIZE).min(total);
+    if offset < total {
+        if end < total { nodes.select_nth_unstable_by(end, compare); }
+        nodes[..end].sort_unstable_by(compare);
+    }
+    let items: Vec<Json> = nodes.iter().skip(offset).take(INSPECT_PAGE_SIZE).map(inspect_row).collect();
+    let end = offset.saturating_add(items.len());
+    Ok(json!({"items":items,"total":total,"nextOffset":(end < total).then_some(end)}))
+}
+
 pub(crate) fn inspect_node(lua: &Lua, id: &str) -> Result<Json> {
     if id.len() > 1024 { return Err(Error::runtime("Instance identifier is too long")); }
     let node = lookup(lua,id).filter(|node| !node.borrow().destroyed)
@@ -1773,7 +2322,7 @@ pub(crate) fn inspect_node(lua: &Lua, id: &str) -> Result<Json> {
     properties.insert("ClassName".to_owned(), inspect_text(&node.class));
     properties.insert("Parent".to_owned(), node.parent.upgrade().map(|parent| inspect_reference(&parent.borrow())).unwrap_or_else(||json!({"type":"nil"})));
     properties.insert("Archivable".to_owned(), json!({"type":"boolean","value":node.archivable}));
-    if instance::is_a(&node,"LuaSourceContainer") {
+    if instance::is_a(&node,"LuaSourceContainer") && node.source_available {
         properties.insert("Source".to_owned(), inspect_text(&node.source));
         properties.insert("LinkedSource".to_owned(), inspect_text(&node.linked_source));
     }

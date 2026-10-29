@@ -1,8 +1,8 @@
 use mlua::{Error as LuaError, Function, Lua, LuaSerdeExt, Result as LuaResult, Table, Value, VmState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
-use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, env, fs, path::{Path, PathBuf}, rc::Rc, time::{Duration, Instant}};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, env, fs, io::Read, path::{Path, PathBuf}, rc::Rc, time::{Duration, Instant}};
 mod native;
 mod instance;
 mod types;
@@ -10,9 +10,22 @@ mod scheduler;
 mod model;
 mod spatial;
 mod executor;
+mod encoding;
+mod drawing;
+mod network;
 mod diagnostics;
+mod place;
 mod session;
 mod web;
+mod worker;
+mod remote_session;
+#[cfg(windows)] mod sandbox_windows;
+#[cfg(not(windows))]
+mod sandbox_windows {
+    use std::{fs::File,io};
+    pub(crate) struct WorkerProcess {pub(crate) stdin:File,pub(crate) stdout:File}
+    pub(crate) fn spawn_worker()->io::Result<WorkerProcess> {Err(io::Error::new(io::ErrorKind::Unsupported,"OS sandbox is available on Windows only"))}
+}
 mod console;
 mod inspector;
 mod lint;
@@ -23,6 +36,13 @@ mod bytecode;
 unsafe extern "system" {
     fn QueryPerformanceCounter(value:*mut i64)->i32;
     fn QueryPerformanceFrequency(value:*mut i64)->i32;
+    fn SetConsoleCtrlHandler(handler:Option<unsafe extern "system" fn(u32)->i32>,add:i32)->i32;
+}
+static STOP_REQUESTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+fn stop_requested()->bool {STOP_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)}
+#[cfg(windows)]
+unsafe extern "system" fn console_interrupt(kind:u32)->i32 {
+    if kind<=1 {STOP_REQUESTED.store(true,std::sync::atomic::Ordering::Relaxed);1}else{0}
 }
 struct BudgetClock {
     #[cfg(windows)] frequency:Option<i64>,
@@ -67,6 +87,13 @@ pub(crate) fn internal<T: mlua::FromLua>(lua:&Lua,name:&str)->LuaResult<T> {
     if let Ok(table)=lua.named_registry_value::<Table>("emulator.internal") { table.get(name) } else {lua.globals().get(name)}
 }
 
+struct HostLogSink(Rc<dyn Fn(&Lua, &str, mlua::LuaString) -> LuaResult<()>>);
+pub(crate) fn host_log(lua:&Lua,level:&str,message:mlua::LuaString)->LuaResult<()> {
+    let sink=lua.app_data_ref::<HostLogSink>().map(|sink|sink.0.clone());
+    if let Some(sink)=sink { return sink(lua,level,message); }
+    if let Ok(logger)=internal::<Function>(lua,"__host_log") { logger.call((level,message)) } else { Ok(()) }
+}
+
 fn hide_internals(lua:&Lua)->LuaResult<()> {
     let private=lua.create_table()?;
     let globals=lua.globals();
@@ -78,7 +105,7 @@ fn hide_internals(lua:&Lua)->LuaResult<()> {
     Ok(())
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RealmConfig {
     id: String,
@@ -91,7 +118,7 @@ struct RealmConfig {
     #[serde(default)] executor_entry: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExpectedError {
     realm: String,
@@ -99,7 +126,7 @@ struct ExpectedError {
     max_count: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Scenario {
     name: String,
@@ -136,18 +163,23 @@ struct Host {
     pending_bytes: Rc<Cell<usize>>,
     log_sequence: Rc<Cell<u64>>,
     bindables: model::BindableRegistry,
+    log_registry: model::LogRegistry,
+    network: Option<network::Broker>,
     interactive: bool,
+    quiet: bool,
 }
 
 impl Host {
     fn new() -> Self {
-        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), bindables: Default::default(), interactive: false }
+        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), bindables: Default::default(), log_registry: Default::default(), network: None, interactive: false, quiet: false }
     }
 
-    fn interactive() -> Self { Self { interactive: true, ..Self::new() } }
+    fn interactive() -> Self { Self { interactive: true, network: Some(network::Broker::new()), ..Self::new() } }
 
     fn realm(&self, cfg: &RealmConfig, scenario: &Scenario) -> LuaResult<Realm> {
         let lua = Lua::new();
+        if let Some(network) = &self.network { network.attach(&lua, &cfg.id); }
+        self.log_registry.attach(&lua,&cfg.side,cfg.client_id.as_deref().unwrap_or(""));
         lua.set_app_data(self.bindables.clone());
         if self.interactive { lua.set_app_data(console::Capture::default()); inspector::install(&lua)?; }
         native::install(&lua)?;
@@ -174,23 +206,30 @@ impl Host {
         let native_mode=scenario.engine=="native";
         let log_sequence = self.log_sequence.clone();
         let interactive = self.interactive;
+        let quiet = self.quiet;
         let side = cfg.side.clone();
-        globals.set("__host_log", lua.create_function(move |lua, (level, message): (String, mlua::LuaString)| {
+        let logger=Rc::new(move |lua:&Lua, level:&str, message:mlua::LuaString| -> LuaResult<()> {
             let arguments = console::take(lua);
             if logs.borrow().len() >= 4000 {
                 if interactive { logs.borrow_mut().drain(..2000); }
                 else { return Err(LuaError::runtime("BudgetExceeded: console log limit")); }
             }
             let text = console::display_bytes(&message.as_bytes(), 4096);
-            if !interactive { println!("[{:.3}][{}][{}] {}", clock.get(), realm_id, level, text); }
+            if !interactive && !quiet { println!("[{:.3}][{}][{}] {}", clock.get(), realm_id, level, text); }
             log_sequence.set(log_sequence.get().saturating_add(1));
             let context = if native_mode && scheduler::current_origin(lua)=="executor" { "executor" } else { side.as_str() };
             let mut record = json!({"seq":log_sequence.get(),"time":clock.get(),"realm":realm_id,"context":context,"level":level,"message":text});
+            if let Some((source, line)) = diagnostics::caller(lua) {
+                record["source"] = json!(source);
+                record["sourceLine"] = json!(line);
+            }
             if let Some(arguments) = arguments { record["arguments"] = json!(arguments); }
             logs.borrow_mut().push(record);
-            if native_mode { model::log(lua,&level,&message.as_bytes())?; }
+            if native_mode { model::log(lua,level,&message.as_bytes())?; }
             Ok(())
-        })?)?;
+        });
+        if native_mode { lua.set_app_data(HostLogSink(logger)); }
+        else { globals.set("__host_log",lua.create_function(move |lua,(level,message):(String,mlua::LuaString)|logger(lua,&level,message))?)?; }
         let messages = self.messages.clone();
         let emitted = self.emitted.clone();
         let pending_bytes = self.pending_bytes.clone();
@@ -210,28 +249,31 @@ impl Host {
             messages.borrow_mut().push_back(Message { from: realm_id.clone(), kind, payload, at: clock.get() + delay, bytes });
             Ok(())
         });
-        if native_mode {lua.set_app_data(model::MessageSink(emit.clone()));}
-        globals.set("__host_emit", lua.create_function(move |lua, (kind, payload): (String, Value)| emit(kind,lua.from_value(payload)?))?)?;
-        globals.set("__host_compile", lua.create_function(|lua, (source, name, environment): (String, String, Table)| {
-            if source.len() > 8 * 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: source size")); }
-            lua.load(&source).set_mode(mlua::chunk::ChunkMode::Text).set_name(name).set_environment(environment).into_function()
-        })?)?;
-        globals.set("__host_sha256", lua.create_function(|lua, (source, raw): (mlua::LuaString, Option<bool>)| {
-            let hash = Sha256::digest(source.as_bytes());
-            if raw.unwrap_or(false) { lua.create_string(hash) }
-            else { lua.create_string(hash.iter().map(|b| format!("{b:02x}")).collect::<String>()) }
-        })?)?;
-        globals.set("__host_json_encode", model::json_encode_function(&lua)?)?;
-        globals.set("__host_json_decode", lua.create_function(|lua, value: String| {
-            if value.len() > 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: JSON size")); }
-            let value: Json = serde_json::from_str(&value).map_err(LuaError::external)?;
-            lua.to_value(&value)
-        })?)?;
-        globals.set("__host_gc_collect", lua.create_function(|lua, ()| { lua.gc_collect()?; lua.gc_collect() })?)?;
+        if native_mode {
+            lua.set_app_data(model::MessageSink(emit));
+        } else {
+            globals.set("__host_emit", lua.create_function(move |lua, (kind, payload): (String, Value)| emit(kind,lua.from_value(payload)?))?)?;
+            globals.set("__host_compile", lua.create_function(|lua, (source, name, environment): (String, String, Table)| {
+                if source.len() > 8 * 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: source size")); }
+                lua.load(&source).set_mode(mlua::chunk::ChunkMode::Text).set_name(name).set_environment(environment).into_function()
+            })?)?;
+            globals.set("__host_sha256", lua.create_function(|lua, (source, raw): (mlua::LuaString, Option<bool>)| {
+                let hash = Sha256::digest(source.as_bytes());
+                if raw.unwrap_or(false) { lua.create_string(hash) }
+                else { lua.create_string(hash.iter().map(|b| format!("{b:02x}")).collect::<String>()) }
+            })?)?;
+            globals.set("__host_json_encode", model::json_encode_function(&lua)?)?;
+            globals.set("__host_json_decode", lua.create_function(|lua, value: String| {
+                if value.len() > 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: JSON size")); }
+                let value: Json = serde_json::from_str(&value).map_err(LuaError::external)?;
+                lua.to_value(&value)
+            })?)?;
+            globals.set("__host_gc_collect", lua.create_function(|lua, ()| { lua.gc_collect()?; lua.gc_collect() })?)?;
+        }
         if scenario.engine == "native" {
-            scheduler::install(&lua)?;
+            scheduler::install_native_host(&lua)?;
             types::install(&lua)?;
-            model::install(&lua)?;
+            model::install_native_host(&lua)?;
             executor::install(&lua)?;
         } else {
             lua.load(include_str!("../runtime/scheduler.luau")).set_name("@emulator/scheduler").exec()?;
@@ -248,6 +290,13 @@ impl Host {
 impl Realm {
     fn arm(&self, cpu_ms: u64) { self.deadline.set(Instant::now() + Duration::from_millis(cpu_ms)); }
     fn model(&self) -> LuaResult<Table> { internal(&self.lua,"__model") }
+    fn get_instance(&self,id:&str)->LuaResult<Option<mlua::AnyUserData>> {
+        if self.native {model::get_instance(&self.lua,id)} else {self.model()?.get::<Function>("get")?.call(id)}
+    }
+    fn script_environment(&self,script:mlua::AnyUserData)->LuaResult<Table> {
+        if self.native {model::env(&self.lua,&script.borrow::<instance::Instance>()?.0)}
+        else {self.model()?.get::<Function>("getEnvironment")?.call(script)}
+    }
     fn call_model<A: mlua::IntoLuaMulti, R: mlua::FromLuaMulti>(&self, name: &str, args: A) -> LuaResult<R> {
         self.model()?.get::<Function>(name)?.call(args)
     }
@@ -284,6 +333,41 @@ fn visible(node: &Json, nodes: &HashMap<String, Json>) -> bool {
     false
 }
 
+fn table_field<'a>(table: &'a Json, key: &str) -> Option<&'a Json> {
+    if table["tag"]=="table" {
+        table["entries"].as_array()?.iter().find(|entry|entry["key"]["value"]==key).map(|entry|&entry["value"])
+    } else { table.get(key) }
+}
+fn json_text(value: &Json) -> Option<&str> {
+    value.as_str().or_else(||(value["tag"]=="string").then(||value["value"].as_str()).flatten())
+}
+fn client_script_source(node: &Json, scenario: &Scenario) -> bool {
+    if node["class"]!="Script" {return true}
+    if scenario.realms.iter().any(|realm|realm.side=="client" && realm.entry.iter().any(|id|id==node_id(node))) {return true}
+    let Some(context)=table_field(&node["properties"],"RunContext") else{return false};
+    if json_text(context).is_some_and(|value|matches!(value,"Client"|"Enum.RunContext.Client")) {return true}
+    if context.as_i64()==Some(2) || (context["tag"]=="number" && context["value"].as_i64()==Some(2)) {return true}
+    table_field(context,"enum").and_then(json_text)==Some("RunContext") && table_field(context,"name").and_then(json_text)==Some("Client")
+}
+fn include_source_fields(node: &mut Json) {
+    if let Some(changed)=node.get_mut("$changed").and_then(Json::as_object_mut) {
+        let fields=changed.entry("fields").or_insert_with(||json!([]));
+        if let Some(fields)=fields.as_array_mut(){for name in ["source","sourceInitialized","linkedSource"]{if !fields.iter().any(|field|field==name){fields.push(json!(name));}}}
+    }
+}
+fn strip_client_source(node: &mut Json) {
+    if let Some(fields)=node.as_object_mut() {
+        fields.insert("source".into(),Json::Null);
+        fields.insert("sourceInitialized".into(),Json::Bool(false));
+        fields.insert("linkedSource".into(),Json::Null);
+        for key in ["sourcePath","sourceInsertions","sourcePrependPaths","sourcePrefix","sourceSuffix"]{fields.remove(key);}
+    }
+    include_source_fields(node);
+}
+fn redact_client_source(node: &mut Json, scenario: &Scenario) {
+    if !client_script_source(node,scenario) {strip_client_source(node);}
+}
+
 fn same_machine(a: &RealmConfig, b: &RealmConfig) -> bool {
     a.side == b.side && a.client_id == b.client_id
 }
@@ -308,10 +392,23 @@ fn sync_realms(realms: &[Realm], scenario: &Scenario, server_nodes: &mut HashMap
                 let id = node_id(n);
                 if same || visible(n, server_nodes) {
                     let previous=known[j].get(id);
-                    let merged=model::merge_replica(previous,n);
-                    if previous.is_none(){
-                        outgoing.push(if from.config.side=="server"{server_nodes.get(id).cloned().unwrap_or_else(||merged.clone())}else{merged.clone()});
-                    }else{outgoing.push(n.clone());}
+                    let mut merged=model::merge_replica(previous,n);
+                    let canonical=server_nodes.get(id).unwrap_or(&merged);
+                    let mut delta=if previous.is_none(){
+                        if from.config.side=="server"{canonical.clone()}else{merged.clone()}
+                    }else{n.clone()};
+                    if to.config.side=="client" {
+                        if !client_script_source(canonical,scenario) {
+                            strip_client_source(&mut delta);
+                            strip_client_source(&mut merged);
+                        } else if previous.is_some_and(|old|old["source"].is_null()) && canonical["source"].is_string() {
+                            let source=canonical["source"].clone();let initialized=json!(canonical["sourceInitialized"].as_bool().unwrap_or(true));let linked=canonical["linkedSource"].clone();
+                            delta["source"]=source.clone();delta["sourceInitialized"]=initialized.clone();delta["linkedSource"]=linked.clone();
+                            merged["source"]=source;merged["sourceInitialized"]=initialized;merged["linkedSource"]=linked;
+                            include_source_fields(&mut delta);
+                        }
+                    }
+                    outgoing.push(delta);
                     if n.get("destroyed").and_then(Json::as_bool) == Some(true) { known[j].remove(id); }
                     else { known[j].insert(id.to_owned(), merged); }
                 } else if known[j].remove(id).is_some() {
@@ -325,6 +422,22 @@ fn sync_realms(realms: &[Realm], scenario: &Scenario, server_nodes: &mut HashMap
 }
 
 fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
+    // Broadcast engine log events only to other VMs in the same process. The
+    // group already shares history; delivering a signal must not log again.
+    let count=host.log_registry.pending();
+    for _ in 0..count {
+        let Some(mut item)=host.log_registry.pop() else{break};
+        let Some(from)=realms.iter().find(|realm|realm.config.id==item.from) else{continue};
+        while item.next<realms.len() {
+            let index=item.next;item.next+=1;let to=&realms[index];
+            if to.config.id==item.from || !same_machine(&from.config,&to.config){continue}
+            to.arm(scenario.cpu_ms);scheduler::with_network_root(&to.lua,||model::deliver_log(&to.lua,&item))?;
+            if host.network.as_ref().is_some_and(|network|network.has_pending()) {
+                if item.next<realms.len(){host.log_registry.restore(item);}
+                return Ok(())
+            }
+        }
+    }
     let count = host.messages.borrow().len();
     for _ in 0..count {
         let Some(mut msg) = host.messages.borrow_mut().pop_front() else { break };
@@ -366,16 +479,23 @@ fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
     Ok(())
 }
 
+const MAX_ASSEMBLED_SOURCE:usize=8*1024*1024;
+const MAX_SCENARIO_SOURCES:usize=32*1024*1024;
+fn read_bounded(path:&Path,limit:usize)->Result<Vec<u8>,Box<dyn std::error::Error>> {
+    let mut bytes=Vec::new();
+    fs::File::open(path)?.take(limit as u64+1).read_to_end(&mut bytes)?;
+    if bytes.len()>limit {return Err(format!("File exceeds size limit: {}",path.display()).into());}
+    Ok(bytes)
+}
 fn read_source(path:&Path, files:&mut Vec<Json>) -> Result<String,Box<dyn std::error::Error>> {
-    if fs::metadata(path)?.len()>8*1024*1024 {return Err(format!("Source too large: {}",path.display()).into());}
-    let bytes=fs::read(path)?;
-    if bytes.len()>8*1024*1024 {return Err(format!("Source too large: {}",path.display()).into());}
+    let bytes=read_bounded(path,MAX_ASSEMBLED_SOURCE)?;
     files.push(json!({"path":path.to_string_lossy(),"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))}));
     Ok(String::from_utf8(bytes)?.replace("\r\n","\n"))
 }
 
 fn load_nodes(nodes: &mut [Json], base: &Path) -> Result<Vec<Json>, Box<dyn std::error::Error>> {
     let mut snapshots=Vec::new();
+    let mut source_bytes=0usize;
     for node in nodes {
         let mut files=Vec::new();
         if let Some(path) = node.get("sourcePath").and_then(Json::as_str) {
@@ -387,39 +507,45 @@ fn load_nodes(nodes: &mut [Json], base: &Path) -> Result<Vec<Json>, Box<dyn std:
                     let piece = insertion.get("path").and_then(Json::as_str).ok_or("sourceInsertions requires path")?;
                     if source.matches(marker).count() != 1 { return Err(format!("Source insertion marker must occur exactly once: {}", path.display()).into()); }
                     let piece = read_source(&base.join(piece),&mut files)?;
+                    if source.len().saturating_add(piece.len()).saturating_add(2)>MAX_ASSEMBLED_SOURCE {return Err("Assembled source exceeds 8 MiB".into());}
                     source = source.replacen(marker, &format!("{marker}\n{piece}\n"), 1);
                 }
             }
             if let Some(paths) = node.get("sourcePrependPaths").and_then(Json::as_array) {
                 let mut prelude = String::new();
-                for piece in paths { prelude.push_str(&read_source(&base.join(piece.as_str().ok_or("sourcePrependPaths must contain strings")?),&mut files)?); prelude.push('\n'); }
+                for piece in paths {
+                    let piece=read_source(&base.join(piece.as_str().ok_or("sourcePrependPaths must contain strings")?),&mut files)?;
+                    if prelude.len().saturating_add(piece.len()).saturating_add(source.len()).saturating_add(1)>MAX_ASSEMBLED_SOURCE {return Err("Assembled source exceeds 8 MiB".into());}
+                    prelude.push_str(&piece);prelude.push('\n');
+                }
                 prelude.push_str(&source); source = prelude;
             }
             let prefix = node.get("sourcePrefix").and_then(Json::as_str).unwrap_or("");
             let suffix = node.get("sourceSuffix").and_then(Json::as_str).unwrap_or("");
+            if prefix.len().saturating_add(source.len()).saturating_add(suffix.len()).saturating_add(2)>MAX_ASSEMBLED_SOURCE {return Err("Assembled source exceeds 8 MiB".into());}
             node["source"] = json!(format!("{prefix}\n{source}\n{suffix}"));
         }
         if node_id(node).is_empty() { return Err("Every node needs a nonempty id".into()); }
         if let Some(source)=node.get("source").and_then(Json::as_str) {
-            if source.len()>8*1024*1024 {return Err("Assembled source exceeds 8 MiB".into());}
+            if source.len()>MAX_ASSEMBLED_SOURCE {return Err("Assembled source exceeds 8 MiB".into());}
+            source_bytes=source_bytes.saturating_add(source.len());
+            if source_bytes>MAX_SCENARIO_SOURCES {return Err("Scenario sources exceed 32 MiB".into());}
             snapshots.push(json!({"nodeId":node_id(node),"assembledBytes":source.len(),"assembledSha256":format!("{:x}",Sha256::digest(source.as_bytes())),"files":files}));
         }
     }
     Ok(snapshots)
 }
 
-fn run(path: &Path, report_path: Option<&Path>) -> Result<bool, Box<dyn std::error::Error>> {
-    let mut scenario: Scenario = serde_json::from_str(&fs::read_to_string(path)?)?;
+fn run_scenario(scenario: Scenario, source_snapshots: Vec<Json>) -> Result<Json, Box<dyn std::error::Error>> {
     if !matches!(scenario.engine.as_str(), "native"|"behavioral") { return Err("engine must be native or behavioral".into()); }
     if !matches!(scenario.signal_behavior.as_str(), "immediate"|"deferred") { return Err("signalBehavior must be immediate or deferred".into()); }
-    println!("{} MODE: offline scenario; only measured API comparisons establish Roblox parity.", scenario.engine.to_uppercase());
     if !scenario.duration.is_finite() || !(0.0..=3600.0).contains(&scenario.duration) || !scenario.step.is_finite() || !(0.001..=1.0).contains(&scenario.step) || !scenario.latency.is_finite() || !(0.0..=60.0).contains(&scenario.latency) || !(8..=512).contains(&scenario.memory_mb) || !(10..=10000).contains(&scenario.cpu_ms) || scenario.realms.is_empty() || scenario.realms.len()>16 {
         return Err("Invalid scenario limits".into());
     }
     let mut ids = std::collections::HashSet::new();
     for r in &scenario.realms {
         if !ids.insert(r.id.clone()) || !matches!(r.side.as_str(), "server"|"client") || (r.side == "client" && r.client_id.is_none()) { return Err("Invalid/duplicate realm identity".into()); }
-        if !matches!(r.executor_profile.as_str(),"generic"|"macsploit-744.2") {return Err("Unknown executor profile".into());}
+        if !matches!(r.executor_profile.as_str(),"generic"|"macsploit-744.2"|"macsploit-744.4") {return Err("Unknown executor profile".into());}
         if scenario.engine!="native" && r.executor_profile!="generic" {return Err("Executor compatibility profiles require the native engine".into());}
     }
     let mut error_rules = std::collections::HashSet::new();
@@ -427,15 +553,16 @@ fn run(path: &Path, report_path: Option<&Path>) -> Result<bool, Box<dyn std::err
         if !ids.contains(&rule.realm) || !(1..=1000).contains(&rule.max_count)
             || !error_rules.insert((rule.realm.as_str(),rule.message.as_str())) {return Err("Invalid/duplicate expected error rule".into());}
     }
-    let source_snapshots=load_nodes(&mut scenario.nodes, path.parent().unwrap_or(Path::new(".")))?;
-    let host = Host::new();
+    let host = Host { quiet:true, ..Host::new() };
     let mut realms = Vec::new();
     let mut server_nodes: HashMap<_,_> = scenario.nodes.iter().map(|n|(node_id(n).to_owned(),n.clone())).collect();
     if server_nodes.len() != scenario.nodes.len() { return Err("Duplicate node IDs".into()); }
     let mut known = Vec::new();
     for cfg in &scenario.realms {
         let realm = host.realm(cfg, &scenario)?;
-        let nodes: Vec<_> = scenario.nodes.iter().filter(|n| cfg.side=="server" || visible(n,&server_nodes)).cloned().collect();
+        let nodes: Vec<_> = scenario.nodes.iter().filter(|n| cfg.side=="server" || visible(n,&server_nodes)).cloned().map(|mut node|{
+            if cfg.side=="client" {redact_client_source(&mut node,&scenario);}node
+        }).collect();
         realm.seed(&nodes)?;
         realm.changes()?;
         known.push(nodes.iter().map(|n|(node_id(n).to_owned(),n.clone())).collect());
@@ -471,18 +598,16 @@ fn run(path: &Path, report_path: Option<&Path>) -> Result<bool, Box<dyn std::err
         let errors = status.get("errors").and_then(Json::as_u64).unwrap_or_else(||status.get("errors").and_then(Json::as_array).map_or(0,|x|x.len() as u64));
         scheduler_errors.push((realm.config.id.clone(),errors));
         let unsupported = if realm.native { model::unsupported_calls(&realm.lua)? } else {Default::default()};
-        if !unsupported.is_empty() { failed=true; println!("Unsupported engine API in {}: {}",realm.config.id,serde_json::to_string(&unsupported)?); }
+        if !unsupported.is_empty() { failed=true; }
         let unsupported_executor = if realm.native { executor::unsupported_calls(&realm.lua)? } else {Default::default()};
-        if !unsupported_executor.is_empty() { failed=true; println!("Unsupported executor API in {}: {}",realm.config.id,serde_json::to_string(&unsupported_executor)?); }
+        if !unsupported_executor.is_empty() { failed=true; }
         let trace=if scenario.trace_errors {diagnostics::snapshot(&realm.lua)?} else {Json::Null};
-        if realm.wall_time_exceeded.get() {failed=true;println!("BudgetExceeded: Luau wall-time budget in {}",realm.config.id);}
+        if realm.wall_time_exceeded.get() {failed=true;}
         let profiles = if realm.native {
-            let value: Value = internal::<Table>(&realm.lua,"__rt")?.get::<Function>("profileStatus")?.call(())?;
-            realm.lua.from_value::<Json>(value)?
+            realm.lua.from_value::<Json>(Value::Table(scheduler::profile_status(&realm.lua)?))?
         } else { Json::Null };
         let memory_categories=if realm.native {
-            let value:Value=internal::<Table>(&realm.lua,"__rt")?.get::<Function>("memoryStatus")?.call(())?;
-            realm.lua.from_value::<Json>(value)?
+            realm.lua.from_value::<Json>(Value::Table(scheduler::memory_status(&realm.lua)?))?
         } else {Json::Null};
         statuses.push(json!({"realm":realm.config.id,"executorProfile":realm.config.executor_profile,"memoryBytes":realm.lua.used_memory(),"hostLimits":{"wallTimeExceeded":realm.wall_time_exceeded.get()},"scheduler":status,"unsupportedApiCalls":unsupported,"unsupportedExecutorApiCalls":unsupported_executor,"protectedErrors":trace,"profiles":profiles,"memoryCategories":memory_categories}));
     }
@@ -503,18 +628,65 @@ fn run(path: &Path, report_path: Option<&Path>) -> Result<bool, Box<dyn std::err
     let rejected:Vec<_>=scenario.reject.iter().filter(|pattern|logs.iter().any(|l|l["message"].as_str().is_some_and(|s|s.contains(pattern.as_str())))).collect();
     failed |= !rejected.is_empty();
     let report = json!({"name":scenario.name,"emulatorVersion":env!("CARGO_PKG_VERSION"),"engine":scenario.engine,"sourceSnapshots":source_snapshots,"passed":!failed,"duration":scenario.duration,"messages":host.emitted.get(),"pendingMessages":host.messages.borrow().len(),"missingExpectations":missing,"rejectedMessages":rejected,"expectedErrors":expected_errors,"realms":statuses,"logs":*logs,"proof":"Offline emulator scenario only; not Roblox equivalence or a complete anti-cheat verdict."});
-    if let Some(p) = report_path { fs::write(p, serde_json::to_string_pretty(&report)?)?; }
-    println!("{}: {} ({} realms, {} messages, {} log entries)", if failed {"FAIL"} else {"PASS"}, scenario.name, realms.len(), host.emitted.get(), logs.len());
-    if !missing.is_empty() { println!("Missing expectations: {}", serde_json::to_string(&missing)?); }
-    if !rejected.is_empty() {println!("Rejected messages: {}",serde_json::to_string(&rejected)?);}
-    Ok(!failed)
+    Ok(report)
 }
 
+fn run(path: &Path, report_path: Option<&Path>) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut scenario:Scenario=serde_json::from_slice(&read_bounded(path,16*1024*1024)?)?;
+    session::restrict_source_paths(&mut scenario.nodes,path).map_err(|error|error.to_string())?;
+    let snapshots=load_nodes(&mut scenario.nodes,path.parent().unwrap_or(Path::new(".")))?;
+    for node in &mut scenario.nodes {
+        if let Some(fields)=node.as_object_mut() {
+            for key in ["sourcePath","sourceInsertions","sourcePrependPaths","sourcePrefix","sourceSuffix"] {fields.remove(key);}
+        }
+    }
+    println!("{} MODE: offline scenario; only measured API comparisons establish Roblox parity.",scenario.engine.to_uppercase());
+    let report=remote_session::run_batch(scenario,snapshots).map_err(io_error)?;
+    if let Some(path)=report_path {fs::write(path,serde_json::to_string_pretty(&report)?)?;}
+    if let Some(logs)=report["logs"].as_array() {
+        for entry in logs {
+            println!("[{:.3}][{}][{}] {}",entry["time"].as_f64().unwrap_or(0.0),entry["realm"].as_str().unwrap_or("?"),
+                entry["level"].as_str().unwrap_or("?"),entry["message"].as_str().unwrap_or(""));
+        }
+    }
+    if let Some(realms)=report["realms"].as_array() {
+        for realm in realms {
+            let id=realm["realm"].as_str().unwrap_or("?");
+            for (key,label) in [("unsupportedApiCalls","engine"),("unsupportedExecutorApiCalls","executor")] {
+                if realm[key].as_object().is_some_and(|entries|!entries.is_empty()) {println!("Unsupported {label} API in {id}: {}",realm[key]);}
+            }
+            if realm["hostLimits"]["wallTimeExceeded"]==true {println!("BudgetExceeded: Luau wall-time budget in {id}");}
+        }
+    }
+    let passed=report["passed"].as_bool().ok_or("Invalid sandbox report")?;
+    println!("{}: {} ({} realms, {} messages, {} log entries)",if passed {"PASS"} else {"FAIL"},report["name"].as_str().unwrap_or("scenario"),
+        report["realms"].as_array().map_or(0,Vec::len),report["messages"].as_u64().unwrap_or(0),report["logs"].as_array().map_or(0,Vec::len));
+    for (key,label) in [("missingExpectations","Missing expectations"),("rejectedMessages","Rejected messages")] {
+        if report[key].as_array().is_some_and(|values|!values.is_empty()) {println!("{label}: {}",report[key]);}
+    }
+    Ok(passed)
+}
+
+fn io_error(message:String)->std::io::Error {std::io::Error::other(message)}
+
 fn main() {
+    let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg|arg=="--isolated-worker") {
+        if args.len()!=1 {eprintln!("Invalid worker arguments");std::process::exit(2);}
+        #[cfg(windows)]
+        if let Err(error)=sandbox_windows::verify_worker_security() {eprintln!("Sandbox worker rejected: {error}");std::process::exit(2);}
+        #[cfg(not(windows))]
+        {eprintln!("Sandbox worker requires Windows");std::process::exit(2);}
+    } else {
+        #[cfg(windows)] unsafe {SetConsoleCtrlHandler(Some(console_interrupt),1);}
+    }
     for flag in ["LuauFastpcall", "LuauCompileFastpcall", "LuauFastpcallInterrupt"] {
         if Lua::set_fflag(flag, true).is_err() { eprintln!("Required {flag} flag is unavailable"); std::process::exit(2); }
     }
-    let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg|arg=="--isolated-worker") {
+        if let Err(error)=worker::run() {eprintln!("Sandbox worker failed: {error}");std::process::exit(1);}
+        return;
+    }
     if args.is_empty() || args[0] == "--ui" {
         let mut path = None;
         let mut port = 0;
@@ -567,7 +739,7 @@ fn normalize_probe(value: &mut Json) {
     }
 }
 
-fn native_probe(probe: &Path, reference: &Path, full_runtime: bool) -> Result<bool, Box<dyn std::error::Error>> {
+fn native_probe_data(probe: &str, mut expected: Json, full_runtime: bool) -> Result<Json, Box<dyn std::error::Error>> {
     let lua = Lua::new();
     lua.set_memory_limit(64 * 1024 * 1024)?;
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -577,24 +749,34 @@ fn native_probe(probe: &Path, reference: &Path, full_runtime: bool) -> Result<bo
     if full_runtime {
         lua.globals().set("__config",lua.to_value(&json!({"realmId":"probe","side":"server","isStudio":true,"executor":false,"signalBehavior":"deferred"}))?)?;
         lua.globals().set("__host_log",lua.create_function(|_,(level,message):(String,mlua::LuaString)|{eprintln!("[probe][{level}] {}",console::display_bytes(&message.as_bytes(),4096));Ok(())})?)?;
-        scheduler::install(&lua)?;
-        model::install(&lua)?;
+        scheduler::install_native_host(&lua)?;
+        model::install_native_host(&lua)?;
         hide_internals(&lua)?;
     } else { instance::install(&lua)?; }
     lua.globals().set_safeenv(true);
-    let entry = lua.load(fs::read_to_string(probe)?).set_mode(mlua::chunk::ChunkMode::Text).set_name("=NativeParity").into_function()?;
+    let entry = lua.load(probe).set_mode(mlua::chunk::ChunkMode::Text).set_name("=NativeParity").into_function()?;
     let thread=lua.create_thread(entry.clone())?;
     if full_runtime { scheduler::set_script_category(&lua,&thread,&entry,"NativeParity")?; }
     let result: Value = thread.resume(())?;
     let mut actual: Json = lua.from_value(result)?;
-    let mut expected: Json = serde_json::from_str(&fs::read_to_string(reference)?)?;
     normalize_probe(&mut actual);
     normalize_probe(&mut expected);
     let mut mismatches = Vec::new();
+    let mut matches = Vec::new();
     for (name, value) in expected.as_object().ok_or("Invalid reference")? {
         if actual.get(name) != Some(value) { mismatches.push(json!({"check":name,"studio":value,"emulator":actual.get(name)})); }
-        else { println!("MATCH {name}"); }
+        else { matches.push(name.clone()); }
     }
-    println!("{}",serde_json::to_string_pretty(&json!({"nativeParity":mismatches.is_empty(),"mismatches":mismatches,"note":"Probe chunk names and empty-stack JSON array shape normalized. Stack depth, native names, error text and frame layout compared unchanged. Results cover only the supplied probe and reference."}))?);
-    Ok(mismatches.is_empty())
+    Ok(json!({"nativeParity":mismatches.is_empty(),"matches":matches,"mismatches":mismatches,"note":"Probe chunk names and empty-stack JSON array shape normalized. Stack depth, native names, error text and frame layout compared unchanged. Results cover only the supplied probe and reference."}))
+}
+
+fn native_probe(probe: &Path, reference: &Path, full_runtime: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    let probe=String::from_utf8(read_bounded(probe,8*1024*1024)?)?;
+    let reference=serde_json::from_slice(&read_bounded(reference,8*1024*1024)?)?;
+    let result=remote_session::run_probe(probe,reference,full_runtime).map_err(io_error)?;
+    if let Some(matches)=result["matches"].as_array() {
+        for name in matches {if let Some(name)=name.as_str(){println!("MATCH {name}");}}
+    }
+    println!("{}",serde_json::to_string_pretty(&result)?);
+    result["nativeParity"].as_bool().ok_or_else(||"Invalid sandbox probe result".into())
 }

@@ -6,74 +6,120 @@
   <meta name="color-scheme" content="dark">
   <title>Roblox Emulator · Luau</title>
   <style>
-    :root { color-scheme: dark; --bg: #101318; --panel: #171c23; --editor: #11161d; --raised: #202731; --line: #303947; --muted: #96a4b7; --text: #e7edf5; --server: #7eb5ff; --client: #75dab4; --executor: #efb477; --error: #ff929a; --accent: var(--server); }
-    * { box-sizing: border-box; }
+    :root { color-scheme: dark; --bg: #191a1f; --panel: #191a1f; --editor: #1f1f1f; --raised: #272930; --line: #353741; --muted: #bcbec8; --text: #d5d7dd; --server: #15cc82; --client: #75b9f8; --executor: #d8b5ff; --error: #f55a55; --accent: #3972e8; }
+    * { box-sizing: border-box; scrollbar-color: #6a6f81 #26292f; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #26292f; }
+    ::-webkit-scrollbar-thumb { background: #6a6f81; border: 2px solid #26292f; border-radius: 5px; }
     [hidden] { display: none !important; }
-    body { margin: 0; height: 100dvh; min-height: 600px; display: flex; flex-direction: column; gap: 14px; padding: 20px 24px 12px; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
-    body[data-context="client"] { --accent: var(--client); }
-    body[data-context="executor"] { --accent: var(--executor); }
+    body { margin: 0; height: 100dvh; min-height: 480px; display: flex; flex-direction: column; gap: 0; background: var(--bg); color: var(--text); font: 12px/1.35 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
     button, select, input, textarea { font: inherit; }
-    button, select, input { color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 7px; min-height: 36px; }
-    button { padding: 7px 12px; cursor: pointer; font-weight: 550; white-space: nowrap; transition: background .12s, border-color .12s; }
-    button:hover:not(:disabled) { background: #2b3542; border-color: #546479; }
+    button, select, input { color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 3px; min-height: 26px; }
+    button { padding: 4px 8px; cursor: pointer; font-weight: 400; white-space: nowrap; transition: background .12s, border-color .12s; }
+    button:hover:not(:disabled) { background: #353741; border-color: #51545e; }
     button:disabled, select:disabled { cursor: not-allowed; opacity: .45; }
-    select { padding: 6px 30px 6px 10px; min-width: 0; }
-    input { padding: 7px 10px; min-width: 0; }
+    select { padding: 3px 24px 3px 7px; min-width: 0; }
+    select option { background: #272930; color: #f7f7f8; }
+    input { padding: 3px 7px; min-width: 0; }
     input[type="checkbox"] { width: 15px; height: 15px; min-height: 0; margin: 0; accent-color: var(--accent); }
-    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     textarea:focus-visible { outline: none; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
     .top, .brand, .metrics, .runtime, .runtime-actions, .profile-controls, .panel-heading, .editor-tools, .example-tools, .editor-footer, .output-footer, .statusbar { display: flex; align-items: center; gap: 10px; }
-    .top { justify-content: space-between; }
-    .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; background: #273448; color: var(--server); border: 1px solid #3a5171; border-radius: 10px; font: bold 20px ui-monospace, Consolas, monospace; }
-    h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.25px; }
+    .top { justify-content: space-between; min-height: 26px; padding: 0 8px; border-bottom: 1px solid var(--line); background: #272930; }
+    .brand { min-width: 0; gap: 8px; }
+    h1 { margin: 0; font-size: 12px; font-weight: 500; white-space: nowrap; }
+    .file-menu { position: relative; flex-shrink: 0; }
+    .file-menu > summary { list-style: none; cursor: pointer; padding: 4px 8px; color: #bcbec8; font-size: 14px; line-height: 18px; }
+    .file-menu > summary::-webkit-details-marker { display: none; }
+    .file-menu > summary:hover, .file-menu[open] > summary { background: #353741; }
+    .file-menu-content { position: absolute; top: 100%; left: 0; width: min(354px, calc(100vw - 16px)); display: flex; flex-direction: column; padding: 4px 0; z-index: 20; border: 1px solid #1a1b20; background: #272930; box-shadow: 0 4px 8px #0008; }
+    .file-menu-content button { min-height: 28px; padding: 4px 16px 4px 30px; border: 0; border-radius: 0; background: transparent; text-align: left; font-size: 14px; font-weight: 400; }
+    .file-menu-content button:hover:not(:disabled) { background: #353741; }
+    .file-menu-content button:disabled { opacity: 1; color: #6a6f81; }
+    #placeName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .subtitle { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
     .metrics { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-    .metric { padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .metric { padding: 2px 4px; color: var(--muted); font-size: 11px; white-space: nowrap; }
     .metric strong { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 550; }
     .unsupported { color: var(--executor); }
     .connection { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
     .connection::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #6b7687; }
     .connection[data-state="online"]::before { background: var(--client); }
     .connection[data-state="error"]::before { background: var(--error); }
-    .runtime { justify-content: space-between; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); flex-wrap: wrap; }
+    .runtime { justify-content: space-between; min-height: 38px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: #191a1f; flex-wrap: wrap; }
     .runtime-actions, .profile-controls { flex-wrap: wrap; }
-    .runtime-note { color: var(--muted); font-size: 12px; margin-left: 3px; }
+    .test-controls { display: flex; align-items: center; gap: 4px; }
+    .test-controls select { width: 100px; }
+    .test-controls > button, .step-menu > summary { display: flex; align-items: center; justify-content: center; width: 28px; min-height: 26px; padding: 0; border: 0; background: transparent; font-size: 16px; }
+    .test-controls > button:hover:not(:disabled), .step-menu > summary:hover { background: #353741; }
+    .test-play { color: #3972e8; } .test-pause { color: #a2a6b2; } .test-stop { color: #dc4b4b; }
+    .step-menu { position: relative; }
+    .step-menu > summary { list-style: none; cursor: pointer; width: 18px; color: #a2a6b2; font-size: 10px; }
+    .step-menu > summary::-webkit-details-marker { display: none; }
+    .step-menu-content { position: absolute; z-index: 12; top: 100%; left: 0; display: flex; flex-direction: column; min-width: 145px; padding: 4px 0; background: #272930; border: 1px solid #1a1b20; box-shadow: 0 4px 8px #0008; }
+    .step-menu-content button { border: 0; border-radius: 0; background: transparent; text-align: left; padding: 5px 14px; }
+    .runtime-note { color: var(--muted); font-size: 11px; margin-left: 3px; }
     .danger { color: var(--error); border-color: #633d45; background: #2d2028; }
     .plain { background: transparent; }
     .profile-controls label { font-size: 12px; color: var(--muted); }
+    .place-controls, .explorer-tabs, .place-toolbar, .document-tabs { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .explorer-tabs, .place-toolbar { padding: 4px 6px; border-bottom: 1px solid var(--line); }
+    .explorer-auto { margin-left: auto; font-size: 11px; color: var(--muted); }
+    .explorer-tabs button, .document-tab button { border-color: transparent; background: transparent; border-radius: 0; }
+    .explorer-tabs button[aria-pressed="true"], .document-tabs button[aria-selected="true"] { background: #202227; border-color: transparent; border-bottom-color: #6a6f81; color: #f7f7f8; }
+    .place-toolbar select { flex: 1; min-width: 95px; font-size: 11px; min-height: 25px; }
+    .place-toolbar input { width: 100%; }
+    .document-tabs { min-height: 29px; padding: 0 5px; background: #191a1f; border-bottom: 1px solid var(--line); flex-wrap: nowrap; overflow-x: auto; }
+    .document-tab { display: flex; flex-shrink: 0; align-items: center; gap: 2px; border-right: 1px solid #272930; background: #202227; }
+    .document-tab[data-selected="true"] { background: #191a1f; border-bottom: 1px solid #6a6f81; }
+    .document-tab button { min-height: 25px; padding: 3px 7px; font-size: 11px; }
+    .document-icon { width: 16px; height: 16px; vertical-align: middle; margin-right: 5px; }
+    .document-tab .close-tab { border: 0; padding: 2px 5px; background: transparent; }
+    .place-editable { color: var(--client); }
+    .network-dialog { width: min(860px, calc(100vw - 32px)); max-height: min(85dvh, 900px); overflow: auto; }
+    .network-dialog .dialog-actions { position: sticky; bottom: -16px; padding: 12px 0 4px; background: var(--panel); }
+    .network-details { padding: 10px; background: var(--editor); border: 1px solid var(--line); border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+    .network-label { margin: 12px 0 4px; color: var(--muted); font-size: 12px; }
+    .place-dialog label { display: block; margin: 12px 0 5px; color: var(--muted); font-size: 12px; }
+    .place-dialog input { width: 100%; }
     .error-banner { display: flex; align-items: flex-start; gap: 12px; background: #301e28; border: 1px solid #73424d; border-radius: 9px; padding: 10px 12px; color: #ffc1c5; max-height: 150px; overflow: auto; }
     .error-content { min-width: 0; flex: 1; }
     .error-title { font-size: 13px; font-weight: 650; }
     .error-text { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
     .dismiss { padding: 2px 8px; min-height: 28px; background: transparent; border-color: transparent; color: inherit; font-size: 18px; }
-    .target-bar { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
-    .modes { display: flex; padding: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; flex-shrink: 0; }
+    .target-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: #191a1f; flex-wrap: wrap; }
+    .modes { display: flex; padding: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; flex-shrink: 0; }
     .mode { background: transparent; border-color: transparent; color: var(--muted); }
-    .mode[data-mode="server"][aria-pressed="true"] { background: #263950; border-color: #45678f; color: var(--server); }
-    .mode[data-mode="client"][aria-pressed="true"] { background: #203e35; border-color: #3d715f; color: var(--client); }
-    .mode[data-mode="executor"][aria-pressed="true"] { background: #443427; border-color: #806044; color: var(--executor); }
-    .field { display: flex; flex-direction: column; gap: 4px; min-width: 100px; }
+    .mode[aria-pressed="true"] { background: #353741; border-color: #51545e; color: #f7f7f8; }
+    .field { display: flex; flex-direction: row; align-items: center; gap: 4px; min-width: 100px; }
     .field label { font-size: 11px; color: var(--muted); }
-    .field.vm-field { flex: 1; min-width: 180px; max-width: 420px; }
+    .field.vm-field { flex: 0 1 230px; min-width: 150px; max-width: 230px; }
+    .field select { flex: 1; }
+    .game-input { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .game-input select { max-width: 170px; }
+    .game-input button:focus { border-color: var(--client); color: var(--client); }
     .target-note { margin: 0 0 8px auto; color: var(--muted); font-size: 12px; max-width: 310px; }
-    .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 245px minmax(300px, 1fr) minmax(340px, 1fr); gap: 14px; }
-    .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); overflow: hidden; }
-    .editor-panel { border-top: 2px solid var(--accent); }
-    .panel-heading { min-height: 48px; padding: 9px 13px; border-bottom: 1px solid var(--line); justify-content: space-between; }
-    h2 { margin: 0; font-size: 13px; font-weight: 650; }
+    .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(190px, 16fr) minmax(360px, 68fr) minmax(190px, 16fr); grid-template-areas: "output editor explorer"; gap: 2px; }
+    .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--line); background: var(--panel); overflow: hidden; }
+    .output-panel { grid-area: output; overflow: visible; position: relative; z-index: 2; } .editor-panel { grid-area: editor; } .explorer-panel { grid-area: explorer; }
+    .panel-heading { min-height: 26px; padding: 2px 6px; border-bottom: 1px solid var(--line); background: #202227; justify-content: space-between; }
+    .output-panel > .panel-heading, .explorer-panel > .panel-heading, .properties-panel > .panel-heading { position: relative; justify-content: center; }
+    .output-panel > .panel-heading button, .explorer-panel > .panel-heading button { position: absolute; right: 3px; }
+    #propertiesTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    h2 { margin: 0; font-size: 12px; font-weight: 400; color: #bcbec8; }
     .document-name { color: var(--muted); font: 12px ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .panel-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-    .small { font-size: 12px; min-height: 30px; padding: 5px 9px; }
-    .editor-tools { padding: 9px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .small { font-size: 11px; min-height: 25px; padding: 3px 7px; }
+    .editor-tools { padding: 4px 7px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
     .history { flex: 1; min-width: 140px; font-size: 12px; }
     .editor-wrap { flex: 1; display: flex; min-height: 140px; background: var(--editor); position: relative; }
-    .editor-wrap:focus-within { box-shadow: inset 3px 0 0 var(--accent); }
+    .editor-wrap:focus-within { box-shadow: inset 2px 0 0 var(--accent); }
     #source { flex: 1; width: 100%; min-height: 0; overflow: hidden; }
     .editor-doc-tooltip { max-width: 460px; padding: 9px 12px; font: 12px/1.6 system-ui, sans-serif; }
     .editor-doc-tooltip strong { display: block; font-family: ui-monospace, Consolas, monospace; }
     #lintStatus { color: var(--muted); margin-left: auto; }
-    .log-arguments { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; margin-top: 4px; font: 12px/1.6 ui-monospace, Consolas, monospace; }
+    .log-arguments { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: flex-start; font: 13px/1.35 Consolas, "Courier New", monospace; }
     .log-value { white-space: pre-wrap; overflow-wrap: anywhere; }
     .value-string { color: #b5d69d; }
     .value-number, .value-boolean { color: #edbf8f; }
@@ -86,51 +132,94 @@
     .value-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; color: var(--muted); font: 11px system-ui, sans-serif; }
     .value-toolbar button, .load-more { font-size: 11px; min-height: 26px; padding: 3px 7px; }
     .value-instance { padding: 0; min-height: 0; background: none; border: none; color: #9dc5f5; font: inherit; white-space: pre-wrap; text-align: left; overflow-wrap: anywhere; }
-    .inspection-note { padding: 9px 12px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .inspection-note { padding: 4px 7px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .inspection-error { color: var(--error); }
-    .tree-scroller { flex: 1; min-height: 120px; overflow: auto; padding: 5px 6px; }
+    .place-import-warning { margin: 4px 6px; padding: 7px; color: #f3cc79; background: #382d1d; border-left: 3px solid #d9a33f; font-size: 12px; white-space: pre-wrap; overflow: auto; overflow-wrap: anywhere; max-height: 130px; }
+    .tree-scroller { flex: 1; min-height: 100px; overflow: auto; padding: 3px 0; }
     .tree-children { padding-left: 14px; }
-    .tree-row { display: flex; align-items: center; gap: 2px; min-height: 29px; }
-    .tree-toggle { width: 22px; min-height: 25px; padding: 0; border: 0; background: transparent; color: var(--muted); flex-shrink: 0; }
-    .tree-name { display: flex; align-items: baseline; gap: 7px; flex: 1; min-width: 0; min-height: 27px; padding: 3px 5px; border: 0; background: transparent; text-align: left; font-size: 12px; }
-    .tree-name > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+    .tree-row { display: flex; align-items: center; gap: 1px; min-height: 22px; }
+    .tree-toggle { width: 17px; min-height: 21px; padding: 0; border: 0; background: transparent; color: var(--muted); flex-shrink: 0; }
+    .tree-name { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; min-height: 21px; padding: 2px 3px; border: 0; background: transparent; text-align: left; font-size: 12px; color: #d5d7dd; }
+    .tree-label { overflow: hidden; text-overflow: ellipsis; }
+    .tree-icon { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; color: #8ab6f7; font: 12px/1 system-ui, sans-serif; }
+    .tree-icon img { width: 16px; height: 16px; object-fit: contain; }
     .tree-class { color: var(--muted); font-size: 10px; }
-    .tree-row[data-selected="true"] { background: #263950; border-radius: 5px; }
-    .properties { min-height: 125px; max-height: 46%; flex: 1; overflow: auto; border-top: 1px solid var(--line); padding: 10px 11px; }
-    .properties h3 { margin: 10px 0 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
-    .property-row { display: grid; grid-template-columns: minmax(65px, .8fr) minmax(0, 1.2fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid #252d37; font-size: 11px; }
-    .property-name { color: #b7c9df; overflow-wrap: anywhere; }
-    .property-value { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
+    .tree-row[data-selected="true"] { background: #0027b8; }
+    .tree-add { display: none; width: 21px; min-height: 21px; padding: 0; border: 0; background: transparent; color: #d5d7dd; font-size: 16px; }
+    .tree-row:hover .tree-add, .tree-row[data-selected="true"] .tree-add, .tree-add:focus-visible { display: block; }
+    .insert-menu { position: fixed; z-index: 30; width: 270px; max-width: calc(100vw - 12px); max-height: min(440px, calc(100vh - 12px)); display: flex; flex-direction: column; padding: 5px; background: #191a1f; border: 1px solid #353741; box-shadow: 0 4px 12px #000a; }
+    .insert-menu input { width: 100%; flex: none; }
+    .insert-list { overflow: auto; min-height: 0; padding-top: 4px; }
+    .insert-category { padding: 5px 3px 2px; color: var(--muted); font-size: 11px; }
+    .insert-item { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 27px; padding: 3px; border: 0; background: transparent; text-align: left; }
+    .insert-item:hover, .insert-item:focus-visible { background: #353741; }
+    .properties-panel { display: flex; flex-direction: column; min-height: 120px; max-height: 46%; flex: 1; border-top: 2px solid var(--line); }
+    .properties { flex: 1; min-height: 0; overflow: auto; padding: 0; }
+    .properties h3 { margin: 0; padding: 5px 8px; color: var(--muted); background: #202227; border-bottom: 1px solid #292b32; font-size: 12px; font-weight: 600; }
+    .property-row { display: grid; grid-template-columns: minmax(65px, 1fr) minmax(0, 1.05fr); min-height: 25px; border-bottom: 1px solid #202227; font-size: 12px; }
+    .property-row input:not([type="checkbox"]) { width: 100%; min-width: 0; min-height: 24px; padding: 3px 7px; border: 0; border-left: 1px solid #202227; border-radius: 0; background: transparent; }
+    .property-row input[type="checkbox"] { width: 14px; min-height: 0; margin: 5px 7px; accent-color: #f7f7f8; }
+    .property-name { padding: 4px 8px 4px 16px; color: #bcbec8; overflow-wrap: anywhere; }
+    .property-value { min-width: 0; padding: 4px 7px; border-left: 1px solid #202227; color: #d5d7dd; overflow-wrap: anywhere; }
+    .property-value .log-value { color: inherit; }
     .gc-dialog { position: fixed; inset: auto 22px 42px auto; margin: 0; width: min(740px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 90px)); padding: 0; z-index: 10; overflow: hidden; }
     .gc-dialog[open] { display: flex; flex-direction: column; }
     .gc-dialog h2 { font-size: 15px; }
     .gc-controls { display: grid; grid-template-columns: minmax(120px, 1fr) 130px; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-    .gc-controls input { grid-column: 1 / -1; }
+    .gc-search { grid-column: 1 / -1; display: flex; gap: 4px; }
+    .gc-search input { flex: 1; min-width: 0; }
     .gc-list { flex: 1; min-height: 0; overflow: auto; padding: 3px 12px; background: var(--editor); font: 12px/1.6 ui-monospace, Consolas, monospace; }
     .gc-row { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #252d37; }
     .gc-index { color: var(--muted); min-width: 36px; font-size: 10px; }
     .gc-value { flex: 1; min-width: 0; }
     .gc-insert { align-self: flex-start; flex-shrink: 0; }
-    .example-tools { padding: 9px 12px; border-top: 1px solid var(--line); }
+    .example-tools { padding: 4px 7px; border-top: 1px solid var(--line); }
     .example-tools select { flex: 1; font-size: 12px; }
     .example-hint { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 11px; min-height: 24px; }
-    .editor-footer { padding: 10px 12px; justify-content: space-between; border-top: 1px solid var(--line); gap: 14px; }
+    .editor-footer { padding: 4px 7px; justify-content: space-between; border-top: 1px solid var(--line); gap: 8px; }
     .editor-help { color: var(--muted); font-size: 11px; }
-    .editor-help span { display: block; }
-    .run { background: var(--accent); border-color: transparent; color: #101820; padding: 8px 18px; font-weight: 750; }
+    .editor-help span { display: inline-block; margin-right: 8px; }
+    .run { background: #254d80; border-color: #426ca3; color: #f1f5fb; padding: 4px 12px; font-weight: 600; }
     .run:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); border-color: transparent; }
     .shortcut { opacity: .7; font-weight: 500; margin-left: 7px; font-size: 11px; }
-    .console-tools { padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px; border-bottom: 1px solid var(--line); }
-    .console-tools select, .console-tools input { width: 100%; font-size: 12px; }
-    .search { grid-column: 1 / -1; }
-    .log-scroller { position: relative; flex: 1; min-height: 160px; overflow: auto; overscroll-behavior: contain; background: #12171d; }
-    .log-row { padding: 10px 13px; border-bottom: 1px solid #252d37; border-left: 2px solid transparent; }
-    .log-row[data-context="server"] { border-left-color: var(--server); }
-    .log-row[data-context="client"] { border-left-color: var(--client); }
-    .log-row[data-context="executor"] { border-left-color: var(--executor); }
-    .log-row[data-level="error"] { background: #2b1c23; }
-    .log-row[data-level="warn"] { background: #29251c; }
-    .log-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 10px; color: #a3afbe; }
+    .console-tools { position: relative; padding: 4px 6px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); }
+    .console-tools > input { flex: 1; min-width: 0; font-size: 12px; }
+    .output-filter > summary { display: grid; place-items: center; width: 26px; height: 26px; cursor: pointer; list-style: none; background: #353741; border-radius: 3px; }
+    .output-filter > summary::-webkit-details-marker { display: none; }
+    .output-filter > summary:hover, .output-filter[open] > summary { background: #51545e; }
+    .output-filter-content { position: absolute; top: 100%; left: 6px; right: 6px; z-index: 5; padding: 8px; display: grid; gap: 4px; background: #272930; border: 1px solid #353741; box-shadow: 0 4px 8px #0008; }
+    .output-filter-content label { color: #bcbec8; font-size: 11px; }
+    .output-filter-content select { width: 100%; margin-bottom: 4px; }
+    .output-options { position: relative; }
+    .output-options > summary { display: grid; place-items: center; width: 26px; height: 26px; cursor: pointer; list-style: none; font-size: 18px; border-radius: 3px; }
+    .output-options > summary::-webkit-details-marker { display: none; }
+    .output-options > summary:hover, .output-options[open] > summary { background: #353741; }
+    .output-options-content { position: absolute; top: 100%; left: 0; z-index: 6; min-width: 250px; padding: 5px 0; background: #272930; border: 1px solid #1a1b20; box-shadow: 0 4px 8px #0008; }
+    .output-options-content label { display: flex; align-items: center; gap: 7px; min-height: 25px; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+    .output-options-content label:hover { background: #353741; }
+    .output-options-content hr { border: 0; border-top: 1px solid #17181c; margin: 4px 0; }
+    .log-scroller { position: relative; flex: 1; min-height: 100px; overflow: auto; overscroll-behavior: contain; background: #191a1f; }
+    .log-row { padding: 1px 5px; border-left: 5px solid #15cc82; }
+    .log-row[data-context="client"]:not([data-level="warn"]):not([data-level="error"]) { border-left-color: #75b9f8; }
+    .log-row[data-context="client"]:not([data-level="warn"]):not([data-level="error"]) .log-message,
+    .log-row[data-context="client"]:not([data-level="warn"]):not([data-level="error"]) .log-arguments > .log-value { color: #add6ff; }
+    .log-row[data-context="executor"]:not([data-level="warn"]):not([data-level="error"]) { border-left-color: #b68bff; }
+    .log-row[data-context="executor"]:not([data-level="warn"]):not([data-level="error"]) .log-message,
+    .log-row[data-context="executor"]:not([data-level="warn"]):not([data-level="error"]) .log-arguments > .log-value { color: #d8b5ff; }
+    .log-row[data-level="warn"], .log-row[data-level="error"] { border-left-color: #299dd0; }
+    .log-row[data-level="warn"] .log-message { color: #f57630; }
+    .log-row[data-level="error"] .log-message { color: #f55a55; }
+    .log-row[data-level="warn"] .log-arguments > .log-value { color: #f57630; }
+    .log-row[data-level="error"] .log-arguments > .log-value { color: #f55a55; }
+    .log-meta { display: none; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 10px; color: #a3afbe; }
+    #logList.show-timestamp .log-meta, #logList.show-context .log-meta,
+    #logList.show-source .log-row[data-has-source="true"] .log-meta { display: flex; }
+    .log-time, .log-context, .log-realm, .log-level, .log-source { display: none; }
+    #logList.show-timestamp .log-time, #logList.show-context .log-context,
+    #logList.show-context .log-realm, #logList.show-context .log-level,
+    #logList.show-source .log-source:not(:empty) { display: inline; }
+    .log-repeat { margin-left: auto; color: #a3afbe; }
+    .log-repeat-inline { color: #a3afbe; font: 11px Consolas, monospace; }
     .log-time { font-variant-numeric: tabular-nums; }
     .log-context { font-weight: 650; }
     [data-context="server"] > .log-meta .log-context { color: var(--server); }
@@ -139,23 +228,23 @@
     .log-level { letter-spacing: .45px; }
     [data-level="error"] .log-level { color: var(--error); }
     [data-level="warn"] .log-level { color: #eac17f; }
-    .log-message { margin: 4px 0 0; min-height: 1.5em; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace; color: #dfe7f1; }
-    .empty-output { padding: 45px 25px; text-align: center; color: var(--muted); font-size: 13px; }
-    .output-footer { padding: 9px 12px; border-top: 1px solid var(--line); justify-content: space-between; color: var(--muted); font-size: 11px; gap: 8px; flex-wrap: wrap; }
+    .log-message { margin: 0; min-height: 1.35em; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.35 Consolas, "Courier New", monospace; color: #bcbec8; }
+    .empty-output { padding: 9px; color: var(--muted); font-size: 11px; }
+    .output-footer { padding: 4px 7px; border-top: 1px solid var(--line); justify-content: space-between; color: var(--muted); font-size: 11px; gap: 8px; flex-wrap: wrap; }
     .check-label { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
-    .statusbar { justify-content: space-between; color: var(--muted); font-size: 11px; min-height: 20px; flex-wrap: wrap; gap: 4px 16px; }
+    .statusbar { justify-content: space-between; color: var(--muted); font-size: 11px; min-height: 22px; padding: 2px 8px; border-top: 1px solid var(--line); background: #202229; flex-wrap: wrap; gap: 4px 16px; }
     .status-left { display: flex; gap: 12px; flex-wrap: wrap; }
     #statusText { color: #c2cfdf; }
     .last-command { color: var(--muted); }
-    dialog { width: min(440px, calc(100vw - 32px)); padding: 22px; color: var(--text); background: var(--panel); border: 1px solid #576477; border-radius: 13px; box-shadow: 0 20px 100px #0008; }
-    dialog::backdrop { background: #06090dc9; backdrop-filter: blur(3px); }
-    dialog h2 { font-size: 18px; }
-    dialog p { color: #b9c6d6; font-size: 13px; line-height: 1.6; }
-    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
-    @media (max-width: 1200px) { .workspace { grid-template-columns: 210px minmax(280px, 1fr) minmax(300px, 1fr); } }
-    @media (max-width: 1080px) { .runtime-note, .target-note { display: none; } body { padding: 16px; } }
+    dialog { width: min(440px, calc(100vw - 24px)); padding: 16px; color: var(--text); background: var(--panel); border: 1px solid #57606f; border-radius: 4px; box-shadow: 0 12px 60px #0008; }
+    dialog::backdrop { background: #090a0cc9; }
+    dialog h2 { font-size: 15px; }
+    dialog p { color: #b9c0cc; font-size: 12px; line-height: 1.5; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    @media (max-width: 1200px) { .workspace { grid-template-columns: minmax(175px, 16fr) minmax(300px, 68fr) minmax(190px, 16fr); } }
+    @media (max-width: 1080px) { .target-note { display: none; } }
     @media (max-width: 820px) {
-      body { height: auto; min-height: 100dvh; overflow: auto; padding: 13px; gap: 12px; }
+      body { height: auto; min-height: 100dvh; overflow: auto; }
       .top { align-items: flex-start; flex-wrap: wrap; }
       .metrics { justify-content: flex-start; }
       .runtime { gap: 12px; }
@@ -166,11 +255,12 @@
       .mode { flex: 1; padding: 8px; }
       .field { flex: 1; min-width: 120px; }
       .field.vm-field { max-width: none; }
-      .workspace { display: flex; flex-direction: column; min-height: 0; }
+      .workspace { display: flex; flex-direction: column; min-height: 0; gap: 2px; }
+      .editor-panel { order: 0; } .explorer-panel { order: 1; } .output-panel { order: 2; }
       .editor-panel { height: 620px; max-height: 90dvh; min-height: 450px; }
       .explorer-panel { height: 400px; min-height: 300px; }
       .output-panel { height: 540px; max-height: 80dvh; min-height: 400px; }
-      .statusbar { padding-bottom: 8px; }
+      .statusbar { padding-bottom: 4px; }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
@@ -178,8 +268,18 @@
 <body data-context="server">
   <header class="top">
     <div class="brand">
-      <div class="brand-mark" aria-hidden="true">&gt;_</div>
-      <div><h1>Roblox Emulator</h1></div>
+      <details id="fileMenu" class="file-menu">
+        <summary>File</summary>
+        <div class="file-menu-content" aria-label="Test place controls">
+          <button id="placeNew" type="button" aria-label="New Place" disabled>New Place</button>
+          <button id="placeLoad" type="button" aria-label="Open Place" disabled>Open Place…</button>
+          <button id="placeSave" type="button" aria-label="Save Place" disabled>Save Place…</button>
+          <button id="placeRecover" type="button" disabled>Open Auto Save…</button>
+          <input id="placeFile" type="file" accept=".json,application/json" hidden>
+        </div>
+      </details>
+      <h1>Roblox Emulator</h1>
+      <span id="placeName" class="runtime-note">Test place</span>
     </div>
     <div class="metrics" aria-label="Session status">
       <span id="connectionState" class="connection" data-state="connecting">Connecting…</span>
@@ -191,16 +291,18 @@
   </header>
 
   <section class="runtime" aria-label="Runtime controls">
-    <div class="runtime-actions">
-      <button id="runningButton" type="button" disabled>▶ Play</button>
-      <button id="stepButton" type="button" title="Advance by 1/60 second" disabled>Step 1/60 s</button>
-      <button id="secondButton" type="button" title="Advance by one second" disabled>+1 s</button>
+    <div class="runtime-actions test-controls">
+      <select id="testMode" aria-label="Test mode" title="Choose the editable test place or the current runtime"><option value="place">Test</option><option value="runtime">Runtime</option></select>
+      <button id="placeRun" class="test-play" type="button" aria-label="Play" title="Play" disabled>▶</button>
+      <button id="runningButton" class="test-pause" type="button" aria-label="Pause" title="Pause" disabled><svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 16 16"><path fill="currentColor" d="M3 2h3v12H3zM10 2h3v12h-3z"/></svg></button>
+      <details class="step-menu"><summary aria-label="Step controls" title="Step controls"><svg aria-hidden="true" focusable="false" width="8" height="8" viewBox="0 0 8 8"><path fill="currentColor" d="M1 2.5h6L4 6z"/></svg></summary><div class="step-menu-content"><button id="stepButton" type="button" disabled>Step 1/60 s</button><button id="secondButton" type="button" disabled>Advance 1 s</button></div></details>
+      <button id="placeStop" class="test-stop" type="button" aria-label="Stop test place" title="Stop test place" disabled>■</button>
     </div>
     <div class="profile-controls">
       <label for="budgetSelect">Execution limit</label>
       <select id="budgetSelect" title="Continuous execution limit. It interrupts long-running code; it does not fix loops or cyclic tables." disabled><option value="">—</option></select>
       <label for="profileSelect">Reset profile</label>
-      <select id="profileSelect"><option value="generic">generic</option><option value="macsploit-744.2">macsploit-744.2</option></select>
+      <select id="profileSelect"><option value="generic">generic</option><option value="macsploit-744.2">macsploit-744.2</option><option value="macsploit-744.4">macsploit-744.4</option></select>
       <button id="resetButton" class="danger" type="button" disabled>Reset VMs…</button>
     </div>
   </section>
@@ -220,20 +322,47 @@
     <div class="field"><label for="actorSelect">Actor</label><select id="actorSelect" disabled></select></div>
     <div class="field vm-field"><label for="realmSelect">Virtual machine</label><select id="realmSelect" disabled><option>Waiting for state…</option></select></div>
     <button id="openGcButton" class="small" type="button" hidden disabled>GC viewers</button>
+    <button id="openFilesButton" class="small" type="button" hidden disabled>Executor files</button>
+    <div class="game-input" aria-label="Game keyboard input">
+      <label for="gameInputRealm" class="runtime-note">Input client</label><select id="gameInputRealm" aria-label="Input client" disabled></select>
+      <button id="gameInput" class="small" type="button" disabled title="Focus here and press keys to send them to the selected client. Escape leaves input mode.">Game input</button>
+      <span id="gameInputStatus" class="runtime-note">Click Game input, then press keys</span>
+    </div>
   </section>
 
   <main class="workspace">
     <section class="panel explorer-panel" aria-labelledby="explorerTitle">
       <div class="panel-heading"><h2 id="explorerTitle">Explorer</h2><button id="refreshExplorer" class="plain small" type="button" disabled>Refresh</button></div>
+      <div class="explorer-tabs" role="group" aria-label="Explorer view"><button id="runtimeExplorer" class="small" type="button" aria-pressed="true">Runtime</button><button id="placeExplorer" class="small" type="button" aria-pressed="false">Place</button><label class="check-label explorer-auto" title="Refresh Explorer every 2 seconds"><input id="explorerAutoRefresh" type="checkbox">Auto refresh</label></div>
+      <div id="placeToolbar" class="place-toolbar" hidden>
+        <label class="sr-only" for="placeClass">New instance class</label>
+        <select id="placeClass" hidden><option>Script</option><option>LocalScript</option><option>ModuleScript</option><option>Folder</option><option>Actor</option><option>Model</option><option>Part</option><option>RemoteEvent</option><option>RemoteFunction</option><option>BindableEvent</option><option>BindableFunction</option><option>StringValue</option><option>BoolValue</option><option>NumberValue</option><option>IntValue</option></select>
+        <button id="placeCreate" class="small" type="button" hidden disabled>Add</button>
+        <button id="placeRename" class="small" type="button" disabled>Rename</button>
+        <button id="placeMove" class="small" type="button" disabled>Move</button>
+        <button id="placeDuplicate" class="small" type="button" disabled>Duplicate</button>
+        <button id="placeDelete" class="small danger" type="button" disabled>Delete</button>
+        <input id="placeSearch" type="search" aria-label="Filter instances" placeholder="Filter instances…" autocomplete="off">
+      </div>
+      <div id="placeImportWarning" class="place-import-warning" role="alert" hidden></div>
+      <div id="placeInsertMenu" class="insert-menu" role="dialog" aria-label="Insert object" hidden>
+        <input id="placeInsertSearch" type="search" aria-label="Search objects" placeholder="Search object" autocomplete="off">
+        <div id="placeInsertList" class="insert-list"></div>
+      </div>
       <div id="explorerContext" class="inspection-note">Select a VM.</div>
       <div id="explorerTree" class="tree-scroller" role="tree" aria-label="Instances in the selected VM"></div>
-      <section id="instanceProperties" class="properties" aria-label="Selected instance properties"><span class="value-note">Select an instance to inspect its properties.</span></section>
+      <div id="placeTree" class="tree-scroller" role="tree" aria-label="Instances in the test place" hidden></div>
+      <div class="properties-panel">
+        <div class="panel-heading"><h2 id="propertiesTitle">Properties</h2></div>
+        <section id="instanceProperties" class="properties" aria-label="Selected instance properties"><span class="value-note">Select an instance to inspect its properties.</span></section>
+      </div>
     </section>
     <section class="panel editor-panel" aria-labelledby="editorTitle">
       <div class="panel-heading">
         <div class="panel-title"><h2 id="editorTitle">Editor</h2><span id="documentName" class="document-name">server.luau</span></div>
         <select id="inputFormat" aria-label="Input format" title="Run Luau source or Base64 compiler bytecode in the selected VM"><option value="source">Luau source</option><option value="bytecode-base64">Bytecode (Base64)</option></select>
       </div>
+      <div id="documentTabs" class="document-tabs" role="tablist" aria-label="Open documents"></div>
       <div class="editor-tools">
         <button id="openButton" class="small" type="button">Open file</button>
         <input id="fileInput" type="file" accept=".lua,.luau,.b64" hidden>
@@ -244,24 +373,9 @@
       <div class="editor-wrap">
         <div id="source" aria-describedby="editorHelp"></div>
       </div>
-      <div class="example-tools">
-        <label class="sr-only" for="exampleSelect">Code example</label>
-        <select id="exampleSelect">
-          <option value="basic">Print and GetService</option>
-          <option value="tables">Print tables and references</option>
-          <option value="remoteServer">Remotes · 1. Server</option>
-          <option value="remoteClient">Remotes · 2. Client</option>
-          <option value="executor">Executor · identifyexecutor and getgc</option>
-          <option value="gcPreview">Executor · GC: tables preview</option>
-          <option value="gcViewer">Executor · GCViewer</option>
-          <option value="hookClient">Hook · 1. Client target</option>
-          <option value="hookExecutor">Hook · 2. Hook in Executor</option>
-          <option value="restoreExecutor">Hook · 3. Restore function</option>
-        </select>
-        <button id="insertExample" class="small" type="button">Insert example</button>
-      </div>
       <div class="editor-footer">
         <div id="editorHelp" class="editor-help"><span id="cursorPosition">Ln 1, Col 1</span><span id="formatHelp">Tab accept / indent · Ctrl+Space complete</span></div>
+        <span id="scriptSaveState" class="runtime-note" hidden></span>
         <button id="lintStatus" class="plain small" type="button" title="Show diagnostics (Ctrl+Shift+M)">Checking…</button>
         <button id="runButton" class="run" type="button" disabled>Run <span class="shortcut">Ctrl+Enter</span></button>
       </div>
@@ -270,10 +384,30 @@
     <section class="panel output-panel" aria-labelledby="outputTitle">
       <div class="panel-heading"><h2 id="outputTitle">Output</h2><button id="clearButton" class="plain small" type="button" title="Clear output without resetting VM state" disabled>Clear output</button></div>
       <div class="console-tools">
-        <label class="sr-only" for="contextFilter">Output context</label><select id="contextFilter"><option value="">All contexts</option><option value="server">Server</option><option value="client">Client</option><option value="executor">Executor</option></select>
-        <label class="sr-only" for="realmFilter">Output VM</label><select id="realmFilter"><option value="">All VMs</option></select>
-        <label class="sr-only" for="levelFilter">Log level</label><select id="levelFilter"><option value="">All levels</option><option value="info">Info</option><option value="warn">Warnings</option><option value="error">Errors</option><option value="debug">Debug</option></select>
-        <label class="sr-only" for="logSearch">Search output</label><input id="logSearch" class="search" type="search" placeholder="Search messages, VM or context…" autocomplete="off">
+        <details id="outputFilter" class="output-filter">
+          <summary aria-label="Output filters" title="Output filters"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16"><path fill="currentColor" d="M1 2h14L9.5 8.2V14l-3-1.7V8.2z"/></svg></summary>
+          <div class="output-filter-content">
+            <label for="contextFilter">Context</label><select id="contextFilter"><option value="">All contexts</option><option value="server">Server</option><option value="client">Client</option><option value="executor">Executor</option></select>
+            <label for="realmFilter">VM</label><select id="realmFilter"><option value="">All VMs</option></select>
+            <label for="levelFilter">Log level</label><select id="levelFilter"><option value="">All levels</option><option value="info">Info</option><option value="warn">Warnings</option><option value="error">Errors</option><option value="debug">Debug</option></select>
+          </div>
+        </details>
+        <label class="sr-only" for="logSearch">Search output</label><input id="logSearch" class="search" type="search" placeholder="Filter…" autocomplete="off">
+        <details id="outputOptions" class="output-options">
+          <summary aria-label="Output options" title="Output options">⋯</summary>
+          <div class="output-options-content">
+            <label><input id="showTimestamp" type="checkbox">Show Timestamp</label>
+            <label><input id="showContext" type="checkbox">Show Context</label>
+            <label><input id="showSource" type="checkbox">Show Source</label>
+            <hr>
+            <label><input id="expandTables" type="checkbox">Show Tables Expanded by Default</label>
+            <label><input id="showTableAddresses" type="checkbox">Show Memory Address for Tables</label>
+            <hr>
+            <label><input id="logMode" type="checkbox">Log Mode</label>
+            <label><input id="stackLines" type="checkbox">Stack Lines</label>
+            <label title="Only the emulator Output receives protected errors"><input id="traceCaughtErrors" type="checkbox">Show Caught Errors</label>
+          </div>
+        </details>
       </div>
       <div id="logScroller" class="log-scroller" tabindex="0" role="region" aria-label="Emulator output">
         <div id="emptyOutput" class="empty-output">No output yet.</div>
@@ -285,14 +419,54 @@
 
   <footer class="statusbar">
     <div class="status-left"><span id="statusText" role="status" aria-live="polite">Waiting for session</span><span id="lastCommand" class="last-command"></span><span id="unsupportedStatus" class="unsupported" tabindex="0" hidden></span></div>
-    <span id="memoryStatus"></span>
+    <span><span id="runtimeMetrics" title="Host time spent processing scheduler steps of at least 1 microsecond virtual time; virtual time is not rendered FPS."></span><span id="memoryStatus"></span></span>
   </footer>
 
+  <dialog id="recoverDialog" aria-labelledby="recoverTitle">
+    <h2 id="recoverTitle">Open Auto Save</h2>
+    <p>Choose a recovery copy. Opening it does not overwrite the saved place.</p>
+    <select id="recoverList" size="8" aria-label="Available auto saves" style="width:100%"></select>
+    <div id="recoverError" class="error-text" role="alert" hidden></div>
+    <div class="dialog-actions"><button id="recoverCancel" type="button">Cancel</button><button id="recoverConfirm" type="button">Open</button></div>
+  </dialog>
   <dialog id="resetDialog" aria-labelledby="resetTitle" aria-describedby="resetDescription">
     <h2 id="resetTitle">Reset VM state?</h2>
     <p id="resetDescription">Objects, variables, connections and scheduled tasks will be lost. Editor code and history will be kept.</p>
     <p>New session profile: <strong id="resetProfileName"></strong></p>
     <div class="dialog-actions"><button id="cancelReset" type="button" autofocus>Cancel</button><button id="confirmReset" class="danger" type="button">Reset VMs</button></div>
+  </dialog>
+
+  <dialog id="placeDialog" class="place-dialog" aria-labelledby="placeDialogTitle">
+    <h2 id="placeDialogTitle"></h2>
+    <label for="placeDialogInput" id="placeDialogLabel">Name</label>
+    <input id="placeDialogInput" type="text" maxlength="128" autocomplete="off">
+    <div class="dialog-actions"><button id="placeDialogCancel" type="button">Cancel</button><button id="placeDialogConfirm" type="button">Save</button></div>
+  </dialog>
+
+  <dialog id="moveDialog" class="place-dialog" aria-labelledby="moveDialogTitle">
+    <h2 id="moveDialogTitle">Move instance</h2>
+    <label for="moveParent">New parent</label><select id="moveParent"></select>
+    <div class="dialog-actions"><button id="moveCancel" type="button">Cancel</button><button id="moveConfirm" type="button">Move</button></div>
+  </dialog>
+
+  <dialog id="filesDialog" class="place-dialog" aria-labelledby="filesTitle">
+    <h2 id="filesTitle">Executor files</h2>
+    <p id="filesContext"></p>
+    <p>Files are stored in this VM until reset. Download a file to keep it.</p>
+    <div id="filesList"></div>
+    <div id="filesError" class="error-text" role="alert" hidden></div>
+    <div class="dialog-actions"><button id="filesRefresh" type="button">Refresh</button><button id="filesClose" type="button">Close</button></div>
+  </dialog>
+
+  <dialog id="networkDialog" class="network-dialog" aria-labelledby="networkTitle" aria-describedby="networkIntro">
+    <h2 id="networkTitle">Network request</h2>
+    <p id="networkIntro">All VMs are paused. Review this request before allowing or denying it.</p>
+    <div class="network-label">Method and URL</div><pre id="networkUrl" class="network-details"></pre>
+    <div class="network-label">VM and context</div><pre id="networkOrigin" class="network-details"></pre>
+    <div class="network-label">Headers</div><pre id="networkHeaders" class="network-details"></pre>
+    <div id="networkBodyLabel" class="network-label">Body</div><pre id="networkBody" class="network-details"></pre>
+    <div id="networkError" class="error-text" role="alert" hidden></div>
+    <div class="dialog-actions"><button id="networkDeny" class="danger" type="button" autofocus>Deny</button><button id="networkAllow" type="button">Allow request</button></div>
   </dialog>
 
   <dialog id="gcDialog" class="gc-dialog" aria-labelledby="gcTitle" aria-describedby="gcContext">
@@ -301,7 +475,7 @@
     <div class="gc-controls">
       <label class="sr-only" for="gcViewerSelect">GC viewer</label><select id="gcViewerSelect"></select>
       <label class="sr-only" for="gcType">Value type</label><select id="gcType"><option value="">All types</option><option value="table">Tables</option><option value="function">Functions</option><option value="userdata">Userdata</option><option value="Instance">Instances</option><option value="thread">Threads</option><option value="string">Strings</option><option value="buffer">Buffers</option></select>
-      <label class="sr-only" for="gcSearch">Search GC values</label><input id="gcSearch" type="search" placeholder="Search values…" autocomplete="off">
+      <div class="gc-search"><label class="sr-only" for="gcSearch">Search GC values</label><input id="gcSearch" type="search" placeholder="Search values…" autocomplete="off"><button id="gcClearSearch" class="small" type="button" title="Clear search">Clear</button></div>
     </div>
     <div id="gcList" class="gc-list" tabindex="0" role="region" aria-label="GC values"></div>
     <div class="output-footer"><span id="gcStatus" role="status">No values loaded.</span><button id="gcMore" class="load-more" type="button" hidden>Load more</button></div>
@@ -313,6 +487,7 @@
     const $ = id => document.getElementById(id);
     const modes = ['server', 'client', 'executor'];
     const titles = {server: 'Server', client: 'Client', executor: 'Executor'};
+    const PLACE_SOURCE_LIMIT = 1024 * 1024, RUNTIME_SOURCE_LIMIT = 8 * 1024 * 1024;
     const storageKey = 'roblox-emulator.editor.v1';
     const tokenKey = 'roblox-emulator.token';
     let storageAvailable = true;
@@ -341,24 +516,46 @@
       history.replaceState(null, '', location.pathname + location.search);
     }
     let state = null, connected = false, busy = false, refreshTask = null;
+    const gameHeld = new Map(), gameInputQueue = [];
+    let gameInputSending = false;
     let requestSerial = 0, appliedSerial = 0, pollTimer = null, saveTimer = null;
     let apiError = '', dismissedRuntimeError = '', commandOverride = null;
     const rows = new Map(), expanded = new Map(), scrollPositions = new Map();
     let lastFilter = '';
-    let inspectionGeneration = 0, explorerEpoch = 0, propertySerial = 0, explorerOrigin = null, explorerSelection = '';
+    let inspectionGeneration = 0, explorerEpoch = 0, propertySerial = 0, explorerOrigin = null, explorerSelection = '', explorerSelectionObjectId = '';
+    let explorerAutoTimer = null, explorerAutoPending = false, explorerAutoGeneration = 0, explorerSourcePending = 0, explorerRevision = 0, lastTreeClickAt = 0, explorerAutoQueue = Promise.resolve();
+    const explorerExpanded = new Set(), explorerLoadedOffsets = new Map();
+    const NIL_PARENT = Symbol('nil instances'), NIL_COLLAPSED = Symbol('nil collapsed');
     let gcView = null, gcSerial = 0, gcSearchTimer = null;
+    let place = null, placeView = false, placeSelection = '', placeDirty = false, placeEpoch = 0, placeRequestSerial = 0, placeImportError = '', placeAutosaveError = '', placeHasRecovery = false, profileChosenByUser = false;
+    let placeInsertParent = null;
+    let activeScriptId = null, activeRuntimeKey = null, switchingDocument = false, displayedNetworkId = null;
+    let scriptAutosaveTimer = null, scriptAutosaveBlocked = false, savingScripts = false, replacingPlace = false;
+    const scriptDocs = new Map(), runtimeDocs = new Map(), placeExpanded = new Set();
+    const missingStudioIcons = new Set(), checkingStudioIcons = new Set();
     const viewerSeen = new Map();
     $('autoscroll').checked = stored.version === 2 && stored.autoscroll === true;
-    if (['generic', 'macsploit-744.2'].includes(stored.profile)) $('profileSelect').value = stored.profile;
+    $('explorerAutoRefresh').checked = stored.version === 2 && stored.explorerAutoRefresh === true;
+    const outputDefaults = {showTimestamp: stored.logDetails === true, showContext: stored.logDetails === true,
+      showSource: false, expandTables: false, showTableAddresses: true, logMode: false, stackLines: true};
+    for (const [id, fallback] of Object.entries(outputDefaults)) {
+      $(id).checked = typeof stored.outputOptions?.[id] === 'boolean' ? stored.outputOptions[id] : fallback;
+    }
+    for (const [id, name] of [['showTimestamp', 'show-timestamp'], ['showContext', 'show-context'], ['showSource', 'show-source']]) {
+      $('logList').classList.toggle(name, $(id).checked);
+    }
+    if (['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(stored.profile)) $('profileSelect').value = stored.profile;
     const editor = EmulatorEditor.createEditor($('source'), {
-      doc: drafts[mode], context: mode, format: formats[mode], getToken: () => token, getRealm: () => $('realmSelect').value, onChange: editChanged, onCursor: cursor,
+      doc: drafts[mode], context: mode, format: formats[mode], getToken: () => token, getRealm: editorRealm,
+      getPlaceCompletions: placeCompletions, getSourceLimit: () => activeRuntimeKey ? RUNTIME_SOURCE_LIMIT : activeScriptId ? PLACE_SOURCE_LIMIT : EmulatorEditor.MAX_SOURCE_BYTES, onChange: editChanged, onCursor: cursor,
       onRun: runCode, onSizeError: showError,
       onLintStatus(text, detail) { $('lintStatus').textContent = text; $('lintStatus').title = detail || 'Show diagnostics (Ctrl+Shift+M)'; }
     });
 
     function save() {
-      drafts[mode] = editor.getValue();
-      try { localStorage.setItem(storageKey, JSON.stringify({version: 2, mode, drafts, filenames, histories, choices, formats, profile: $('profileSelect').value, autoscroll: $('autoscroll').checked})); }
+      if (!activeScriptId && !activeRuntimeKey) drafts[mode] = editor.getValue();
+      const outputOptions = Object.fromEntries(Object.keys(outputDefaults).map(id => [id, $(id).checked]));
+      try { localStorage.setItem(storageKey, JSON.stringify({version: 2, mode, drafts, filenames, histories, choices, formats, profile: $('profileSelect').value, autoscroll: $('autoscroll').checked, outputOptions, explorerAutoRefresh: $('explorerAutoRefresh').checked})); }
       catch { storageAvailable = false; }
     }
     function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 250); }
@@ -412,24 +609,61 @@
       choice.realm = $('realmSelect').value;
       if (choice.realm !== previousRealm) editor.refreshCompletions();
       const realm = selectedRealm();
+      const inputClients = new Map();
+      for (const item of state?.realms || []) if (item.side === 'client' && item.clientId && (!inputClients.has(item.clientId) || !item.actorId)) inputClients.set(item.clientId, item);
+      const inputOptions = [...inputClients.values()].map(item => [item.id, item.clientId + ' · ' + item.id]);
+      setOptions($('gameInputRealm'), inputOptions.length ? inputOptions : [['', 'No clients']], $('gameInputRealm').value);
       const memory = Number.isFinite(realm?.memoryBytes) ? (realm.memoryBytes / 1048576).toFixed(2) + ' MiB' : '—';
       const profile = realm?.executor && realm.executorProfile ? ' · ' + realm.executorProfile : '';
+      const metrics = state?.metrics;
+      const metricParts = [];
+      if (Number.isFinite(metrics?.lastStepMs)) metricParts.push('Step: ' + metrics.lastStepMs.toFixed(2) + ' ms');
+      if (Number.isFinite(metrics?.meanStepMs)) metricParts.push('Avg: ' + metrics.meanStepMs.toFixed(2) + ' ms');
+      if (Number.isFinite(metrics?.virtualStepMs)) metricParts.push('Virtual: ' + metrics.virtualStepMs.toFixed(2) + ' ms');
+      if (Number.isFinite(metrics?.vmCount)) metricParts.push('VMs: ' + metrics.vmCount);
+      $('runtimeMetrics').textContent = metricParts.length ? metricParts.join(' · ') + (realm ? ' · ' : '') : '';
       $('memoryStatus').textContent = realm ? 'VM memory: ' + memory + profile : '';
       updateActions();
       syncInspectorTarget();
     }
     function updateActions() {
-      const available = connected && state !== null && !busy;
-      $('runButton').disabled = !available || !$('realmSelect').value || !editor.getValue().trim();
-      for (const id of ['runningButton', 'resetButton', 'clearButton', 'budgetSelect']) $(id).disabled = !available;
-      for (const id of ['stepButton', 'secondButton']) $(id).disabled = !available || !!state?.running;
+      const waiting = !!state?.network?.pending;
+      const available = connected && state !== null && !busy && !waiting;
+      $('traceCaughtErrors').disabled = !available;
+      $('runButton').disabled = !available || !!activeRuntimeKey || (activeScriptId ? !scriptDocs.has(activeScriptId) : !$('realmSelect').value || !editor.getValue().trim());
+      $('runButton').hidden = !!(activeScriptId || activeRuntimeKey);
+      const caption = activeRuntimeKey ? 'Read-only' : activeScriptId ? 'Save Script' : 'Run';
+      if ($('runButton').dataset.caption !== caption) {
+        $('runButton').dataset.caption = caption;
+        $('runButton').replaceChildren(document.createTextNode(caption + ' '), element('span', 'shortcut', 'Ctrl+Enter'));
+      }
+      for (const id of ['resetButton', 'clearButton', 'budgetSelect']) $(id).disabled = !available;
+      if (state?.usingPlace || state?.stopped) $('testMode').value = 'place';
+      $('testMode').disabled = !available || !!state?.usingPlace;
+      $('placeRun').disabled = !available || !!state?.running && (state?.usingPlace || $('testMode').value === 'runtime') || ($('testMode').value === 'place' ? !place : !!state?.stopped);
+      $('runningButton').disabled = !available || !state?.running;
+      $('placeStop').disabled = !connected || busy || !state?.usingPlace;
+      for (const id of ['stepButton', 'secondButton']) $(id).disabled = !available || !!state?.running || !!state?.stopped;
       for (const id of ['clientSelect', 'actorSelect', 'realmSelect']) $(id).disabled = busy || !state;
       for (const button of document.querySelectorAll('.mode')) button.disabled = busy;
       $('profileSelect').disabled = busy;
+      $('gameInputRealm').disabled = !available || !$('gameInputRealm').value;
+      $('gameInput').disabled = !available || !$('gameInputRealm').value;
+      $('openFilesButton').disabled = !available || mode !== 'executor' || !$('realmSelect').value;
       $('budgetSelect').disabled = !available || !Number.isFinite(state?.limits?.cpuMs);
       $('refreshExplorer').disabled = !available || !$('realmSelect').value;
-      $('runningButton').textContent = state?.running ? 'Ⅱ Pause' : '▶ Play';
-      $('runningButton').setAttribute('aria-label', state?.running ? 'Pause virtual time' : 'Resume virtual time');
+      for (const id of ['placeNew', 'placeSave', 'placeLoad', 'placeRecover']) $(id).disabled = !available || (id === 'placeSave' && !place);
+      const selected = place?.nodes?.find(node => node.id === placeSelection);
+      $('placeCreate').disabled = !available || !selected;
+      for (const id of ['placeRename', 'placeMove', 'placeDuplicate', 'placeDelete']) $(id).disabled = !available || !selected || selected.builtin;
+      $('placeClass').disabled = !available;
+      for (const input of $('instanceProperties').querySelectorAll('[data-place-property]')) input.disabled = !available || input.dataset.placeProperty === 'locked';
+      $('inputFormat').disabled = !!(activeScriptId || activeRuntimeKey);
+      $('openButton').disabled = !!(activeScriptId || activeRuntimeKey);
+      $('historySelect').disabled = !!(activeScriptId || activeRuntimeKey);
+      $('networkAllow').disabled = busy || !waiting; $('networkDeny').disabled = busy || !waiting;
+      $('recoverCancel').disabled = busy; $('recoverConfirm').disabled = busy || !$('recoverList').value;
+      updateScriptSaveState();
     }
     function renderHistory() {
       const items = [['', 'History: ' + titles[mode].toLowerCase()]];
@@ -443,6 +677,7 @@
       $('historySelect').title = storageAvailable ? 'Last 20 runs for this mode, stored in this browser' : 'Browser storage is unavailable; history lasts until this page closes';
     }
     function switchMode(next, initial = false) {
+      if (!initial && (activeScriptId || activeRuntimeKey)) showConsole();
       const previousRealm = initial ? null : selectedRealm();
       if (!initial) drafts[mode] = editor.getValue();
       mode = next;
@@ -465,11 +700,17 @@
     function setFormat(value) {
       formats[mode] = value === 'bytecode-base64' ? value : 'source';
       $('inputFormat').value = formats[mode]; editor.setFormat(formats[mode]);
-      $('insertExample').disabled = formats[mode] !== 'source';
       $('formatHelp').textContent = formats[mode] === 'source' ? 'Tab accept / indent · Ctrl+Space complete' : 'Base64 · Luau / Roblox opcodes · whitespace allowed';
       $('inputFormat').title = formats[mode] === 'source' ? 'Luau source code' : 'Paste Base64 compiler bytecode (Luau or Roblox opcodes). Use trusted bytecode only.';
     }
-    function editChanged() { drafts[mode] = editor.getValue(); cursor(); updateActions(); saveSoon(); }
+    function editChanged() {
+      if (switchingDocument || activeRuntimeKey) return;
+      if (activeScriptId) {
+        const doc = scriptDocs.get(activeScriptId);
+        if (doc) { doc.source = editor.getValue(); scriptAutosaveBlocked = false; scheduleScriptAutosave(); renderDocumentTabs(); if (place) $('placeName').textContent = place.name + (hasPlaceChanges() ? ' •' : ''); }
+      } else { drafts[mode] = editor.getValue(); saveSoon(); }
+      cursor(); updateActions();
+    }
     function renderCommand() {
       const commands = Array.isArray(state?.commands) ? state.commands : [];
       const command = commandOverride || commands[commands.length - 1];
@@ -507,11 +748,14 @@
       if (state && Number.isFinite(snapshot.time) && snapshot.time < state.time) resetInspections();
       appliedSerial = serial;
       state = snapshot;
+      if (typeof snapshot.traceCaughtErrors === 'boolean') $('traceCaughtErrors').checked = snapshot.traceCaughtErrors;
+      if (Object.hasOwn(snapshot, 'placeImportError')) setPlaceImportError(snapshot.placeImportError);
       commandOverride = payload.command || null;
       $('virtualTime').textContent = Number.isFinite(state.time) ? state.time.toFixed(3) + ' s' : '—';
       $('pendingMessages').textContent = Number.isFinite(state.pendingMessages) ? String(state.pendingMessages) : '—';
       connection(true, 'Connected');
-      renderTargets(); renderLogFilters(); renderLogs(); renderCommand(); renderDiagnostics(); renderError();
+      renderTargets(); renderLogFilters(); renderLogs(); renderCommand(); renderDiagnostics(); renderError(); renderNetwork();
+      if (!state?.network?.pending) flushGameInput();
     }
     async function request(path, body, updateState = true) {
       const serial = ++requestSerial;
@@ -536,6 +780,516 @@
         throw error;
       } finally { clearTimeout(timeout); }
     }
+    function inputKey(code) {
+      if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+      const digits = ['Zero','One','Two','Three','Four','Five','Six','Seven','Eight','Nine'];
+      if (/^Digit[0-9]$/.test(code)) return digits[Number(code.slice(5))];
+      if (/^Numpad[0-9]$/.test(code)) return 'Keypad' + digits[Number(code.slice(6))];
+      if (/^F(?:[1-9]|1[0-5])$/.test(code)) return code;
+      return ({Space:'Space', Enter:'Return', Backspace:'Backspace', Delete:'Delete', ArrowUp:'Up', ArrowDown:'Down', ArrowLeft:'Left', ArrowRight:'Right',
+        Home:'Home', End:'End', PageUp:'PageUp', PageDown:'PageDown', Insert:'Insert', ShiftLeft:'LeftShift', ShiftRight:'RightShift',
+        ControlLeft:'LeftControl', ControlRight:'RightControl', AltLeft:'LeftAlt', AltRight:'RightAlt', Minus:'Minus', Equal:'Equals',
+        BracketLeft:'LeftBracket', BracketRight:'RightBracket', Backslash:'BackSlash', Semicolon:'Semicolon', Quote:'Quote', Backquote:'Backquote',
+        Comma:'Comma', Period:'Period', Slash:'Slash', NumpadAdd:'KeypadPlus', NumpadSubtract:'KeypadMinus', NumpadMultiply:'KeypadMultiply',
+        NumpadDivide:'KeypadDivide', NumpadDecimal:'KeypadPeriod', NumpadEnter:'KeypadEnter'})[code] || '';
+    }
+    function queueGameInput(realm, key, down) {
+      gameInputQueue.push({realm, key, down});
+      flushGameInput();
+    }
+    async function flushGameInput() {
+      if (gameInputSending || !connected || !state || state.network?.pending) return;
+      gameInputSending = true;
+      try {
+        while (gameInputQueue.length && connected && !state?.network?.pending) {
+          try { await request('input', gameInputQueue[0]); gameInputQueue.shift(); }
+          catch (error) {
+            await refresh(true);
+            if (state?.network?.pending) break;
+            gameInputQueue.shift(); showError(error.message);
+          }
+        }
+      } finally { gameInputSending = false; }
+    }
+    function releaseGameKeys() {
+      for (const {realm,key} of gameHeld.values()) queueGameInput(realm,key,false);
+      gameHeld.clear();
+    }
+    function renderNetwork() {
+      const pending = state?.network?.pending, dialog = $('networkDialog');
+      if (!pending) { if (dialog.open) dialog.close(); displayedNetworkId = null; $('networkError').hidden = true; return; }
+      if (pending.id !== displayedNetworkId) {
+        displayedNetworkId = pending.id; $('networkError').hidden = true;
+        $('networkUrl').textContent = String(pending.method || '') + ' ' + String(pending.url || '');
+        $('networkOrigin').textContent = [pending.realm, pending.context, pending.api].filter(value => typeof value === 'string' && value).join(' · ');
+        $('networkHeaders').textContent = pending.headers && typeof pending.headers === 'object' ? JSON.stringify(pending.headers, null, 2) : String(pending.headers || '(none)');
+        $('networkBodyLabel').textContent = 'Body' + (Number.isFinite(pending.bodyBytes) ? ' · ' + pending.bodyBytes + ' bytes' : '');
+        const parts = [];
+        if (typeof pending.bodyText === 'string' && pending.bodyText) parts.push(pending.bodyText);
+        if (typeof pending.bodyBase64 === 'string' && pending.bodyBase64) parts.push('Base64 (exact bytes):\n' + pending.bodyBase64);
+        $('networkBody').textContent = parts.length ? parts.join('\n\n') : pending.bodyPresent ? '(empty body)' : '(no body)';
+      }
+      if (!dialog.open) dialog.showModal();
+      updateActions();
+    }
+    async function decideNetwork(allow) {
+      const pending = state?.network?.pending;
+      if (!pending || busy) return;
+      busy = true; $('networkError').hidden = true; updateActions();
+      try { await request('network/decide', {id: pending.id, allow}); status(allow ? 'Request allowed' : 'Request denied'); }
+      catch (error) { $('networkError').textContent = error.message; $('networkError').hidden = false; }
+      finally { busy = false; updateActions(); }
+    }
+    function scriptNode(id) { return place?.nodes?.find(node => node.id === id && ['Script', 'LocalScript', 'ModuleScript'].includes(node.class)); }
+    function placeCompletions(path) {
+      if (!activeScriptId || !place || !Array.isArray(path)) return null;
+      let parent = null, index = 1;
+      if (path[0] === 'workspace') {
+        const root = place.nodes.find(node => node.parent === null && node.class === 'Workspace');
+        if (!root) return [];
+        parent = root.id;
+      } else if (path[0] !== 'game') return [];
+      for (; index < path.length; index++) {
+        const node = place.nodes.find(item => item.parent === parent && item.name === path[index]);
+        if (!node) return [];
+        parent = node.id;
+      }
+      return place.nodes.filter(node => node.parent === parent).map(node => ({label: node.name, detail: node.class, info: node.name + ' · ' + node.class, type: 'property'}));
+    }
+    function scriptContext(node) {
+      if (node.class === 'Script') return 'server';
+      if (node.class === 'LocalScript') return 'client';
+      let parent = place?.nodes?.find(item => item.id === node.parent), depth = 0;
+      while (parent && depth++ < 64) {
+        if (['ServerScriptService', 'ServerStorage'].includes(parent.class)) return 'server';
+        parent = place.nodes.find(item => item.id === parent.parent);
+      }
+      return mode === 'server' ? 'server' : 'client';
+    }
+    function editorRealm() {
+      const node = scriptNode(activeScriptId); if (!node) return $('realmSelect').value;
+      const side = scriptContext(node), realms = state?.realms || [], selected = selectedRealm();
+      return (selected?.side === side ? selected : realms.find(realm => realm.side === side && !realm.actorId))?.id || '';
+    }
+    function hasPlaceChanges() { return placeDirty || !!place && place.profile !== $('profileSelect').value || [...scriptDocs.values()].some(doc => doc.source !== doc.savedSource); }
+    function documentIcon(className) {
+      const icon = document.createElement('img'); icon.className = 'document-icon'; icon.alt = '';
+      icon.src = '/assets/studio-class/' + (['Script', 'LocalScript', 'ModuleScript'].includes(className) ? className : 'Script') + '.png';
+      icon.onerror = () => { icon.hidden = true; }; return icon;
+    }
+    function renderDocumentTabs() {
+      const tabs = $('documentTabs'), fragment = document.createDocumentFragment();
+      const consoleWrapper = element('div', 'document-tab'); consoleWrapper.dataset.selected = String(!activeScriptId && !activeRuntimeKey);
+      const consoleTab = element('button', 'small', 'Console');
+      consoleTab.type = 'button'; consoleTab.setAttribute('role', 'tab'); consoleTab.setAttribute('aria-selected', String(!activeScriptId && !activeRuntimeKey));
+      consoleTab.addEventListener('click', showConsole); consoleWrapper.append(consoleTab); fragment.append(consoleWrapper);
+      for (const [id, doc] of scriptDocs) {
+        if (doc.closed) continue;
+        const wrapper = element('div', 'document-tab');
+        wrapper.dataset.selected = String(activeScriptId === id);
+        const tab = element('button', 'small'); tab.append(documentIcon(doc.class), document.createTextNode(doc.name + (doc.source !== doc.savedSource ? ' •' : '')));
+        tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeScriptId === id));
+        tab.title = doc.class + ' · ' + doc.name; tab.addEventListener('click', () => showScript(id));
+        const close = element('button', 'close-tab', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close ' + doc.name);
+        close.addEventListener('click', () => {
+          if (activeScriptId === id) showConsole();
+          if (doc.source !== doc.savedSource || doc.savingSource !== undefined) { doc.closed = true; scriptAutosaveBlocked = false; scheduleScriptAutosave(0); }
+          else { editor.forgetDocument('place:' + placeEpoch + ':' + id); scriptDocs.delete(id); }
+          renderDocumentTabs(); updateActions();
+        });
+        wrapper.append(tab, close); fragment.append(wrapper);
+      }
+      for (const [key, doc] of runtimeDocs) {
+        const wrapper = element('div', 'document-tab');
+        wrapper.dataset.selected = String(activeRuntimeKey === key);
+        const tab = element('button', 'small'); tab.append(documentIcon(doc.class), document.createTextNode(doc.name + ' · Read-only'));
+        tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeRuntimeKey === key));
+        tab.title = doc.class + ' · ' + doc.name + ' · ' + doc.realm + ' · ' + titles[doc.context] + ' (read-only snapshot)';
+        tab.addEventListener('click', () => showRuntimeDocument(key));
+        const close = element('button', 'close-tab', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close ' + doc.name + ' read-only');
+        close.addEventListener('click', () => {
+          if (activeRuntimeKey === key) showConsole();
+          editor.forgetDocument('runtime:' + key); runtimeDocs.delete(key); renderDocumentTabs(); updateActions();
+        });
+        wrapper.append(tab, close); fragment.append(wrapper);
+      }
+      tabs.replaceChildren(fragment);
+    }
+    function showConsole(discardCurrent = false) {
+      if (!activeScriptId && !activeRuntimeKey) return;
+      const current = scriptDocs.get(activeScriptId); if (current && discardCurrent !== true) current.source = editor.getValue();
+      activeScriptId = null; activeRuntimeKey = null; switchingDocument = true;
+      try { editor.setContext(mode); editor.setReadOnly(replacingPlace); setFormat(formats[mode]); if (editor.getValue() !== drafts[mode]) editor.setValue(drafts[mode]); }
+      finally { switchingDocument = false; }
+      $('documentName').textContent = filenames[mode]; renderDocumentTabs(); cursor(); updateActions();
+    }
+    function showScript(id) {
+      const node = scriptNode(id); if (!node) return;
+      if (activeScriptId === id) { editor.focus(); return; }
+      if (activeScriptId) { const current = scriptDocs.get(activeScriptId); if (current) current.source = editor.getValue(); }
+      else if (!activeRuntimeKey) drafts[mode] = editor.getValue();
+      let doc = scriptDocs.get(id);
+      if (!doc) { doc = {name: node.name, class: node.class, source: node.source || '', savedSource: node.source || ''}; scriptDocs.set(id, doc); }
+      doc.closed = false;
+      activeScriptId = id; activeRuntimeKey = null; switchingDocument = true;
+      let loaded = true;
+      try {
+        const context = scriptContext(node);
+        editor.setContext(context, 'place:' + placeEpoch + ':' + id); editor.setReadOnly(replacingPlace); editor.setFormat('source');
+        if (editor.getValue() !== doc.source) loaded = editor.setValue(doc.source);
+      } finally { switchingDocument = false; }
+      if (!loaded) { showConsole(true); return; }
+      $('inputFormat').value = 'source'; $('formatHelp').textContent = 'Autosave to test place · Ctrl+S saves now';
+      $('documentName').textContent = node.name + ' · ' + node.class;
+      renderDocumentTabs(); cursor(); updateActions(); editor.focus();
+    }
+    function showRuntimeDocument(key) {
+      const doc = runtimeDocs.get(key); if (!doc) return;
+      if (activeRuntimeKey === key) { editor.focus(); return; }
+      if (activeScriptId) { const current = scriptDocs.get(activeScriptId); if (current) current.source = editor.getValue(); }
+      else if (!activeRuntimeKey) drafts[mode] = editor.getValue();
+      activeScriptId = null; activeRuntimeKey = key; switchingDocument = true;
+      let loaded = true;
+      try {
+        editor.setContext(doc.context, 'runtime:' + key); editor.setReadOnly(false); editor.setFormat('source');
+        if (editor.getValue() !== doc.source) loaded = editor.setValue(doc.source);
+        editor.setReadOnly(true);
+      } finally { switchingDocument = false; }
+      if (!loaded) { showConsole(true); return; }
+      $('inputFormat').value = 'source'; $('formatHelp').textContent = 'Runtime source · read-only snapshot';
+      $('documentName').textContent = doc.name + ' · ' + doc.class + ' · ' + doc.realm;
+      renderDocumentTabs(); cursor(); updateActions(); editor.focus();
+    }
+    function closeRuntimeDocuments() {
+      if (activeRuntimeKey) showConsole();
+      for (const key of runtimeDocs.keys()) editor.forgetDocument('runtime:' + key);
+      runtimeDocs.clear(); renderDocumentTabs(); updateActions();
+    }
+    function setPlace(value, replace = false) {
+      if (!value || !Array.isArray(value.nodes) || typeof value.name !== 'string') throw new Error('Invalid test place response.');
+      if (!place && !profileChosenByUser && ['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(value.profile)) $('profileSelect').value = value.profile;
+      if (replace) {
+        closePlaceInsert();
+        showConsole(); for (const id of scriptDocs.keys()) editor.forgetDocument('place:' + placeEpoch + ':' + id);
+        scriptDocs.clear(); placeExpanded.clear(); placeSelection = ''; placeEpoch++;
+      }
+      place = value;
+      if (placeSelection && !value.nodes.some(node => node.id === placeSelection)) placeSelection = '';
+      for (const [id, doc] of scriptDocs) {
+        const node = scriptNode(id);
+        if (!node) { if (activeScriptId === id) showConsole(); editor.forgetDocument('place:' + placeEpoch + ':' + id); scriptDocs.delete(id); continue; }
+        const clean = doc.source === doc.savedSource && doc.savingSource === undefined;
+        doc.name = node.name; doc.class = node.class; doc.savedSource = node.source || '';
+        if (clean) {
+          doc.source = doc.savedSource;
+          if (activeScriptId === id && editor.getValue() !== doc.source) {
+            let loaded = false; switchingDocument = true;
+            try { loaded = editor.setValue(doc.source); } finally { switchingDocument = false; }
+            if (!loaded) showConsole(true);
+          }
+        }
+      }
+      $('placeName').textContent = value.name + (hasPlaceChanges() ? ' •' : '');
+      if (activeScriptId) { const doc = scriptDocs.get(activeScriptId); if (doc) $('documentName').textContent = doc.name + ' · ' + doc.class; }
+      renderDocumentTabs(); if (activeScriptId) editor.refreshCompletions(); if (placeView) renderPlaceTree(); updateActions();
+    }
+    function setPlaceImportError(value) {
+      placeImportError = typeof value === 'string' ? value : '';
+      const warning = $('placeImportWarning');
+      warning.textContent = placeImportError ? 'Scenario import failed. The scenario was not imported into this test place.\n' + placeImportError : '';
+      warning.hidden = !placeView || !placeImportError;
+    }
+    async function refreshPlace(automatic = false, generation = explorerAutoGeneration) {
+      if (!connected || !token) return;
+      const ticket = ++placeRequestSerial;
+      try { const payload = await request('place/state', {}, false); if (ticket === placeRequestSerial && (!automatic || autoExplorerAvailable(generation))) { if (Object.hasOwn(payload, 'importError')) setPlaceImportError(payload.importError); setPlace(payload.place); } }
+      catch (error) { if (!automatic) showError(error.message); }
+    }
+    function placePath(id) {
+      const names = [], seen = new Set(); let node = place?.nodes?.find(item => item.id === id);
+      while (node && !seen.has(node.id) && names.length < 64) { seen.add(node.id); names.push(node.name); node = place.nodes.find(item => item.id === node.parent); }
+      return names.reverse().join(' / ');
+    }
+    function closePlaceInsert() {
+      $('placeInsertMenu').hidden = true; placeInsertParent = null;
+    }
+    function renderPlaceInsertList() {
+      const list = $('placeInsertList'), query = $('placeInsertSearch').value.trim().toLowerCase();
+      const allowed = new Set([...$('placeClass').options].map(option => option.value));
+      const groups = [
+        ['Frequently used', ['Folder', 'Script', 'LocalScript', 'ModuleScript', 'RemoteEvent', 'Part']],
+        ['Containers', ['Folder', 'Model', 'Actor']],
+        ['Scripts and communication', ['Script', 'LocalScript', 'ModuleScript', 'RemoteEvent', 'RemoteFunction', 'BindableEvent', 'BindableFunction']],
+        ['Parts', ['Part']],
+        ['Values', ['StringValue', 'BoolValue', 'NumberValue', 'IntValue']]
+      ];
+      list.replaceChildren();
+      let count = 0;
+      for (const [category, names] of groups) {
+        const matches = names.filter(name => allowed.has(name) && (!query || name.toLowerCase().includes(query)));
+        if (!matches.length) continue;
+        list.append(element('div', 'insert-category', category));
+        for (const className of matches) {
+          const button = element('button', 'insert-item'); button.type = 'button';
+          button.append(treeIcon(className), element('span', '', className));
+          button.addEventListener('click', () => {
+            const parent = placeInsertParent; closePlaceInsert();
+            if (!parent || !place?.nodes?.some(node => node.id === parent)) return;
+            placeAction('Creating instance…', async () => {
+              const result = await updatePlace({action: 'create', parent, class: className, name: className});
+              if (result.id) { placeExpanded.add(parent); placeSelection = result.id; renderPlaceTree(); if (scriptNode(result.id)) showScript(result.id); }
+            });
+          });
+          list.append(button); count++;
+        }
+      }
+      if (!count) list.append(element('div', 'inspection-note', 'No matching objects.'));
+    }
+    function openPlaceInsert(parent, anchor) {
+      if (!placeView || !connected || busy || state?.network?.pending) return;
+      const menu = $('placeInsertMenu'), search = $('placeInsertSearch');
+      if (!menu.hidden && placeInsertParent === parent) { closePlaceInsert(); return; }
+      placeInsertParent = parent; search.value = ''; menu.hidden = false; renderPlaceInsertList();
+      const rect = anchor.getBoundingClientRect();
+      menu.style.left = Math.max(6, Math.min(window.innerWidth - menu.offsetWidth - 6, rect.right - menu.offsetWidth)) + 'px';
+      menu.style.top = Math.max(6, Math.min(window.innerHeight - menu.offsetHeight - 6, rect.bottom)) + 'px';
+      search.focus();
+    }
+    function renderPlaceTree() {
+      const root = $('placeTree'); root.replaceChildren();
+      if (!place) { root.append(element('div', 'inspection-note', 'Loading test place…')); return; }
+      if (placeInsertParent && !place.nodes.some(node => node.id === placeInsertParent)) closePlaceInsert();
+      $('explorerContext').textContent = 'Test place · ' + place.name;
+      const children = new Map();
+      for (const node of place.nodes) { const parent = node.parent || ''; if (!children.has(parent)) children.set(parent, []); children.get(parent).push(node); }
+      const filter = $('placeSearch').value.trim().toLowerCase(), visible = new Set(), byId = new Map(place.nodes.map(node => [node.id,node]));
+      if (filter) for (const node of place.nodes) if ((node.name + ' ' + node.class).toLowerCase().includes(filter)) {
+        let cursor = node;
+        while (cursor && !visible.has(cursor.id)) { visible.add(cursor.id); cursor = byId.get(cursor.parent); }
+      }
+      const render = (parent, container, depth) => {
+        if (depth > 64) return;
+        for (const node of children.get(parent) || []) {
+          if (filter && !visible.has(node.id)) continue;
+          const branch = element('div', 'tree-branch'); branch.setAttribute('role', 'treeitem');
+          branch.setAttribute('aria-selected', String(placeSelection === node.id));
+          const row = element('div', 'tree-row'); row.dataset.instance = node.id; row.dataset.selected = String(placeSelection === node.id);
+          const hasChildren = (children.get(node.id) || []).length > 0;
+          const expanded = !!filter || placeExpanded.has(node.id);
+          const toggle = element('button', 'tree-toggle', hasChildren ? (expanded ? '▾' : '▸') : '');
+          toggle.type = 'button'; toggle.disabled = !hasChildren || !!filter; toggle.setAttribute('aria-label', (expanded ? 'Collapse ' : 'Expand ') + node.name);
+          toggle.addEventListener('click', () => { if (placeExpanded.has(node.id)) placeExpanded.delete(node.id); else placeExpanded.add(node.id); renderPlaceTree(); });
+          const name = element('button', 'tree-name'); name.type = 'button'; name.title = placePath(node.id) + ' · ' + node.class;
+          name.append(treeIcon(node.class), element('span', 'tree-label', node.name));
+          if (node.class !== node.name) name.append(element('span', 'tree-class', node.class));
+          name.addEventListener('click', () => { if (placeSelection !== node.id) closePlaceInsert(); placeSelection = node.id; renderPlaceTree(); });
+          name.addEventListener('dblclick', () => showScript(node.id));
+          row.draggable = !node.builtin;
+          row.addEventListener('dragstart', event => { event.dataTransfer.setData('text/plain', node.id); event.dataTransfer.effectAllowed = 'move'; });
+          row.addEventListener('dragover', event => { if (event.dataTransfer.types.includes('text/plain')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+          row.addEventListener('drop', event => {
+            event.preventDefault(); event.stopPropagation();
+            const id = event.dataTransfer.getData('text/plain');
+            if (!id || id === node.id || !place.nodes.some(item => item.id === id && !item.builtin)) return;
+            placeAction('Moving instance…', async () => { await updatePlace({action:'reparent',id,parent:node.id}); placeExpanded.add(node.id); placeSelection=id; renderPlaceTree(); });
+          });
+          const add = element('button', 'tree-add', '+'); add.type = 'button';
+          add.title = 'Insert object'; add.setAttribute('aria-label', 'Insert object into ' + node.name);
+          add.addEventListener('click', event => {
+            event.stopPropagation(); placeSelection = node.id;
+            for (const item of root.querySelectorAll('.tree-row')) item.dataset.selected = String(item.dataset.instance === node.id);
+            renderPlaceProperties(); updateActions(); openPlaceInsert(node.id, add);
+          });
+          row.append(toggle, name, add); branch.append(row);
+          if (hasChildren && expanded) { const nested = element('div', 'tree-children'); nested.setAttribute('role', 'group'); render(node.id, nested, depth + 1); branch.append(nested); }
+          container.append(branch);
+        }
+      };
+      render('', root, 0); renderPlaceProperties(); updateActions();
+    }
+    function propertiesTitle(name, className) {
+      const label = name && className ? 'Properties - ' + className + ' "' + name + '"' : 'Properties';
+      $('propertiesTitle').textContent = label; $('propertiesTitle').title = label;
+    }
+    function propertyText(value) {
+      if (value === null || value === undefined) return 'nil';
+      if (typeof value !== 'object') return String(value);
+      if (value.tag === 'Vector2' || value.tag === 'Vector3') return (value.tag === 'Vector2' ? [value.x, value.y] : [value.x, value.y, value.z]).join(', ');
+      if (value.tag === 'instance') return place?.nodes?.find(node => node.id === value.id)?.name || String(value.id || 'Instance');
+      if (value.tag === 'EnumItem') return 'Enum.' + value.enum + '.' + value.name;
+      return JSON.stringify(value);
+    }
+    function staticProperty(panel, name, value) {
+      const row = element('div', 'property-row');
+      row.append(element('span', 'property-name', name), element('span', 'property-value', propertyText(value))); panel.append(row);
+    }
+    function renderPlaceProperties() {
+      const panel = $('instanceProperties'), node = place?.nodes?.find(item => item.id === placeSelection);
+      panel.replaceChildren();
+      if (!node) { propertiesTitle(); panel.append(element('span', 'value-note', 'Select an instance in the test place.')); return; }
+      propertiesTitle(node.name, node.class);
+      panel.append(element('h3', '', 'Data'));
+      staticProperty(panel, 'ClassName', node.class);
+      const nameRow = element('label', 'property-row'), nameInput = document.createElement('input');
+      nameInput.value = node.name; nameInput.maxLength = 128; nameInput.setAttribute('aria-label', 'Name'); nameInput.dataset.placeProperty = node.builtin ? 'locked' : 'editable';
+      nameInput.addEventListener('change', () => {
+        const name = nameInput.value.trim();
+        if (!name) { showError('Name cannot be empty.'); renderPlaceProperties(); return; }
+        if (name !== node.name) placeAction('Renaming instance…', async () => updatePlace({action: 'rename', id: node.id, name})).finally(renderPlaceProperties);
+      });
+      nameRow.append(element('span', 'property-name', 'Name'), nameInput); panel.append(nameRow);
+      staticProperty(panel, 'Parent', place.nodes.find(parent => parent.id === node.parent)?.name || null);
+      if (scriptNode(node.id)) {
+        if (typeof node.enabled === 'boolean') {
+          panel.append(element('h3', '', 'Behavior'));
+          const row = element('label', 'property-row'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = node.enabled;
+          checkbox.dataset.placeProperty = node.builtin ? 'locked' : 'editable';
+          checkbox.addEventListener('change', () => placeAction('Updating script…', async () => updatePlace({action: 'enabled', id: node.id, enabled: checkbox.checked})).finally(renderPlaceProperties));
+          row.append(element('span', 'property-name', 'Enabled'), checkbox); panel.append(row);
+        }
+      }
+      const specs = node.class === 'Part' ? [
+        ['Anchored','boolean',false],['CanCollide','boolean',true],['CanTouch','boolean',true],['CanQuery','boolean',true],['Massless','boolean',false],
+        ['Transparency','number',0],['Position','vector',{tag:'Vector3',x:0,y:0,z:0}],['Size','vector',{tag:'Vector3',x:4,y:1.2,z:2}]
+      ] : ({StringValue:[['Value','string','']],BoolValue:[['Value','boolean',false]],NumberValue:[['Value','number',0]],IntValue:[['Value','integer',0]]})[node.class] || [];
+      const shown = new Set(['Name', 'ClassName', 'Parent']);
+      if (typeof node.enabled === 'boolean') { shown.add('Enabled'); shown.add('Disabled'); }
+      if (specs.length || Object.keys(node.properties || {}).some(key => !shown.has(key))) panel.append(element('h3', '', 'Properties'));
+      for (const [key, type, fallback] of specs) {
+        if (key === 'Position' && node.properties?.CFrame && !Object.hasOwn(node.properties, key)) continue;
+        shown.add(key);
+        const row=element('label','property-row'), input=document.createElement('input'), value=node.properties?.[key] ?? fallback;
+        const valid = type === 'boolean' ? typeof value === 'boolean' : type === 'string' ? typeof value === 'string' : type === 'vector'
+          ? value?.tag === 'Vector3' && [value.x,value.y,value.z].every(Number.isFinite) : typeof value === 'number' && Number.isFinite(value) && (type !== 'integer' || Number.isSafeInteger(value));
+        if (!valid) { staticProperty(panel, key, value); continue; }
+        input.setAttribute('aria-label',key); input.dataset.placeProperty = node.builtin ? 'locked' : 'editable';
+        if (type === 'boolean') {input.type='checkbox';input.checked=value;}
+        else if (type === 'vector') {input.type='text';input.value=[value.x,value.y,value.z].join(', ');input.title='X, Y, Z';}
+        else {input.type=type === 'string' ? 'text' : 'number';input.value=String(value);if (type === 'number') input.step='any';}
+        input.addEventListener('change', () => {
+          let next;
+          if (type === 'boolean') next=input.checked;
+          else if (type === 'vector') {
+            const parts=input.value.split(',').map(part=>Number(part.trim()));
+            if (parts.length !== 3 || parts.some(part=>!Number.isFinite(part))) {showError('Enter three numbers separated by commas.');renderPlaceProperties();return;}
+            next={tag:'Vector3',x:parts[0],y:parts[1],z:parts[2]};
+          } else if (type === 'string') next=input.value;
+          else {next=Number(input.value);if (!Number.isFinite(next) || (type === 'integer' && !Number.isSafeInteger(next))) {showError('Enter a valid number.');renderPlaceProperties();return;}}
+          placeAction('Updating property…', async () => updatePlace({action:'property',id:node.id,name:key,value:next})).finally(renderPlaceProperties);
+        });
+        row.append(element('span','property-name',key),input); panel.append(row);
+      }
+      for (const [key, value] of Object.entries(node.properties || {})) if (!shown.has(key)) staticProperty(panel, key, value);
+      if (scriptNode(node.id)) { const open = element('button', 'small', 'Open Script'); open.type = 'button'; open.addEventListener('click', () => showScript(node.id)); panel.append(open); }
+      updateActions();
+    }
+    function setExplorerPlace(value) {
+      if (!value) closePlaceInsert();
+      placeView = value; setPlaceImportError(placeImportError); $('runtimeExplorer').setAttribute('aria-pressed', String(!value)); $('placeExplorer').setAttribute('aria-pressed', String(value));
+      $('placeToolbar').hidden = !value; $('placeTree').hidden = !value; $('explorerTree').hidden = value;
+      if (value) { ++propertySerial; ++explorerEpoch; renderPlaceTree(); refreshPlace(); }
+      else { $('explorerContext').textContent = explorerOrigin?.realm ? titles[explorerOrigin.context] + ' · ' + explorerOrigin.realm : 'Select a VM.'; refreshExplorer(); }
+    }
+    async function updatePlace(body) {
+      ++placeRequestSerial;
+      const payload = await request('place/update', body, false);
+      if (!payload?.place) throw new Error('Test place response is missing.');
+      setRecoveryResult(payload);
+      placeDirty = true;
+      setPlace(payload.place); return payload.result || {};
+    }
+    function setRecoveryResult(payload) {
+      const previous = placeAutosaveError;
+      placeAutosaveError = typeof payload?.autosaveError === 'string' ? payload.autosaveError : '';
+      placeHasRecovery = !placeAutosaveError;
+      if (placeAutosaveError) showError('Auto save recovery copy failed: ' + placeAutosaveError);
+      else if (previous && apiError.startsWith('Auto save recovery copy failed: ')) { apiError = ''; renderError(); }
+      updateScriptSaveState();
+    }
+    async function retryPlaceAutosave() { setRecoveryResult(await request('place/autosave', {}, false)); }
+    function hasPendingScripts() { return [...scriptDocs.values()].some(doc => doc.source !== doc.savedSource); }
+    function hasPendingPlaceAutosave() { return hasPendingScripts() || !!place && (place.profile !== $('profileSelect').value || !!placeAutosaveError); }
+    function updateScriptSaveState() {
+      const doc = activeScriptId && scriptDocs.get(activeScriptId), label = $('scriptSaveState');
+      label.hidden = !doc;
+      if (!doc) return;
+      label.textContent = placeAutosaveError ? 'Recovery save failed' : scriptAutosaveBlocked && doc.source !== doc.savedSource ? 'Autosave failed' : doc.savingSource !== undefined ? 'Saving…' : doc.source === doc.savedSource ? (placeHasRecovery ? 'Auto-saved' : 'Saved in place') : savingScripts ? 'Saving…' : 'Autosave pending';
+      label.title = placeAutosaveError || (placeHasRecovery ? 'Changes are saved to a local recovery copy. Use File → Save Place to export the place.' : 'Saved in the current place. Export it or make a change to create a recovery copy.');
+    }
+    function scheduleScriptAutosave(delay = 700) {
+      clearTimeout(scriptAutosaveTimer); scriptAutosaveTimer = null;
+      if (!hasPendingPlaceAutosave() || scriptAutosaveBlocked) { updateScriptSaveState(); return; }
+      scriptAutosaveTimer = setTimeout(flushScriptAutosave, delay);
+      updateScriptSaveState();
+    }
+    async function flushScriptAutosave() {
+      scriptAutosaveTimer = null;
+      if (!hasPendingPlaceAutosave() || scriptAutosaveBlocked) { updateScriptSaveState(); return; }
+      if (!connected || !state || busy) { scheduleScriptAutosave(1000); return; }
+      busy = true; savingScripts = true; updateActions();
+      try { await commitScripts(); await syncPlaceProfile(); await commitScripts(); if (placeAutosaveError) await retryPlaceAutosave(); }
+      catch (error) { scriptAutosaveBlocked = true; showError('Autosave failed: ' + error.message); status('Script autosave failed'); }
+      finally { savingScripts = false; busy = false; updateActions(); if (!scriptAutosaveBlocked && hasPendingPlaceAutosave()) scheduleScriptAutosave(placeAutosaveError ? 5000 : 700); }
+    }
+    async function placeAction(message, callback) {
+      if (busy || !connected || state?.network?.pending) return;
+      ++placeRequestSerial;
+      busy = true; apiError = ''; renderError(); updateActions(); status(message);
+      try { await callback(); status('Test place updated'); }
+      catch (error) { showError(error.message); status('Request failed'); if (placeView) renderPlaceTree(); else renderTargets(); }
+      finally { busy = false; updateActions(); if (!scriptAutosaveBlocked && hasPendingPlaceAutosave()) scheduleScriptAutosave(placeAutosaveError ? 5000 : 700); }
+    }
+    async function withPlaceReplacement(callback) {
+      replacingPlace = true; editor.setReadOnly(true);
+      try { return await callback(); }
+      finally { replacingPlace = false; editor.setReadOnly(!!activeRuntimeKey); }
+    }
+    async function commitScript(id) {
+      const doc = scriptDocs.get(id); if (!doc || doc.source === doc.savedSource) return;
+      const source = doc.source; doc.savingSource = source;
+      try {
+        await updatePlace({action: 'source', id, source});
+        doc.savedSource = source;
+      } catch (error) {
+        // The server may have applied the update before the response failed.
+        doc.savedSource = null;
+        throw error;
+      } finally {
+        delete doc.savingSource;
+        if (doc.closed && doc.source === doc.savedSource && scriptDocs.get(id) === doc) {
+          editor.forgetDocument('place:' + placeEpoch + ':' + id); scriptDocs.delete(id);
+        }
+        renderDocumentTabs();
+      }
+    }
+    async function saveScript(id) { scriptAutosaveBlocked = false; await placeAction('Saving script…', async () => { await commitScript(id); if (placeAutosaveError) await retryPlaceAutosave(); }); }
+    async function commitScripts(untilStable = false) {
+      let passes = 0;
+      do {
+        for (const id of [...scriptDocs.keys()]) await commitScript(id);
+        if (++passes >= 8 && untilStable && hasPendingScripts()) throw new Error('Script is still being edited; try again.');
+      } while (untilStable && hasPendingScripts());
+    }
+    async function syncPlaceProfile() { if (place && place.profile !== $('profileSelect').value) await updatePlace({action: 'profile', profile: $('profileSelect').value}); }
+    function askPlaceName(title, initial, action) {
+      return new Promise(resolve => {
+        const dialog = $('placeDialog'); $('placeDialogTitle').textContent = title; $('placeDialogInput').value = initial;
+        $('placeDialogConfirm').textContent = action;
+        function done() { dialog.removeEventListener('close', done); resolve(dialog.returnValue === 'ok' ? $('placeDialogInput').value.trim() : null); }
+        dialog.addEventListener('close', done); dialog.returnValue = ''; dialog.showModal(); $('placeDialogInput').focus(); $('placeDialogInput').select();
+      });
+    }
+    function askMoveParent() {
+      return new Promise(resolve => {
+        const dialog = $('moveDialog');
+        const invalid = new Set([placeSelection]); let changed = true;
+        while (changed) { changed = false; for (const node of place.nodes) if (invalid.has(node.parent) && !invalid.has(node.id)) { invalid.add(node.id); changed = true; } }
+        const choices = place.nodes.filter(node => !invalid.has(node.id)).map(node => [node.id, placePath(node.id)]).sort((a, b) => a[1].localeCompare(b[1]));
+        setOptions($('moveParent'), choices, place.nodes.find(node => node.id === placeSelection)?.parent || '');
+        function done() { dialog.removeEventListener('close', done); resolve(dialog.returnValue === 'ok' ? $('moveParent').value : null); }
+        dialog.addEventListener('close', done); dialog.returnValue = ''; dialog.showModal();
+      });
+    }
     function refresh(silent = false, fresh = false) {
       if (refreshTask) return fresh ? refreshTask.then(() => refresh(silent)) : refreshTask;
       refreshTask = (async () => {
@@ -548,12 +1302,13 @@
     async function mutate(path, body, pendingText, completeText) {
       if (busy) return;
       busy = true; apiError = ''; renderError(); updateActions(); status(pendingText);
-      try { await request(path, body); status(completeText); if (['execute', 'step', 'reset'].includes(path)) refreshExplorer(); }
+      try { await request(path, body); status(completeText); }
       catch (error) { showError(error.message); status('Request failed'); await refresh(true, true); }
       finally { busy = false; updateActions(); }
     }
     async function runCode() {
       if ($('runButton').disabled) return;
+      if (activeScriptId) { await saveScript(activeScriptId); return; }
       const realm = $('realmSelect').value, source = editor.getValue(), context = mode;
       if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) { showError('Source exceeds 256 KiB.'); return; }
       const previous = histories[context][0];
@@ -578,14 +1333,31 @@
       if (text !== undefined) node.textContent = text;
       return node;
     }
+    function treeIcon(className) {
+      const icon = element('span', 'tree-icon', '◇'); icon.setAttribute('aria-hidden', 'true');
+      if (className === 'DataModel') className = 'Workspace';
+      if (/^[A-Za-z0-9_]{1,128}$/.test(className) && !missingStudioIcons.has(className)) {
+        const image = document.createElement('img'); image.alt = ''; image.hidden = true;
+        image.onload = () => { image.hidden = false; icon.replaceChildren(image); };
+        const path = '/assets/studio-class/' + className + '.png';
+        image.onerror = () => {
+          image.remove();
+          if (checkingStudioIcons.has(className)) return;
+          checkingStudioIcons.add(className);
+          fetch(path, {credentials: 'same-origin'}).then(response => { if (response.status === 404) missingStudioIcons.add(className); }).catch(() => {}).finally(() => checkingStudioIcons.delete(className));
+        };
+        image.src = path; icon.append(image);
+      }
+      return icon;
+    }
     function valueTruncated(node, nested = false) {
       return !nested && node?.type !== 'table' && typeof node?.display === 'string' ? node.displayTruncated === true : node?.truncated === true;
     }
-    function valueLabel(node, nested = false) {
+    function valueLabel(node, nested = false, showTableAddress = true) {
       if (!node || typeof node !== 'object') return String(node ?? 'nil');
       const type = String(node.type || 'unknown');
       const suffix = valueTruncated(node, nested) && !(type === 'table' && node.handle) ? '…' : '';
-      const address = node.address ? ' (' + String(node.address) + ')' : '';
+      const address = node.address && (type !== 'table' || showTableAddress) ? ' (' + String(node.address) + ')' : '';
       if (type === 'userdata') return 'userdata' + (node.typeName ? ' (' + String(node.typeName) + (node.address ? ', ' + String(node.address) : '') + ')' : address);
       if (type === 'function') return 'function' + (node.name ? ' ' + String(node.name) : '') + (node.what ? ' [' + String(node.what) + ']' : '') + address;
       if (!nested && type !== 'table' && typeof node.display === 'string') {
@@ -643,13 +1415,13 @@
       const live = (node?.type === 'table' || section) && hasHandle;
       if (!node || (node.type !== 'table' && !section) || (node.reference && !live)) {
         const inspectable = node?.type === 'Instance' && typeof node.id === 'string' && origin?.realm && modes.includes(origin.context);
-        const span = element(inspectable ? 'button' : 'span', inspectable ? 'value-instance' : 'log-value value-' + (['string', 'number', 'boolean', 'nil'].includes(node?.type) ? node.type : 'object'), valueLabel(node, nested));
+        const span = element(inspectable ? 'button' : 'span', inspectable ? 'value-instance' : 'log-value value-' + (['string', 'number', 'boolean', 'nil'].includes(node?.type) ? node.type : 'object'), valueLabel(node, nested, !origin?.output || $('showTableAddresses').checked));
         span.title = valueTitle(node, nested);
         if (inspectable) { span.type = 'button'; span.title += '\nOpen in Explorer · ' + origin.realm; span.addEventListener('click', () => revealInstance(node.id, origin)); }
         return span;
       }
       const details = element('details', 'value-table');
-      const summary = element('summary', '', section ? section === 'upvalues' ? 'Upvalues' : 'Constants' : valueLabel(node));
+      const summary = element('summary', '', section ? section === 'upvalues' ? 'Upvalues' : 'Constants' : valueLabel(node, nested, !origin?.output || $('showTableAddresses').checked));
       summary.title = valueTitle(node, nested); details.append(summary);
       const body = element('div', 'value-entries');
       let built = false, loading = false, serial = 0, count = 0;
@@ -721,57 +1493,154 @@
     }
     function resetInspections() {
       ++inspectionGeneration; ++explorerEpoch; ++propertySerial;
-      explorerOrigin = null; explorerSelection = ''; viewerSeen.clear(); hideGc();
+      explorerOrigin = null; explorerSelection = ''; explorerSelectionObjectId = ''; explorerExpanded.clear(); explorerLoadedOffsets.clear(); viewerSeen.clear(); hideGc(); closeRuntimeDocuments();
       rows.clear(); expanded.clear(); $('logList').replaceChildren();
     }
     function syncInspectorTarget() {
       const origin = {realm: $('realmSelect').value, context: mode, generation: inspectionGeneration};
       const changed = !sameOrigin(origin, explorerOrigin);
       if (changed) {
-        explorerOrigin = origin; explorerSelection = ''; hideGc();
-        $('explorerContext').textContent = origin.realm ? titles[origin.context] + ' · ' + origin.realm : 'Select a VM.';
-        refreshExplorer();
+        explorerOrigin = origin; explorerSelection = ''; explorerSelectionObjectId = ''; explorerExpanded.clear(); explorerLoadedOffsets.clear(); hideGc();
+        if (!placeView) {
+          $('explorerContext').textContent = origin.realm ? titles[origin.context] + ' · ' + origin.realm : 'Select a VM.';
+          $('explorerTree').replaceChildren(); propertiesTitle();
+          $('instanceProperties').replaceChildren(element('span', 'value-note', 'Select an instance to inspect its properties.'));
+          refreshExplorer();
+        }
       }
       syncGcViewers(changed);
     }
-    function refreshExplorer() {
-      const origin = explorerOrigin, epoch = ++explorerEpoch;
-      ++propertySerial;
-      $('explorerTree').replaceChildren();
-      $('instanceProperties').replaceChildren(element('span', 'value-note', 'Select an instance to inspect its properties.'));
-      if (!origin?.realm || !connected) return;
-      loadTreePage($('explorerTree'), null, 0, epoch, origin);
+    function autoExplorerAvailable(generation = explorerAutoGeneration) {
+      return generation === explorerAutoGeneration && $('explorerAutoRefresh').checked && connected && !busy && !state?.network?.pending && !document.hidden && !explorerSourcePending;
     }
-    async function loadTreePage(container, parent, offset, epoch, origin) {
+    function configureExplorerAuto() {
+      ++explorerAutoGeneration; clearInterval(explorerAutoTimer); explorerAutoTimer = null;
+      if (!$('explorerAutoRefresh').checked) return;
+      const tick = () => {
+        const generation = explorerAutoGeneration;
+        if (explorerAutoPending || !autoExplorerAvailable(generation) || Date.now() - lastTreeClickAt < 800) return;
+        explorerAutoPending = true;
+        refreshExplorer(true, generation).finally(() => { explorerAutoPending = false; });
+      };
+      explorerAutoTimer = setInterval(tick, 2000); tick();
+    }
+    async function refreshExplorer(automatic = false, generation = explorerAutoGeneration) {
+      automatic = automatic === true;
+      if (automatic && !autoExplorerAvailable(generation)) return;
+      if (placeView) {
+        if (!automatic || !$('instanceProperties').contains(document.activeElement)) await refreshPlace(automatic, generation);
+        return;
+      }
+      const origin = explorerOrigin, epoch = automatic ? explorerEpoch : ++explorerEpoch, revision = explorerRevision;
+      const root = $('explorerTree');
+      if (!origin?.realm || !connected) {
+        root.replaceChildren(); propertiesTitle();
+        $('instanceProperties').replaceChildren(element('span', 'value-note', 'Select an instance to inspect its properties.'));
+        return;
+      }
+      const stage = element('div', '');
+      const loaded = await loadTreePages(stage, null, epoch, origin, automatic, generation);
+      if (!loaded || epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin) || automatic && (!autoExplorerAvailable(generation) || revision !== explorerRevision || Date.now() - lastTreeClickAt < 800)) return;
+      if (!await appendNilGroup(stage, epoch, origin, automatic, generation)) return;
+      if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin) || automatic && (!autoExplorerAvailable(generation) || revision !== explorerRevision || Date.now() - lastTreeClickAt < 800)) return;
+      const scrollTop = root.scrollTop;
+      const focused = root.contains(document.activeElement) ? document.activeElement.closest('.tree-row')?.dataset.instance : null;
+      root.replaceChildren(...stage.childNodes); root.scrollTop = scrollTop;
+      const rows = [...root.querySelectorAll('.tree-row')];
+      for (const row of rows) { row.dataset.selected = String(row.dataset.instance === explorerSelection && (!explorerSelectionObjectId || row.dataset.objectId === explorerSelectionObjectId)); row.parentElement.setAttribute('aria-selected', row.dataset.selected); }
+      if (focused) rows.find(row => row.dataset.instance === focused)?.querySelector('.tree-name')?.focus({preventScroll: true});
+      const selected = rows.find(row => row.dataset.instance === explorerSelection && (!explorerSelectionObjectId || row.dataset.objectId === explorerSelectionObjectId));
+      const replaced = rows.find(row => row.dataset.instance === explorerSelection && explorerSelectionObjectId && row.dataset.objectId !== explorerSelectionObjectId);
+      if (!selected && replaced) { explorerSelection = ''; explorerSelectionObjectId = ''; propertiesTitle(); $('instanceProperties').replaceChildren(element('span', 'value-note', 'The selected instance is no longer available.')); }
+      if (selected && explorerSelection) await selectInstance(explorerSelection, origin, explorerSelectionObjectId, true, generation, automatic);
+    }
+    async function appendNilGroup(container, epoch, origin, automatic, generation) {
+      const branch = element('div', 'tree-branch'), row = element('div', 'tree-row');
+      branch.setAttribute('role', 'treeitem'); branch.setAttribute('aria-selected', 'false');
+      const open = !explorerExpanded.has(NIL_COLLAPSED);
+      const toggle = element('button', 'tree-toggle', open ? '▾' : '▸'); toggle.type = 'button';
+      const label = element('button', 'tree-name'); label.type = 'button';
+      label.append(treeIcon('Folder'), element('span', 'tree-label', 'Nil Instances'));
+      const children = element('div', 'tree-children'); children.hidden = !open; children.setAttribute('role', 'group');
+      const setExpanded = expanded => {
+        if (expanded) explorerExpanded.delete(NIL_COLLAPSED); else explorerExpanded.add(NIL_COLLAPSED);
+        children.hidden = !expanded; toggle.textContent = expanded ? '▾' : '▸';
+        toggle.setAttribute('aria-label', (expanded ? 'Collapse ' : 'Expand ') + 'Nil Instances');
+        branch.setAttribute('aria-expanded', String(expanded));
+      };
+      setExpanded(open);
+      let loaded = false;
+      const toggleGroup = async () => {
+        lastTreeClickAt = Date.now(); explorerRevision++;
+        const expanded = children.hidden; setExpanded(expanded);
+        if (expanded && !loaded) { loaded = true; if (!await loadTreePages(children, NIL_PARENT, epoch, origin)) loaded = false; }
+      };
+      toggle.addEventListener('click', toggleGroup); label.addEventListener('click', toggleGroup);
+      row.append(toggle, label); branch.append(row, children); container.append(branch);
+      if (open) { loaded = true; return loadTreePages(children, NIL_PARENT, epoch, origin, automatic, generation); }
+      return true;
+    }
+    async function loadTreePages(container, parent, epoch, origin, automatic = false, generation = explorerAutoGeneration) {
+      const offsets = [...(explorerLoadedOffsets.get(parent || '') || new Set([0]))].sort((a, b) => a - b);
+      for (const offset of offsets) {
+        if (offset) container.querySelector(':scope > .load-more')?.remove();
+        if (!await loadTreePage(container, parent, offset, epoch, origin, automatic, generation)) return false;
+      }
+      return true;
+    }
+    async function loadTreePage(container, parent, offset, epoch, origin, automatic = false, generation = explorerAutoGeneration) {
       const note = element('div', 'inspection-note', 'Loading…'); container.append(note);
       try {
-        const page = await request('inspect', {realm: origin.realm, context: origin.context, kind: 'tree', parent, offset}, false);
-        if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin)) return;
+        const body = {realm: origin.realm, context: origin.context, kind: parent === NIL_PARENT ? 'nilInstances' : parent === null ? 'gameRoot' : 'tree', offset};
+        if (parent !== NIL_PARENT && parent !== null) body.parent = parent;
+        let page;
+        if (automatic) {
+          const pending = explorerAutoQueue.then(() => autoExplorerAvailable(generation) ? request('inspect', body, false) : null);
+          explorerAutoQueue = pending.catch(() => null); page = await pending;
+        } else page = await request('inspect', body, false);
+        if (!page) { note.remove(); return false; }
+        if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin) || automatic && !autoExplorerAvailable(generation)) { note.remove(); return false; }
         note.remove();
-        if (page.unavailable) { container.append(element('div', 'inspection-note', 'This instance is no longer available.')); return; }
-        const items = Array.isArray(page.items) ? page.items : [];
+        if (page.unavailable) { container.append(element('div', 'inspection-note', 'This instance is no longer available.')); return true; }
+        if (typeof page.inspectorId === 'string') {
+          if (origin.inspectorId && origin.inspectorId !== page.inspectorId) { explorerSelection = ''; explorerSelectionObjectId = ''; explorerExpanded.clear(); explorerLoadedOffsets.clear(); closeRuntimeDocuments(); }
+          origin.inspectorId = page.inspectorId;
+        }
+        if (!automatic) {
+          const offsets = explorerLoadedOffsets.get(parent || '') || new Set(); offsets.add(offset); explorerLoadedOffsets.set(parent || '', offsets);
+        }
+        const items = Array.isArray(page.items) ? (parent === null ? page.items.filter(item => item.id === 'game') : page.items) : [], childLoads = [];
         for (const item of items) {
           const branch = element('div', 'tree-branch'); branch.setAttribute('role', 'treeitem');
           branch.setAttribute('aria-selected', String(explorerSelection === item.id));
-          const row = element('div', 'tree-row'); row.dataset.instance = item.id;
-          row.dataset.selected = String(explorerSelection === item.id);
+          const row = element('div', 'tree-row'); row.dataset.instance = item.id; row.dataset.objectId = typeof item.objectId === 'string' ? item.objectId : '';
+          row.dataset.selected = String(explorerSelection === item.id && (!explorerSelectionObjectId || row.dataset.objectId === explorerSelectionObjectId));
           const toggle = element('button', 'tree-toggle', item.hasChildren ? '▸' : ''); toggle.type = 'button';
           toggle.disabled = !item.hasChildren; toggle.setAttribute('aria-label', 'Expand ' + item.name);
           const name = element('button', 'tree-name'); name.type = 'button'; name.title = item.name + ' · ' + item.class;
-          name.append(element('span', '', item.name), element('span', 'tree-class', item.class));
+          name.append(treeIcon(item.class), element('span', 'tree-label', item.name), element('span', 'tree-class', item.class));
           const children = element('div', 'tree-children'); children.hidden = true; children.setAttribute('role', 'group');
           let loaded = false;
-          function toggleBranch(force) {
+          const expandedKey = JSON.stringify([item.id, item.objectId || '']);
+          function toggleBranch(force, restoring = false) {
             if (!item.hasChildren) return;
+            if (!restoring) { lastTreeClickAt = Date.now(); explorerRevision++; }
             const open = force ?? children.hidden;
+            if (open) explorerExpanded.add(expandedKey); else explorerExpanded.delete(expandedKey);
             children.hidden = !open; toggle.textContent = open ? '▾' : '▸';
             toggle.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + item.name);
             branch.setAttribute('aria-expanded', String(open));
-            if (open && !loaded) { loaded = true; loadTreePage(children, item.id, 0, epoch, origin); }
+            if (open && !loaded) {
+              loaded = true;
+              return loadTreePages(children, item.id, epoch, origin, restoring && automatic, generation).then(success => { if (!success) loaded = false; return success; });
+            }
           }
           if (item.hasChildren) branch.setAttribute('aria-expanded', 'false');
           toggle.addEventListener('click', () => toggleBranch());
-          name.addEventListener('click', () => selectInstance(item.id, origin));
+          name.addEventListener('click', () => { lastTreeClickAt = Date.now(); explorerRevision++; selectInstance(item.id, origin, item.objectId); });
+          if (['Script', 'LocalScript', 'ModuleScript'].includes(item.class)) {
+            name.addEventListener('dblclick', () => openRuntimeSource(item, origin, epoch, page.inspectorId));
+          }
           name.addEventListener('keydown', event => {
             if (event.key === 'ArrowRight') { event.preventDefault(); toggleBranch(true); }
             else if (event.key === 'ArrowLeft') {
@@ -785,49 +1654,81 @@
             }
           });
           row.append(toggle, name); branch.append(row, children); container.append(branch);
+          if (item.hasChildren && explorerExpanded.has(expandedKey)) { const pending = toggleBranch(true, true); if (pending) childLoads.push(pending); }
         }
         if (!items.length && offset === 0) container.append(element('div', 'inspection-note', 'No instances.'));
-        if (Number.isInteger(page.nextOffset) && page.nextOffset > offset) {
+        if (parent !== null && Number.isInteger(page.nextOffset) && page.nextOffset > offset) {
           const more = element('button', 'plain load-more', 'Load more'); more.type = 'button';
-          more.addEventListener('click', () => { more.remove(); loadTreePage(container, parent, page.nextOffset, epoch, origin); }); container.append(more);
+          more.addEventListener('click', () => { lastTreeClickAt = Date.now(); explorerRevision++; more.remove(); loadTreePage(container, parent, page.nextOffset, epoch, origin); }); container.append(more);
         }
+        if (childLoads.length && (await Promise.all(childLoads)).some(success => !success)) return false;
+        return true;
       } catch (error) {
-        if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin)) return;
+        if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin) || automatic) { note.remove(); return false; }
         note.textContent = error.message; note.classList.add('inspection-error');
         const retry = element('button', 'plain load-more', 'Retry'); retry.type = 'button';
         retry.addEventListener('click', () => { note.remove(); retry.remove(); loadTreePage(container, parent, offset, epoch, origin); }); container.append(retry);
+        return true;
       }
     }
-    async function selectInstance(id, origin) {
-      if (!sameOrigin(origin, explorerOrigin)) return;
-      explorerSelection = id;
-      for (const row of $('explorerTree').querySelectorAll('.tree-row')) { row.dataset.selected = String(row.dataset.instance === id); row.parentElement.setAttribute('aria-selected', row.dataset.selected); }
+    async function selectInstance(id, origin, objectId = '', silent = false, generation = explorerAutoGeneration, automatic = false) {
+      if (!sameOrigin(origin, explorerOrigin) || automatic && !autoExplorerAvailable(generation)) return;
+      explorerSelection = id; explorerSelectionObjectId = typeof objectId === 'string' ? objectId : '';
+      for (const row of $('explorerTree').querySelectorAll('.tree-row')) { row.dataset.selected = String(row.dataset.instance === id && (!explorerSelectionObjectId || row.dataset.objectId === explorerSelectionObjectId)); row.parentElement.setAttribute('aria-selected', row.dataset.selected); }
       const ticket = ++propertySerial, panel = $('instanceProperties');
-      panel.replaceChildren(element('span', 'value-note', 'Loading properties…'));
+      if (!silent) panel.replaceChildren(element('span', 'value-note', 'Loading properties…'));
       try {
         const instance = await request('inspect', {realm: origin.realm, context: origin.context, kind: 'instance', id}, false);
-        if (ticket !== propertySerial || !sameOrigin(origin, explorerOrigin)) return;
+        if (ticket !== propertySerial || !sameOrigin(origin, explorerOrigin) || automatic && !autoExplorerAvailable(generation)) return;
         if (instance.unavailable) { panel.replaceChildren(element('span', 'value-note', 'This instance is no longer available.')); return; }
-        panel.replaceChildren(element('strong', '', instance.name + ' · ' + instance.class));
+        propertiesTitle(instance.name, instance.class); panel.replaceChildren();
         const opened = new Set();
-        for (const [field, label] of [['properties', 'Properties'], ['attributes', 'Attributes']]) {
+        for (const [field, label] of [['properties', 'Data'], ['attributes', 'Attributes']]) {
           panel.append(element('h3', '', label));
           const entries = Array.isArray(instance[field]) ? instance[field] : [];
           if (!entries.length) panel.append(element('div', 'value-note', '(none)'));
           entries.forEach((entry, index) => {
             const row = element('div', 'property-row'), value = element('div', 'property-value');
-            value.append(renderValue(entry.value, opened, field + '/' + index, true, origin));
+            if (entry.value?.type === 'boolean') {
+              const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = entry.value.value === true; checkbox.disabled = true; checkbox.setAttribute('aria-label', entry.name + ' (read-only)'); value.append(checkbox);
+            } else value.append(renderValue(entry.value, opened, field + '/' + index, false, origin));
             row.append(element('span', 'property-name', entry.name), value); panel.append(row);
           });
         }
       } catch (error) {
-        if (ticket === propertySerial && sameOrigin(origin, explorerOrigin)) panel.replaceChildren(element('div', 'inspection-error', error.message));
+        if (ticket === propertySerial && sameOrigin(origin, explorerOrigin) && (!automatic || autoExplorerAvailable(generation))) panel.replaceChildren(element('div', 'inspection-error', error.message));
       }
+    }
+    async function openRuntimeSource(item, origin, epoch, inspectorId) {
+      if (epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin)) return;
+      if (!connected || busy || state?.network?.pending) { showError('The runtime is unavailable while another action or network request is pending.'); return; }
+      if (typeof inspectorId !== 'string' || typeof item.objectId !== 'string') { showError('This runtime does not provide script identity. Restart the emulator with the updated backend.'); return; }
+      const objectId = item.objectId, generation = inspectionGeneration; explorerSourcePending++;
+      try {
+        const result = await request('inspect', {realm: origin.realm, context: origin.context, kind: 'source', id: item.id, inspectorId, objectId}, false);
+        if (generation !== inspectionGeneration || epoch !== explorerEpoch || !sameOrigin(origin, explorerOrigin) || origin.inspectorId !== inspectorId) return;
+        if (result.id !== item.id || result.inspectorId !== inspectorId || result.objectId !== objectId || result.class !== item.class || typeof result.source !== 'string') throw new Error('The script identity or source no longer matches the selected instance.');
+        if (EmulatorEditor.sourceBytes(result.source) > RUNTIME_SOURCE_LIMIT) throw new Error('Runtime source exceeds 8 MiB.');
+        const key = JSON.stringify([origin.realm, origin.context, generation, inspectorId, objectId]);
+        const doc = {name: String(result.name || item.name), class: result.class, realm: origin.realm, context: origin.context, source: result.source};
+        runtimeDocs.set(key, doc);
+        if (activeRuntimeKey === key) {
+          switchingDocument = true;
+          let loaded = false;
+          try { editor.setReadOnly(false); loaded = editor.setValue(doc.source); editor.setReadOnly(true); }
+          finally { switchingDocument = false; }
+          if (!loaded) { runtimeDocs.delete(key); showConsole(true); return; }
+          $('documentName').textContent = doc.name + ' · ' + doc.class + ' · ' + doc.realm; renderDocumentTabs(); cursor(); updateActions();
+        } else showRuntimeDocument(key);
+        status('Opened runtime source · read-only');
+      } catch (error) { if (generation === inspectionGeneration && sameOrigin(origin, explorerOrigin)) showError(error.message); }
+      finally { explorerSourcePending--; }
     }
     function revealInstance(id, origin) {
       if (busy || origin.generation !== inspectionGeneration) return;
       const realm = (state?.realms || []).find(item => item.id === origin.realm);
       if (!realm) { showError('The source VM is no longer available.'); return; }
+      if (placeView) setExplorerPlace(false);
       if (mode !== origin.context) switchMode(origin.context);
       choices[mode] = {realm: realm.id, client: realm.clientId || '', actor: realm.actorId ? 'actor:' + realm.actorId : '@main'};
       renderTargets(); save(); selectInstance(id, explorerOrigin);
@@ -838,8 +1739,10 @@
     function syncGcViewers(targetChanged = false) {
       const viewers = eligibleViewers();
       $('openGcButton').hidden = mode !== 'executor';
-      $('openGcButton').disabled = !connected || busy || viewers.length === 0;
-      $('openGcButton').textContent = 'GC viewers' + (viewers.length ? ' (' + viewers.length + ')' : '');
+      $('openGcButton').disabled = !connected || busy || !!state?.network?.pending || !selectedRealm()?.executor;
+      $('openFilesButton').hidden = mode !== 'executor';
+      $('openFilesButton').disabled = !connected || busy || !$('realmSelect').value;
+      $('openGcButton').textContent = viewers.length ? 'GC viewers (' + viewers.length + ')' : 'Create GC viewer';
       setOptions($('gcViewerSelect'), viewers.map(viewer => [viewer.id, viewer.name || 'GCViewer']), gcView?.id);
       if (gcView && !viewers.some(viewer => viewer.id === gcView.id && viewer.realm === gcView.realm)) hideGc();
       const changed = viewers.find(viewer => !viewerSeen.has(viewer.realm + '/' + viewer.id) || viewerSeen.get(viewer.realm + '/' + viewer.id) !== viewer.revision);
@@ -880,25 +1783,37 @@
         if (page.revision !== undefined) { current.revision = page.revision; viewerSeen.set(current.realm + '/' + current.id, page.revision); }
         for (const value of Array.isArray(page.items) ? page.items : []) {
           const row = element('div', 'gc-row'), content = element('div', 'gc-value');
-          const index = current.count++;
+          const index = current.count++, snapshotIndex = value.snapshotIndex;
           content.append(renderValue(value, current.opened, 'gc/' + index, true, {realm: current.realm, context: 'executor', generation: current.generation}));
           const insert = element('button', 'small gc-insert', 'Insert'); insert.type = 'button';
           insert.disabled = !!value.insertError;
           insert.title = value.insertError || 'Insert an expression for this value at the executor editor cursor. Valid until refresh, close, reset or 10 minutes; collected values report an error.';
-          insert.setAttribute('aria-label', 'Insert ' + value.type + ' value ' + (index + 1) + ' into editor');
+          insert.setAttribute('aria-label', 'Insert ' + value.type + ' value ' + snapshotIndex + ' into editor');
+          const expression = 'getgcvalue(' + JSON.stringify(current.id) + ', ' + page.snapshot + ', ' + snapshotIndex + ')';
           insert.addEventListener('click', () => {
             if (busy || current.generation !== inspectionGeneration || current.snapshot !== page.snapshot || gcView !== current) { showError('GC snapshot changed. Refresh the viewer and insert again.'); return; }
             const realm = state?.realms?.find(realm => realm.id === current.realm && realm.executor);
             if (!realm) { showError('The selected executor VM is no longer available.'); return; }
+            if (activeScriptId || activeRuntimeKey) showConsole();
             if (mode !== 'executor') switchMode('executor');
             if (formats[mode] !== 'source') { showError('Switch the editor to Luau source before inserting a GC expression.'); return; }
             choices.executor = {realm: current.realm, client: realm.clientId || '', actor: realm.actorId ? 'actor:' + realm.actorId : '@main'};
             renderTargets();
-            editor.insert('getgcvalue(' + JSON.stringify(current.id) + ', ' + page.snapshot + ', ' + value.snapshotIndex + ')');
+            editor.insert(expression);
             hideGc(); editor.focus();
             status('Value expression inserted · Executor · ' + current.realm); save();
           });
-          row.append(element('span', 'gc-index', String(index + 1)), content, insert); $('gcList').append(row);
+          const copy = element('button', 'small gc-insert', 'Copy'); copy.type = 'button';
+          copy.disabled = !!value.insertError || !navigator.clipboard?.writeText;
+          copy.title = value.insertError || 'Copy the expression for this snapshot value';
+          copy.setAttribute('aria-label', 'Copy expression for ' + value.type + ' value ' + snapshotIndex);
+          copy.addEventListener('click', async () => {
+            if (current.generation !== inspectionGeneration || current.snapshot !== page.snapshot || gcView !== current) { showError('GC snapshot changed. Refresh the viewer and copy again.'); return; }
+            try { await navigator.clipboard.writeText(expression); status('GC value expression copied'); }
+            catch (error) { showError('Could not copy: ' + error.message); }
+          });
+          const position = element('span', 'gc-index', String(snapshotIndex)); position.title = 'Index in the captured snapshot';
+          row.append(position, content, copy, insert); $('gcList').append(row);
         }
         if (!current.count) $('gcList').append(element('div', 'inspection-note', 'No values match these filters.'));
         current.nextOffset = Number.isInteger(page.nextOffset) && page.nextOffset > offset ? page.nextOffset : null;
@@ -945,131 +1860,313 @@
         (!$('levelFilter').value || log.level === $('levelFilter').value) &&
         (!query || [log.message, log.realm, log.context, log.level].join(' ').toLocaleLowerCase().includes(query)));
       const visible = filtered.slice(-1000);
-      const keep = new Set(visible.map(log => String(log.seq)));
+      const groups = [];
+      for (const log of visible) {
+        const args = Array.isArray(log.arguments) ? log.arguments : [];
+        const inspectable = args.some(value => ['table', 'function', 'Instance', 'userdata', 'thread', 'buffer'].includes(value?.type));
+        const stackKey = $('stackLines').checked && (!inspectable || $('logMode').checked)
+          ? JSON.stringify([log.context, log.realm, log.level, log.category, log.source, log.sourceLine,
+              args.length ? args.map(value => valueLabel(value, false, $('showTableAddresses').checked)) : log.message]) : null;
+        const previous = groups[groups.length - 1];
+        if (stackKey !== null && previous?.stackKey === stackKey) previous.count++;
+        else groups.push({log, stackKey, count: 1});
+      }
+      const keep = new Set(groups.map(group => String(group.log.seq)));
       for (const [key, row] of rows) if (!keep.has(key)) { row.remove(); rows.delete(key); }
       const list = $('logList');
       let next = list.firstChild;
-      for (const log of visible) {
-        const key = String(log.seq), signature = JSON.stringify(log);
+      for (const group of groups) {
+        const log = group.log;
+        const key = String(log.seq), signature = JSON.stringify([log, group.count, $('logMode').checked, $('showTableAddresses').checked]);
         let row = rows.get(key);
         if (!row) { row = element('div', 'log-row'); row.dataset.seq = key; rows.set(key, row); }
         if (row._signature !== signature) {
           row._signature = signature;
           row.dataset.context = modes.includes(log.context) ? log.context : 'other';
           row.dataset.level = ['error', 'warn', 'info', 'debug'].includes(log.level) ? log.level : 'other';
+          row.title = [Number.isFinite(log.time) ? log.time.toFixed(3) + ' s' : '', titles[log.context] || log.context || 'System', log.realm || '', String(log.level || '').toUpperCase()].filter(Boolean).join(' · ');
           const meta = element('div', 'log-meta');
           meta.append(element('span', 'log-time', Number.isFinite(log.time) ? log.time.toFixed(3) + ' s' : '—'));
           meta.append(element('span', 'log-context', titles[log.context] || String(log.context || 'System')));
           meta.append(element('span', 'log-realm', String(log.realm || '')));
           meta.append(element('span', 'log-level', String(log.level || '').toUpperCase()));
+          const source = typeof log.source === 'string' && log.source ? log.source + (Number.isFinite(log.sourceLine) && log.sourceLine >= 0 ? ':' + log.sourceLine : '') : '';
+          row.dataset.hasSource = String(!!source); meta.append(element('span', 'log-source', source));
           if (Array.isArray(log.arguments) && log.arguments.length) {
             const argumentsView = element('div', 'log-arguments');
-            if (!expanded.has(key)) expanded.set(key, new Set());
-            log.arguments.forEach((argument, index) => argumentsView.append(renderValue(argument, expanded.get(key), String(index), false, {realm: log.realm, context: log.context, generation: inspectionGeneration})));
+            if (!expanded.has(key)) {
+              const opened = new Set();
+              if ($('expandTables').checked) log.arguments.forEach((value, index) => { if (value?.type === 'table') opened.add(String(index)); });
+              expanded.set(key, opened);
+            }
+            log.arguments.forEach((argument, index) => {
+              const value = $('logMode').checked
+                ? element('span', 'log-value', valueLabel(argument, false, $('showTableAddresses').checked))
+                : renderValue(argument, expanded.get(key), String(index), false, {realm: log.realm, context: log.context, generation: inspectionGeneration, output: true});
+              argumentsView.append(value);
+            });
+            if (group.count > 1) argumentsView.append(element('span', 'log-repeat-inline', '×' + group.count));
             row.replaceChildren(meta, argumentsView);
-          } else row.replaceChildren(meta, element('pre', 'log-message', String(log.message ?? '')));
+          } else {
+            const message = element('pre', 'log-message', String(log.message ?? ''));
+            if (group.count > 1) message.append(element('span', 'log-repeat-inline', '  ×' + group.count));
+            row.replaceChildren(meta, message);
+          }
         }
         if (row !== next) list.insertBefore(row, next);
         next = row.nextSibling;
       }
       $('emptyOutput').hidden = visible.length > 0;
       $('emptyOutput').textContent = logs.length ? 'No messages match these filters.' : 'No output yet.';
-      $('logCount').textContent = 'Showing ' + visible.length + ' of ' + filtered.length + (filtered.length !== logs.length ? ' · total ' + logs.length : '') + (filtered.length > 1000 ? ' · latest 1000' : '');
+      $('logCount').textContent = 'Showing ' + visible.length + ' of ' + filtered.length + (groups.length !== visible.length ? ' · ' + groups.length + ' lines' : '') + (filtered.length !== logs.length ? ' · total ' + logs.length : '') + (filtered.length > 1000 ? ' · latest 1000' : '');
       const anchor = restoreScroll.key ? rows.get(restoreScroll.key) : null;
       scroller.scrollTop = $('autoscroll').checked ? scroller.scrollHeight : anchor ? anchor.offsetTop - restoreScroll.offset : restoreScroll.top;
       lastFilter = filter;
     }
 
-    const examples = {
-      gcViewer: {mode: 'executor', hint: 'Open a GCViewer for the selected executor VM.', source: 'local viewer = Instance.new("GCViewer")\n'},
-      tables: {hint: 'Expand values in the output. References retain the same address.', source: 'local value = {name = "Example", items = {10, 20, 30}}\nvalue.self = value\nprint("Snapshot:", value, value.items)\n'},
-      basic: {hint: 'Print and access a service.', source: 'local runService = game:GetService("RunService")\nprint("Server:", runService:IsServer(), "Client:", runService:IsClient())\nprint("Workspace:", workspace:GetFullName())\n'},
-      remoteServer: {mode: 'server', hint: 'Run on the server, step once, then run the client example.', source: '-- Run on the server, then advance time.\nlocal storage = game:GetService("ReplicatedStorage")\nlocal remote = storage:FindFirstChild("InterpreterPing")\nif not remote then\n    remote = Instance.new("RemoteEvent")\n    remote.Name = "InterpreterPing"\n    remote.Parent = storage\nend\nremote.OnServerEvent:Connect(function(player, message)\n    print("Server received:", player.Name, message)\n    remote:FireClient(player, "Server reply")\nend)\nprint("RemoteEvent ready. Step, then run the client example.")\n'},
-      remoteClient: {mode: 'client', hint: 'Run after the server example. Step to deliver the message and reply.', source: '-- Run on the client after the server example.\nlocal remote = game:GetService("ReplicatedStorage"):FindFirstChild("InterpreterPing")\nassert(remote, "Run the server example and step first")\nremote.OnClientEvent:Once(function(message)\n    print("Client received:", message)\nend)\nremote:FireServer("Hello from client")\nprint("Message sent. Step to deliver it and the reply.")\n'},
-      executor: {mode: 'executor', hint: 'Inspect the selected VM executor and GC objects.', source: 'local name, version = identifyexecutor()\nprint("Executor:", name, version)\nlocal objects = getgc(true)\nprint("GC objects:", #objects)\nfor index = 1, math.min(5, #objects) do\n    print(index, typeof(objects[index]))\nend\n'},
-      gcPreview: {mode: 'executor', hint: 'Bounded table preview with cycle detection.', source: String.raw`-- Bounded table preview; getgc creates a snapshot of VM objects.
--- Use raw next without __iter or __index.
-local MAX_DEPTH, MAX_ENTRIES, MAX_TABLES, MAX_OUTPUT_BYTES = 2, 60, 12, 4096
-local objects = getgc(true) -- Snapshot before allocating preview helper tables.
-local seen, lines = {}, {}
-local entries, tables, bytes = 0, 0, 0
-
-local function emit(line)
-    local remaining = MAX_OUTPUT_BYTES - bytes
-    if remaining <= 1 then bytes = MAX_OUTPUT_BYTES; return end
-    line = string.sub(line, 1, remaining - 1)
-    lines[#lines + 1] = line
-    bytes += #line + 1
-end
-
-local function describe(value)
-    local kind = type(value)
-    if kind == "string" then
-        return string.format("%q", string.sub(value, 1, 80)) .. (#value > 80 and "..." or "")
-    end
-    if kind == "number" or kind == "boolean" or kind == "nil" then
-        local ok, result = pcall(tostring, value)
-        return ok and string.sub(result, 1, 80) or "<tostring error>"
-    end
-    -- Do not invoke arbitrary __tostring on objects or table keys.
-    return "<" .. typeof(value) .. ">"
-end
-
-local function visit(value, path, depth)
-    if entries >= MAX_ENTRIES or bytes >= MAX_OUTPUT_BYTES then return end
-    entries += 1
-    if type(value) ~= "table" then emit(path .. " = " .. describe(value)); return end
-    if seen[value] then emit(path .. " -> " .. seen[value] .. " (reference/cycle)"); return end
-    seen[value] = path
-    if depth >= MAX_DEPTH then emit(path .. " = <table: depth limit>"); return end
-    if tables >= MAX_TABLES then emit(path .. " = <table: table limit>"); return end
-    tables += 1
-    emit(path .. " = {")
-    for key, child in next, value do
-        if entries >= MAX_ENTRIES or bytes >= MAX_OUTPUT_BYTES then break end
-        visit(child, path .. "[" .. describe(key) .. "]", depth + 1)
-    end
-    emit("}")
-end
-
-emit("GC tables preview: " .. #objects .. " objects; depth<=2, entries<=60, tables<=12, output<=4096 bytes")
-for index = 1, #objects do
-    if entries >= MAX_ENTRIES or bytes >= MAX_OUTPUT_BYTES then break end
-    if type(objects[index]) == "table" then visit(objects[index], "gc[" .. index .. "]", 0) end
-end
-emit(string.format("-- entries visited: %d, tables expanded: %d", entries, tables))
-print(table.concat(lines, "\n"))
-`},
-      hookClient: {mode: 'client', hint: 'Run on the client. After hooking the same VM, rerun to print 110.', source: '-- Keep the target in the game shared table.\nshared.demoTarget = shared.demoTarget or function(x)\n    return x + 1\nend\nprint("Client:", shared.demoTarget(10))\n'},
-      hookExecutor: {mode: 'executor', hint: 'Use the same client VM; getrenv().shared accesses the game table.', source: '-- Run in the same VM as the client target.\nlocal target = getrenv().shared.demoTarget\nassert(type(target) == "function", "Run the client target example first")\nlocal original = hookfunction(target, function(x)\n    return x + 100\nend)\nprint("Original / hooked:", original(10), target(10))\n'},
-      restoreExecutor: {mode: 'executor', hint: 'Restore in the same VM; the client target prints 11 again.', source: 'local target = getrenv().shared.demoTarget\nassert(type(target) == "function", "Run the client target example first")\nrestorefunction(target)\nprint("Restored:", target(10))\n'}
-    };
-    function exampleHint() { $('insertExample').title = examples[$('exampleSelect').value].hint; }
-    function insertExample() {
-      const example = examples[$('exampleSelect').value];
-      if (example.mode && example.mode !== mode) switchMode(example.mode);
-      const selection = editor.getSelection(), source = editor.getValue();
-      const prefix = selection.from > 0 && source[selection.from - 1] !== '\n' ? '\n' : '';
-      editor.insert(prefix + example.source); status('Example inserted');
-    }
-
     for (const button of document.querySelectorAll('.mode')) button.addEventListener('click', () => switchMode(button.dataset.mode));
+    $('fileMenu').addEventListener('click', event => { if (event.target.closest('button')) $('fileMenu').open = false; });
+    document.addEventListener('click', event => {
+      if (!$('fileMenu').contains(event.target)) $('fileMenu').open = false;
+      if (!$('outputFilter').contains(event.target)) $('outputFilter').open = false;
+      if (!$('outputOptions').contains(event.target)) $('outputOptions').open = false;
+    });
     $('refreshExplorer').addEventListener('click', refreshExplorer);
-    $('openGcButton').addEventListener('click', () => openGcViewer(eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value) || eligibleViewers()[0], false));
+    $('explorerAutoRefresh').addEventListener('change', () => { configureExplorerAuto(); save(); });
+    let filesRealm = '';
+    async function refreshFiles() {
+      const list = $('filesList'); list.replaceChildren(element('p', '', 'Loading…')); $('filesError').hidden = true;
+      try {
+        const data = await request('workspace/list', {realm: filesRealm}, false);
+        list.replaceChildren();
+        if (!data.files?.length) { list.append(element('p', '', 'No files in this executor workspace.')); return; }
+        for (const file of data.files) {
+          const row = element('div', ''); row.style.cssText = 'display:flex;gap:12px;align-items:center;margin:8px 0';
+          const name = element('span', '', file.name + ' (' + file.size + ' bytes)'); name.style.cssText = 'flex:1;overflow-wrap:anywhere';
+          const download = element('button', 'small', 'Download'); download.type = 'button';
+          download.addEventListener('click', async () => {
+            download.disabled = true; $('filesError').hidden = true;
+            try {
+              const result = await request('workspace/read', {realm: filesRealm, name: file.name}, false);
+              const binary = atob(result.base64), bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+              const url = URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'}));
+              const link = document.createElement('a'); link.href = url;
+              link.download = file.name.split('/').pop().replace(/[\\/:*?"<>|]/g, '_') || 'executor-file';
+              document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch (error) { $('filesError').textContent = error.message; $('filesError').hidden = false; }
+            finally { download.disabled = false; }
+          });
+          row.append(name, download); list.append(row);
+        }
+      } catch (error) { list.replaceChildren(); $('filesError').textContent = error.message; $('filesError').hidden = false; }
+    }
+    $('openFilesButton').addEventListener('click', () => {
+      filesRealm = $('realmSelect').value; $('filesContext').textContent = 'Executor · ' + filesRealm;
+      if (!$('filesDialog').open) $('filesDialog').showModal();
+      refreshFiles();
+    });
+    $('filesRefresh').addEventListener('click', refreshFiles);
+    $('filesClose').addEventListener('click', () => $('filesDialog').close());
+    $('openGcButton').addEventListener('click', () => {
+      const viewer = eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value) || eligibleViewers()[0];
+      if (viewer) { openGcViewer(viewer, false); return; }
+      const realm = $('realmSelect').value;
+      if (mode !== 'executor' || !realm || busy || state?.network?.pending) return;
+      mutate('execute', {realm, context: 'executor', source: 'Instance.new("GCViewer")'}, 'Creating GC viewer…', 'GC viewer created');
+    });
     $('gcViewerSelect').addEventListener('change', () => openGcViewer(eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value), false));
     $('refreshGc').addEventListener('click', () => loadGcPage(true, 0));
     $('gcMore').addEventListener('click', () => { if (gcView?.nextOffset !== null) loadGcPage(false, gcView.nextOffset); });
     $('gcType').addEventListener('change', filterGc);
     $('gcSearch').addEventListener('input', filterGc);
+    $('gcClearSearch').addEventListener('click', () => { $('gcSearch').value = ''; filterGc(); $('gcSearch').focus(); });
     $('closeGc').addEventListener('click', closeGcViewer);
     $('gcDialog').addEventListener('cancel', event => { event.preventDefault(); closeGcViewer(); });
-    $('gcDialog').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeGcViewer(); } });
+    $('gcDialog').addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeGcViewer(); }
+      else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); $('gcSearch').focus(); $('gcSearch').select(); }
+      else if (event.key === 'F5') { event.preventDefault(); $('refreshGc').click(); }
+    });
+    $('gameInput').addEventListener('focus', () => { $('gameInputStatus').textContent = 'Keyboard active · Escape exits'; });
+    $('gameInput').addEventListener('blur', () => { releaseGameKeys(); $('gameInputStatus').textContent = 'Click Game input, then press keys'; });
+    $('gameInput').addEventListener('keydown', event => {
+      if (event.code === 'Escape') { event.preventDefault(); $('gameInput').blur(); return; }
+      if (event.code === 'Tab' || event.metaKey) return;
+      const key = inputKey(event.code), realm = $('gameInputRealm').value;
+      if (!key || !realm || event.repeat || gameHeld.has(event.code)) return;
+      event.preventDefault(); event.stopPropagation();
+      gameHeld.set(event.code, {realm,key}); queueGameInput(realm,key,true);
+    });
+    $('gameInput').addEventListener('keyup', event => {
+      const held=gameHeld.get(event.code); if (!held) return;
+      event.preventDefault(); event.stopPropagation(); gameHeld.delete(event.code); queueGameInput(held.realm,held.key,false);
+    });
+    window.addEventListener('blur', releaseGameKeys);
+    $('networkDialog').addEventListener('cancel', event => event.preventDefault());
+    $('networkAllow').addEventListener('click', () => decideNetwork(true));
+    $('networkDeny').addEventListener('click', () => decideNetwork(false));
+    $('runtimeExplorer').addEventListener('click', () => setExplorerPlace(false));
+    $('placeExplorer').addEventListener('click', () => setExplorerPlace(true));
+    $('placeDialogCancel').addEventListener('click', () => $('placeDialog').close('cancel'));
+    $('placeDialogConfirm').addEventListener('click', () => { if ($('placeDialogInput').value.trim()) $('placeDialog').close('ok'); else $('placeDialogInput').focus(); });
+    $('placeDialogInput').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); $('placeDialogConfirm').click(); } });
+    $('moveCancel').addEventListener('click', () => $('moveDialog').close('cancel'));
+    $('moveConfirm').addEventListener('click', () => { if ($('moveParent').value) $('moveDialog').close('ok'); });
+    $('placeNew').addEventListener('click', () => {
+      if (hasPlaceChanges() && !confirm('Discard unsaved test place changes?')) return;
+      placeAction('Creating test place…', () => withPlaceReplacement(async () => {
+        const payload = await request('place/new', {profile: $('profileSelect').value}, false);
+        placeDirty = false; placeAutosaveError = ''; placeHasRecovery = false; setPlaceImportError(null); setPlace(payload.place, true); setExplorerPlace(true);
+      }));
+    });
+    $('placeCreate').addEventListener('click', async () => {
+      const parent = placeSelection, kind = $('placeClass').value;
+      if (!parent) return;
+      const name = await askPlaceName('Add ' + kind, kind, 'Add'); if (name === null) return;
+      placeAction('Creating instance…', async () => {
+        const result = await updatePlace({action: 'create', parent, class: kind, name});
+        if (result.id) { placeExpanded.add(parent); placeSelection = result.id; renderPlaceTree(); if (scriptNode(result.id)) showScript(result.id); }
+      });
+    });
+    $('placeRename').addEventListener('click', async () => {
+      const node = place?.nodes?.find(item => item.id === placeSelection); if (!node || node.builtin) return;
+      const name = await askPlaceName('Rename instance', node.name, 'Rename'); if (name === null || name === node.name) return;
+      placeAction('Renaming instance…', async () => updatePlace({action: 'rename', id: node.id, name}));
+    });
+    $('placeMove').addEventListener('click', async () => {
+      const node = place?.nodes?.find(item => item.id === placeSelection); if (!node || node.builtin) return;
+      const parent = await askMoveParent(); if (!parent || parent === node.parent) return;
+      placeAction('Moving instance…', async () => { await updatePlace({action: 'reparent', id: node.id, parent}); placeExpanded.add(parent); renderPlaceTree(); });
+    });
+    $('placeDelete').addEventListener('click', () => {
+      const node = place?.nodes?.find(item => item.id === placeSelection); if (!node || node.builtin) return;
+      if (!confirm('Delete ' + node.name + ', its descendants, and their unsaved edits?')) return;
+      placeAction('Deleting instance…', async () => { await updatePlace({action: 'delete', id: node.id}); placeSelection = ''; renderPlaceTree(); });
+    });
+    $('placeDuplicate').addEventListener('click', () => {
+      const node=place?.nodes?.find(item=>item.id===placeSelection); if (!node || node.builtin) return;
+      placeAction('Duplicating instance…', async () => {
+        await commitScripts(true);
+        const result=await updatePlace({action:'duplicate',id:node.id});
+        if (result?.id) {placeSelection=result.id;renderPlaceTree();}
+      });
+    });
+    $('placeSearch').addEventListener('input', renderPlaceTree);
+    $('placeInsertSearch').addEventListener('input', renderPlaceInsertList);
+    $('placeInsertSearch').addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown') { event.preventDefault(); $('placeInsertList').querySelector('.insert-item')?.focus(); }
+      else if (event.key === 'Enter') { event.preventDefault(); $('placeInsertList').querySelector('.insert-item')?.click(); }
+    });
+    $('placeInsertMenu').addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closePlaceInsert(); $('placeTree').focus(); return; }
+      if (!['ArrowDown', 'ArrowUp'].includes(event.key) || !event.target.classList.contains('insert-item')) return;
+      const buttons = [...$('placeInsertList').querySelectorAll('.insert-item')], index = buttons.indexOf(event.target);
+      event.preventDefault(); buttons[index + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
+    });
+    document.addEventListener('pointerdown', event => {
+      const menu = $('placeInsertMenu');
+      if (!menu.hidden && !menu.contains(event.target) && !(event.target instanceof Element && event.target.closest('.tree-add'))) closePlaceInsert();
+    });
+    $('placeTree').addEventListener('keydown', event => {
+      if (event.key === 'F2' && !$('placeRename').disabled) {event.preventDefault();$('placeRename').click();}
+      else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && !$('placeDuplicate').disabled) {event.preventDefault();$('placeDuplicate').click();}
+      else if (event.key === 'Delete' && !$('placeDelete').disabled) {event.preventDefault();$('placeDelete').click();}
+    });
+    $('placeSave').addEventListener('click', async () => {
+      if (!place) return;
+      const name = await askPlaceName('Save test place', place.name || 'Test Place', 'Download'); if (name === null) return;
+      placeAction('Saving test place…', async () => {
+        await commitScripts(true); await syncPlaceProfile(); await commitScripts(true);
+        const payload = await request('place/save', {name}, false); setRecoveryResult(payload); placeDirty = false; setPlace(payload.place);
+        const blob = new Blob([JSON.stringify(payload.place, null, 2)], {type: 'application/json;charset=utf-8'});
+        const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url;
+        link.download = (name || 'place').replace(/[\\/:*?"<>|]/g, '_') + '.json';
+        document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+    });
+    $('placeLoad').addEventListener('click', () => $('placeFile').click());
+    $('placeRecover').addEventListener('click', () => {
+      if (hasPlaceChanges() && !confirm('Open an auto save? Changes not exported to a place file remain in their recovery copy.')) return;
+      placeAction('Loading auto saves…', async () => {
+        await commitScripts(true); await syncPlaceProfile(); await commitScripts(true);
+        if (placeAutosaveError) await retryPlaceAutosave();
+        if (placeAutosaveError) throw new Error('Cannot open an auto save until the current recovery copy is saved: ' + placeAutosaveError);
+        const payload = await request('place/autosaves', {}, false);
+        const list = $('recoverList'); list.replaceChildren();
+        for (const item of payload.items || []) {
+          const option = document.createElement('option'); option.value = item.id;
+          option.textContent = [item.name || 'Unknown place', item.profile || '', Number.isFinite(item.modifiedMs) ? new Date(item.modifiedMs).toLocaleString() : 'Unknown time', item.id].filter(Boolean).join(' · ');
+          list.append(option);
+        }
+        $('recoverConfirm').disabled = !list.options.length;
+        $('recoverError').hidden = true; $('recoverError').textContent = '';
+        if (list.options.length) list.selectedIndex = 0;
+        else { const option = document.createElement('option'); option.disabled = true; option.textContent = 'No auto saves found'; list.append(option); }
+        $('recoverDialog').showModal();
+      });
+    });
+    $('recoverDialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+    $('recoverCancel').addEventListener('click', () => { if (!busy) $('recoverDialog').close(); });
+    $('recoverConfirm').addEventListener('click', () => {
+      const id = $('recoverList').value; if (!id) return;
+      placeAction('Opening auto save…', async () => {
+        $('recoverError').hidden = true;
+        try {
+          await commitScripts(true); await syncPlaceProfile(); await commitScripts(true);
+          if (placeAutosaveError) await retryPlaceAutosave();
+          if (placeAutosaveError) throw new Error('Cannot open an auto save until the current recovery copy is saved: ' + placeAutosaveError);
+          const payload = await request('place/recover', {id}, false);
+          placeDirty = true; placeAutosaveError = ''; placeHasRecovery = true; setPlaceImportError(null); setPlace(payload.place, true);
+          if (['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(place.profile)) $('profileSelect').value = place.profile;
+          save(); setExplorerPlace(true); $('recoverDialog').close();
+        } catch (error) { $('recoverError').textContent = String(error.message || error); $('recoverError').hidden = false; throw error; }
+      });
+    });
+    $('placeFile').addEventListener('change', async () => {
+      const file = $('placeFile').files[0]; $('placeFile').value = ''; if (!file) return;
+      if (hasPlaceChanges() && !confirm('Discard unsaved test place changes?')) return;
+      placeAction('Opening test place…', () => withPlaceReplacement(async () => {
+        if (file.size > 8 * 1024 * 1024) throw new Error('Place file exceeds 8 MiB.');
+        let value; try { value = JSON.parse(await file.text()); } catch { throw new Error('Place file is not valid JSON.'); }
+        const payload = await request('place/load', {place: value}, false);
+        placeDirty = false; placeAutosaveError = ''; placeHasRecovery = false; setPlaceImportError(null); setPlace(payload.place, true);
+        if (['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(place.profile)) $('profileSelect').value = place.profile;
+        save(); setExplorerPlace(true);
+      }));
+    });
+    $('placeRun').addEventListener('click', () => {
+      if (state?.usingPlace || $('testMode').value === 'runtime') {
+        mutate('running', {running: true}, 'Resuming runtime…', 'Runtime playing'); return;
+      }
+      if (!place) return;
+      placeAction('Starting test place…', async () => {
+        await commitScripts(true); await syncPlaceProfile(); await commitScripts(true);
+        resetInspections();
+        const payload = await request('place/run', {}, true); if (payload.place) setPlace(payload.place);
+        renderTargets();
+      });
+    });
+    $('placeStop').addEventListener('click', () => {
+      if (!state?.usingPlace) return;
+      placeAction('Stopping test place…', async () => {
+        await commitScripts(true);
+        resetInspections();
+        await request('place/stop', {}, true);
+        renderTargets();
+      });
+    });
     for (const [id, key] of [['clientSelect', 'client'], ['actorSelect', 'actor'], ['realmSelect', 'realm']]) $(id).addEventListener('change', () => { choices[mode][key] = $(id).value; editor.refreshCompletions(); renderTargets(); save(); });
     $('source').addEventListener('editor-escape', () => $('openButton').focus());
     $('lintStatus').addEventListener('click', () => editor.showDiagnostics());
-    document.addEventListener('keydown', event => { if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('resetDialog').open && !$('gcDialog').contains(event.target)) { event.preventDefault(); runCode(); } });
+    document.addEventListener('keydown', event => {
+      if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || $('networkDialog').open || $('resetDialog').open || $('gcDialog').contains(event.target)) return;
+      if (event.key === 'Enter') { event.preventDefault(); runCode(); }
+      else if (event.key.toLowerCase() === 's' && activeScriptId) { event.preventDefault(); saveScript(activeScriptId); }
+    });
     $('runButton').addEventListener('click', runCode);
-    $('runningButton').addEventListener('click', () => { const running = !state.running; mutate('running', {running}, 'Updating runtime…', running ? 'Runtime playing' : 'Runtime paused'); });
+    $('runningButton').addEventListener('click', () => mutate('running', {running: false}, 'Pausing runtime…', 'Runtime paused'));
+    $('testMode').addEventListener('change', updateActions);
     $('stepButton').addEventListener('click', () => mutate('step', {seconds: 1 / 60}, 'Stepping…', 'Step complete'));
     $('secondButton').addEventListener('click', () => mutate('step', {seconds: 1}, 'Advancing…', 'Advanced by 1 s'));
     $('clearButton').addEventListener('click', () => mutate('clear', {}, 'Clearing output…', 'Output cleared'));
@@ -1078,10 +2175,8 @@ print(table.concat(lines, "\n"))
     $('resetButton').addEventListener('click', () => { $('resetProfileName').textContent = $('profileSelect').value; $('resetDialog').showModal(); });
     $('cancelReset').addEventListener('click', () => $('resetDialog').close());
     $('confirmReset').addEventListener('click', () => { $('resetDialog').close(); dismissedRuntimeError = ''; commandOverride = null; resetInspections(); scrollPositions.clear(); mutate('reset', {profile: $('profileSelect').value}, 'Resetting VMs…', 'VMs reset'); });
-    $('profileSelect').addEventListener('change', save);
+    $('profileSelect').addEventListener('change', () => { profileChosenByUser = true; save(); scriptAutosaveBlocked = false; if (place) { $('placeName').textContent = place.name + (hasPlaceChanges() ? ' •' : ''); scheduleScriptAutosave(); } });
     $('budgetSelect').addEventListener('change', () => mutate('budget', {cpuMs: Number($('budgetSelect').value)}, 'Updating execution limit…', 'Execution limit updated'));
-    $('exampleSelect').addEventListener('change', exampleHint);
-    $('insertExample').addEventListener('click', insertExample);
     $('historySelect').addEventListener('change', () => {
       if ($('historySelect').value === '') return;
       const entry = histories[mode][Number($('historySelect').value)];
@@ -1112,22 +2207,33 @@ print(table.concat(lines, "\n"))
     $('downloadButton').addEventListener('click', () => {
       const url = URL.createObjectURL(new Blob([editor.getValue()], {type: 'text/plain;charset=utf-8'}));
       const link = document.createElement('a'); link.href = url;
-      link.download = (filenames[mode] || mode + '.luau').replace(/\.(lua|luau|b64)$/i, formats[mode] === 'source' ? '.luau' : '.b64').replace(/[\\/:*?"<>|]/g, '_');
+      link.download = (activeRuntimeKey ? runtimeDocs.get(activeRuntimeKey)?.name + '.luau' : activeScriptId ? scriptDocs.get(activeScriptId)?.name + '.luau' : filenames[mode] || mode + '.luau').replace(/\.(lua|luau|b64)$/i, activeScriptId || activeRuntimeKey || formats[mode] === 'source' ? '.luau' : '.b64').replace(/[\\/:*?"<>|]/g, '_');
       document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     for (const id of ['contextFilter', 'realmFilter', 'levelFilter', 'autoscroll']) $(id).addEventListener('change', () => { renderLogs(); if (id === 'autoscroll') save(); });
+    for (const id of Object.keys(outputDefaults)) $(id).addEventListener('change', () => {
+      for (const [option, name] of [['showTimestamp', 'show-timestamp'], ['showContext', 'show-context'], ['showSource', 'show-source']]) {
+        $('logList').classList.toggle(name, $(option).checked);
+      }
+      for (const row of rows.values()) row._signature = '';
+      renderLogs(); save();
+    });
+    $('traceCaughtErrors').addEventListener('change', () => {
+      const enabled = $('traceCaughtErrors').checked;
+      mutate('debug/trace-errors', {enabled}, 'Updating caught error tracing…', enabled ? 'Caught error tracing enabled' : 'Caught error tracing disabled');
+    });
     $('logSearch').addEventListener('input', renderLogs);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy) refresh(true); });
-    window.addEventListener('beforeunload', save);
+    window.addEventListener('beforeunload', event => { save(); if (hasPlaceChanges()) { event.preventDefault(); event.returnValue = ''; } });
     async function poll() {
       if (!busy && token) await refresh(true);
       pollTimer = setTimeout(poll, document.hidden ? 3000 : state?.running ? 600 : 1500);
     }
-    switchMode(mode, true); exampleHint();
+    switchMode(mode, true); renderDocumentTabs(); configureExplorerAuto();
     if (!token) {
       connection(false, 'No token');
       showError('Open the session URL printed by the local emulator server.');
-    } else { refresh().finally(() => { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 1000); }); }
+    } else { refresh().then(() => refreshPlace()).finally(() => { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 1000); }); }
   </script>
 </body>
 </html>

@@ -13,10 +13,12 @@ export const MAX_SOURCE_BYTES = 256 * 1024;
 const encoder = new TextEncoder();
 export const sourceBytes = source => encoder.encode(source).length;
 const luauKeywords = new Set(['continue', 'type', 'export', 'declare']);
+const controlKeywords = new Set(['and', 'break', 'continue', 'do', 'else', 'elseif', 'end', 'for', 'if', 'in', 'not', 'or', 'repeat', 'return', 'then', 'until', 'while']);
 const normalToken = lua.startState().cur;
 const luau = StreamLanguage.define({
   ...lua,
   name: 'luau',
+  tokenTable: {studioControl: tags.controlKeyword, studioBracket: tags.bracket},
   startState: () => ({...lua.startState(), backtick: false}),
   token(stream, state) {
     if (state.backtick || (state.cur === normalToken && stream.peek() === '`')) {
@@ -28,8 +30,12 @@ const luau = StreamLanguage.define({
       }
       return 'string';
     }
-    const style = lua.token(stream, state);
-    return style === 'variable' && luauKeywords.has(stream.current()) ? 'keyword' : style;
+    let style = lua.token(stream, state);
+    const word = stream.current();
+    if (style === 'variable' && luauKeywords.has(word)) style = 'keyword';
+    if (style === 'keyword' && controlKeywords.has(word)) return 'studioControl';
+    if (style == null && ['(', ')', '[', ']', '{', '}'].includes(word)) return 'studioBracket';
+    return style;
   },
   languageData: {...lua.languageData, indentOnInput: /^\s*(?:end|until|else|elseif|\)|\})$/,
     closeBrackets: {brackets: ['(', '[', '{', "'", '"', '`']}}
@@ -68,6 +74,7 @@ const executor = [
   entry('getgc', '(includeTables?) → {any}', 'Snapshot GC objects in the selected VM.'),
   entry('getgcvalue', '(viewerId, snapshot, index) → any', 'Get a GCViewer value in its executor VM. Insert from the viewer; expires on refresh, close, reset or after 10 minutes. Collected objects report an error.'),
   entry('filtergc', '(selector, options?, returnOne?) → any', 'Find GC objects matching the selector and filters.'),
+  entry('Regex', 'table', 'Bounded byte-oriented regular expressions; unsupported syntax reports an error.', 'variable'),
   entry('getupvalue', '(functionOrLevel, index) → any', 'Read a captured upvalue. Same native function as debug.getupvalue; C closures are unsupported.'),
   entry('getupvalues', '(functionOrLevel) → table', 'Read captured upvalues at their original indices. Same native function as debug.getupvalues.'),
   entry('setupvalue', '(functionOrLevel, index, value) → ()', 'Change a captured upvalue. Same native function as debug.setupvalue.'),
@@ -78,6 +85,7 @@ const executor = [
   entry('getprotos', '(functionOrLevel) → table', 'Unsupported: inactive prototype functions require VM support and are not fabricated.'),
   entry('getstack', '(level, index?) → any', 'Read real register slots in an interpreted Luau stack frame. C and native machine-code frames are unsupported.'),
   entry('setstack', '(level, index, value) → ()', 'Change a real Luau register slot. Active call function slots and native machine-code frames are protected.'),
+  entry('setinfo', '(functionOrLevel, fields) → ()', 'Change a Lua prototype name, source or definition line; active-frame line tables are unchanged.'),
   entry('getgenv', '() → table', 'Return the executor global environment.'),
   entry('getrenv', '() → table', 'Return the game environment of this VM.'),
   entry('identifyexecutor', '() → (string, string)', 'Return the active executor profile.'),
@@ -87,11 +95,29 @@ const executor = [
   entry('restorefunction', '(function) → ()', 'Restore a hooked function.'),
   entry('getnamecallmethod', '() → string?', 'Read the current namecall method name inside a __namecall hook.'),
   entry('newcclosure', '(function) → function', 'Wrap a function as a C closure.'),
+  entry('request', '(options) → response', 'Send an HTTP request after reviewing it in the approval window.'),
+  entry('http_request', '(options) → response', 'Alias of request; requires approval.'),
+  entry('httpget', '(url) → string', 'Executor HTTP GET; requires approval.'),
+  entry('http', '.request(options) → response', 'Executor HTTP request API; requires approval.', 'variable'),
+  entry('syn', '.request(options) → response', 'Executor request alias; requires approval.', 'variable'),
   entry('checkcaller', '() → boolean', 'Test the current executor origin.'),
   entry('getconnections', '(signal) → table', 'Inspect connections of a signal.'),
+  entry('getconnection', '(signal, index) → connection?', 'Inspect one local signal connection.'),
+  entry('firesignal', '(signal, ...arguments) → ()', 'Fire a signal in the current VM.'),
+  entry('dofile', '(path) → ...any', 'Execute a file from the executor virtual workspace.'),
+  entry('getproximitypromptduration', '(prompt) → number', 'Read the local ProximityPrompt HoldDuration.'),
+  entry('setproximitypromptduration', '(prompt, duration) → ()', 'Set the local ProximityPrompt HoldDuration.'),
+  entry('getsimulationradius', '() → number', 'Read the local Player simulation radius; physics is not simulated.'),
+  entry('setsimulationradius', '(radius, maximum?) → ()', 'Set the local Player simulation radius; physics is not simulated.'),
   entry('getinstances', '() → {Instance}', 'List Instances retained in this VM.'),
   entry('getnilinstances', '() → {Instance}', 'List unparented Instances in this VM.'),
   entry('getsenv', '(script) → table', 'Read the environment of a script.'),
+  entry('getproperties', '(instance) → table', 'Read the scriptable properties implemented by this emulator.'),
+  entry('gethiddenproperties', '(instance) → table', 'Read the hidden properties implemented by this emulator.'),
+  entry('getrendersteppedlist', '() → table', 'Inspect named render bindings in the selected VM.'),
+  entry('isourthread', '(thread) → boolean', 'Check thread creation provenance in the selected VM.'),
+  entry('getsignalarguments', '(signal) → table', 'Read known argument types for a built-in signal.'),
+  entry('getsignalargumentsinfo', '(signal) → table', 'Read known argument names and types for a built-in signal.'),
   entry('getrawmetatable', '(value) → table?', 'Read the raw metatable.'),
   entry('setrawmetatable', '(value, metatable?) → value', 'Replace the raw metatable, bypassing its __metatable lock.'),
   entry('setreadonly', '(table, readonly) → ()', 'Set the table readonly flag.'),
@@ -119,6 +145,12 @@ const instanceMembers = ['GetService', 'FindService', 'GetChildren', 'GetDescend
   'FindFirstChildOfClass', 'IsA', 'GetFullName', 'GetActor', 'GetAttribute', 'SetAttribute', 'GetAttributes',
   'GetPropertyChangedSignal', 'GetAttributeChangedSignal', 'Clone', 'Destroy', 'Fire', 'Invoke', 'Connect', 'Once', 'Wait',
   'Disconnect', 'BindToMessage', 'SendMessage'];
+const networkMethods = [
+  entry('GetAsync', '(url, noCache?, headers?) → string', 'Server HTTP GET; requires approval.', 'method'),
+  entry('PostAsync', '(url, body, contentType?, compress?, headers?) → string', 'Server HTTP POST; requires approval.', 'method'),
+  entry('RequestAsync', '(options) → response', 'Server HTTP request; requires approval.', 'method'),
+  entry('HttpGet', '(url) → string', 'Executor HTTP GET; requires approval.', 'method')
+];
 const words = ['and', 'break', 'continue', 'do', 'else', 'elseif', 'end', 'export', 'false', 'in', 'local', 'nil', 'not',
   'or', 'repeat', 'return', 'then', 'true', 'type', 'until', 'while'];
 const reservedWords = new Set([...words, 'if', 'for', 'function']);
@@ -344,13 +376,17 @@ export function insertBlock(view) {
 
 export function createEditor(parent, options) {
   let context = options.context || 'server';
+  let documentKey = context;
   let format = options.format || 'source';
+  const sourceLimit = () => options.getSourceLimit?.() || MAX_SOURCE_BYTES;
+  const sourceLimitText = () => 'Source exceeds ' + Math.round(sourceLimit() / 1024) + ' KiB.';
   const language = new Compartment();
+  const editability = new Compartment();
   const sourceExtensions = [luau, indentOnInput(), bracketMatching(), closeBrackets()];
-  let timer, controller, generation = 0;
-  const docs = new Map([...globals, ...executor].map(item => [item.label, item]));
+  let timer, controller, generation = 0, readOnly = false;
+  const docs = new Map([...globals, ...executor, ...networkMethods].map(item => [item.label, item]));
   function complete(request) {
-    if (format !== 'source') return null;
+    if (readOnly || format !== 'source') return null;
     const token = request.matchBefore(/\w*/);
     if (!token) return null;
     const node = syntaxTree(request.state).resolveInner(request.pos, -1);
@@ -361,10 +397,16 @@ export function createEditor(parent, options) {
     if (operator === '.' || operator === ':') {
       const receiver = before.slice(0, -1), path = instancePath(receiver);
       const name = /([A-Za-z_]\w*)\s*$/.exec(receiver)?.[1];
+      const httpService = path?.at(-1) === 'HttpService';
+      const dataModel = path?.length === 1 && path[0] === 'game';
       const names = operator === ':' ? [...instanceMembers, ...(context === 'server' ? ['FireClient', 'FireAllClients', 'InvokeClient'] : ['FireServer', 'InvokeServer'])]
         : [...(members[name] || (path ? ['Name', 'ClassName', 'Parent', 'Archivable', ...instanceMembers] : [])),
-          ...(name === 'debug' && context === 'executor' ? ['getupvalue', 'getupvalues', 'setupvalue', 'getconstant', 'getconstants', 'setconstant', 'getproto', 'getprotos', 'getstack', 'setstack'] : [])];
-      const fallback = {from: token.from, options: names.map(label => name === 'debug' && context === 'executor' && docs.has(label)
+          ...(name === 'debug' && context === 'executor' ? ['getupvalue', 'getupvalues', 'setupvalue', 'getconstant', 'getconstants', 'setconstant', 'getproto', 'getprotos', 'getstack', 'setstack', 'getcallstack', 'getsafeenv', 'setsafeenv', 'setname', 'setinfo', 'isvalidlevel'] : [])];
+      if (httpService) names.push('GetAsync', 'PostAsync', 'RequestAsync');
+      if (dataModel && context === 'executor') names.push('HttpGet');
+      if (name === 'Regex' && context === 'executor' && operator === '.') names.push('new', 'Escape');
+      if ((name === 'http' || name === 'syn') && context === 'executor' && operator === '.') names.push('request');
+      const fallback = {from: token.from, options: names.map(label => ((name === 'debug' && context === 'executor') || networkMethods.some(method => method.label === label) || (name === 'http' && context === 'executor')) && docs.has(label)
         ? docs.get(label) : entry(label, operator === ':' ? 'method' : name || 'member', label)), validFor: /^\w*$/};
       return path ? completeInstance(request, path, operator, before.length - 1, fallback) : fallback;
     }
@@ -374,6 +416,21 @@ export function createEditor(parent, options) {
     return {from: token.from, options: [...new Map(list.map(item => [item.label, item])).values()], validFor: /^\w*$/};
   }
   async function completeInstance(request, path, operator, operatorPosition, fallback) {
+    const prepare = items => items.filter(item => typeof item.label === 'string' && (operator !== ':' || item.type === 'method' || item.type === 'function') && !(item.label === 'HttpGet' && item.type === 'method' && context !== 'executor')).map(item => {
+      const documented = item.type === 'method' && networkMethods.find(method => method.label === item.label);
+      const completion = documented ? {...documented} : entry(item.label, String(item.detail || ''), String(item.info || ''), typeof item.type === 'string' ? item.type : 'property');
+      if (operator === '.' && (!/^[A-Za-z_]\w*$/.test(item.label) || reservedWords.has(item.label))) {
+        const quoted = JSON.stringify(item.label).replace(/\\u([\da-fA-F]{4})/g, '\\u{$1}');
+        completion.apply = (view, _completion, _from, to) => view.dispatch({changes: {from: operatorPosition, to, insert: '[' + quoted + ']'}, selection: {anchor: operatorPosition + quoted.length + 2}, scrollIntoView: true});
+      }
+      return completion;
+    });
+    const placeItems = options.getPlaceCompletions?.(path);
+    if (Array.isArray(placeItems)) {
+      const items = new Map(fallback.options.map(item => [item.label, item]));
+      for (const item of prepare(placeItems)) if (!items.has(item.label)) items.set(item.label, item);
+      return {...fallback, options: [...items.values()]};
+    }
     const realm = options.getRealm?.(), requestedContext = context, token = options.getToken?.();
     if (!realm || !token) return fallback;
     const abort = new AbortController();
@@ -385,14 +442,7 @@ export function createEditor(parent, options) {
       const result = await response.json();
       if (request.aborted || context !== requestedContext || options.getRealm?.() !== realm) return null;
       if (!response.ok || !Array.isArray(result.items) || !result.items.length) return fallback;
-      const items = result.items.filter(item => typeof item.label === 'string' && (operator !== ':' || item.type === 'method' || item.type === 'function')).map(item => {
-        const completion = entry(item.label, String(item.detail || ''), String(item.info || ''), typeof item.type === 'string' ? item.type : 'property');
-        if (operator === '.' && (!/^[A-Za-z_]\w*$/.test(item.label) || reservedWords.has(item.label))) {
-          const quoted = JSON.stringify(item.label).replace(/\\u([\da-fA-F]{4})/g, '\\u{$1}');
-          completion.apply = (view, _completion, _from, to) => view.dispatch({changes: {from: operatorPosition, to, insert: '[' + quoted + ']'}, selection: {anchor: operatorPosition + quoted.length + 2}, scrollIntoView: true});
-        }
-        return completion;
-      });
+      const items = prepare(result.items);
       return {...fallback, options: items};
     } catch { return request.aborted || context !== requestedContext || options.getRealm?.() !== realm ? null : fallback; }
     finally { clearTimeout(timeout); }
@@ -413,6 +463,7 @@ export function createEditor(parent, options) {
   });
   function scheduleLint() {
     generation++; clearTimeout(timer); controller?.abort();
+    if (readOnly) { options.onLintStatus?.('Read-only'); return; }
     if (format !== 'source') {
       view.dispatch(setDiagnostics(view.state, []));
       options.onLintStatus?.('Bytecode · validated on run', 'Base64 compiler bytecode; source lint is disabled');
@@ -426,8 +477,8 @@ export function createEditor(parent, options) {
     const token = options.getToken?.();
     if (!token) { options.onLintStatus?.('Lint offline'); return; }
     if (sourceBytes(source) > MAX_SOURCE_BYTES) {
-      view.dispatch(setDiagnostics(view.state, [{from: 0, to: 0, severity: 'error', message: 'Source exceeds 256 KiB.'}]));
-      options.onLintStatus?.('Source too large'); return;
+      view.dispatch(setDiagnostics(view.state, []));
+      options.onLintStatus?.('Lint skipped', 'The lint service supports source up to 256 KiB'); return;
     }
     controller = new AbortController();
     const activeController = controller, signal = activeController.signal;
@@ -459,6 +510,7 @@ export function createEditor(parent, options) {
   const extensions = [
     lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), history(), drawSelection(), dropCursor(),
     EditorState.allowMultipleSelections.of(true), indentUnit.of('    '), language.of(format === 'source' ? sourceExtensions : []),
+    editability.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
     Prec.highest(keymap.of([{key: 'Tab', run: acceptCompletion}, {key: 'Enter', run: view => format === 'source' && insertBlock(view)}])),
     autocompletion({override: [complete]}), highlightActiveLine(), hover,
     linter(null), lintGutter(),
@@ -467,8 +519,9 @@ export function createEditor(parent, options) {
       {key: 'Escape', run: () => { parent.dispatchEvent(new CustomEvent('editor-escape', {bubbles: true})); return true; }}]),
     EditorView.contentAttributes.of({'aria-label': 'Code input', spellcheck: 'false', autocapitalize: 'off'}),
     EditorState.transactionFilter.of(transaction => {
-      if (transaction.docChanged && sourceBytes(transaction.newDoc.toString()) > MAX_SOURCE_BYTES) {
-        options.onSizeError?.('Source exceeds 256 KiB.'); return [];
+      if (transaction.docChanged && readOnly) return [];
+      if (transaction.docChanged && sourceBytes(transaction.newDoc.toString()) > sourceLimit()) {
+        options.onSizeError?.(sourceLimitText()); return [];
       }
       return transaction;
     }),
@@ -477,24 +530,25 @@ export function createEditor(parent, options) {
       if (update.docChanged || update.selectionSet) options.onCursor?.();
     }),
     syntaxHighlighting(HighlightStyle.define([
-      {tag: tags.keyword, color: '#c5a4f5'}, {tag: [tags.string, tags.special(tags.string)], color: '#b5d69d'},
-      {tag: tags.number, color: '#edbf8f'}, {tag: tags.comment, color: '#76879b', fontStyle: 'italic'},
-      {tag: [tags.name, tags.variableName], color: '#dce8f7'}, {tag: tags.standard(tags.name), color: '#84c7ee'},
-      {tag: tags.operator, color: '#d5b7ee'}, {tag: tags.invalid, color: '#ff929a'}
+      {tag: tags.keyword, color: '#569cd6', fontWeight: '600'}, {tag: tags.controlKeyword, color: '#c586c0', fontWeight: '600'},
+      {tag: [tags.string, tags.special(tags.string)], color: '#ce9178'}, {tag: tags.number, color: '#b5cea8'},
+      {tag: tags.comment, color: '#6a9955'}, {tag: [tags.name, tags.variableName], color: '#cccccc'},
+      {tag: tags.standard(tags.variableName), color: '#dcdcaa'}, {tag: tags.bracket, color: '#ffd700'},
+      {tag: tags.operator, color: '#cccccc'}, {tag: tags.invalid, color: '#f55a55'}
     ])),
     EditorView.theme({
-      '&': {height: '100%', backgroundColor: '#11161d', color: '#dce8f7'},
-      '.cm-scroller': {overflow: 'auto', fontFamily: 'ui-monospace, "Cascadia Code", Consolas, monospace', fontSize: '14px', lineHeight: '1.65'},
-      '.cm-content': {padding: '14px 0', caretColor: '#e7edf5'}, '.cm-line': {padding: '0 12px'},
-      '.cm-gutters': {backgroundColor: '#11161d', color: '#65778d', borderRight: '1px solid #27313e'},
-      '.cm-activeLineGutter': {backgroundColor: '#1a2532'}, '.cm-activeLine': {backgroundColor: 'transparent'},
-      '.cm-selectionBackground': {backgroundColor: '#375678'},
-      '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {backgroundColor: '#436f9d'},
-      '.cm-content ::selection': {backgroundColor: '#436f9d'},
+      '&': {height: '100%', backgroundColor: '#1f1f1f', color: '#cccccc'},
+      '.cm-scroller': {overflow: 'auto', fontFamily: 'Consolas, "Courier New", monospace', fontSize: '14px', lineHeight: '1.43'},
+      '.cm-content': {padding: '3px 0', caretColor: '#f7f7f8'}, '.cm-line': {padding: '0 8px'},
+      '.cm-gutters': {backgroundColor: '#25272d', color: '#bcbec8', borderRight: '1px solid #353741'},
+      '.cm-activeLineGutter': {backgroundColor: '#30323a'}, '.cm-activeLine': {backgroundColor: 'transparent'},
+      '.cm-selectionBackground': {backgroundColor: '#264f78'},
+      '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {backgroundColor: '#264f78'},
+      '.cm-content ::selection': {backgroundColor: '#264f78'},
       '&.cm-focused': {outline: 'none'}, '.cm-cursor, .cm-dropCursor': {borderLeftColor: '#e7edf5'},
-      '.cm-tooltip': {backgroundColor: '#202a36', border: '1px solid #4c5e73', color: '#e7edf5', borderRadius: '6px', maxWidth: 'min(560px, 85vw)'},
-      '.cm-tooltip-autocomplete > ul > li[aria-selected]': {backgroundColor: '#344e6d', color: '#fff'},
-      '.cm-panels': {backgroundColor: '#1b2430', color: '#e7edf5'},
+      '.cm-tooltip': {backgroundColor: '#272930', border: '1px solid #353741', color: '#f7f7f8', borderRadius: '2px', maxWidth: 'min(560px, 85vw)'},
+      '.cm-tooltip-autocomplete > ul > li[aria-selected]': {backgroundColor: '#353741', color: '#f7f7f8'},
+      '.cm-panels': {backgroundColor: '#202227', color: '#d5d7dd'},
       '.cm-panel.cm-panel-lint button': {minHeight: '20px'},
       '.cm-matchingBracket': {backgroundColor: '#3a5365', outline: '1px solid #6d8aa6'},
       '.cm-foldPlaceholder': {backgroundColor: '#263343', border: 'none', color: '#aebfd4'}
@@ -506,14 +560,20 @@ export function createEditor(parent, options) {
   return {
     getValue: () => view.state.doc.toString(),
     setValue(value) {
-      if (sourceBytes(value) > MAX_SOURCE_BYTES) { options.onSizeError?.('Source exceeds 256 KiB.'); return false; }
+      if (sourceBytes(value) > sourceLimit()) { options.onSizeError?.(sourceLimitText()); return false; }
       view.dispatch({changes: {from: 0, to: view.state.doc.length, insert: value}, selection: {anchor: 0}}); return true;
     },
-    setContext(value) {
-      if (value === context) return;
-      contextStates.set(context, view.state); context = value;
-      view.setState(contextStates.get(value) || EditorState.create({extensions}));
+    setContext(value, key = value) {
+      if (value === context && key === documentKey) return;
+      contextStates.set(documentKey, view.state); context = value; documentKey = key;
+      view.setState(contextStates.get(key) || EditorState.create({extensions}));
       view.dispatch({effects: language.reconfigure(format === 'source' ? sourceExtensions : [])}); scheduleLint();
+    },
+    forgetDocument(key) { if (key !== documentKey) contextStates.delete(key); },
+    setReadOnly(value) {
+      readOnly = !!value; closeCompletion(view);
+      view.dispatch({effects: editability.reconfigure([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)])});
+      scheduleLint();
     },
     setFormat(value) {
       format = value; closeCompletion(view);
