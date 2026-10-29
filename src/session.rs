@@ -79,7 +79,7 @@ pub struct Session {
 
 fn failure(message: impl Into<String>) -> Error { Error::runtime(message.into()) }
 fn valid_profile(profile: &str) -> Result<()> {
-    if matches!(profile, "generic" | "macsploit-744.2" | "macsploit-744.4") { Ok(()) }
+    if matches!(profile, "generic" | "unc" | "macsploit-744.2" | "macsploit-744.4") { Ok(()) }
     else { Err(failure("Unknown executor profile")) }
 }
 
@@ -138,9 +138,14 @@ impl Session {
         let scenario: Scenario = serde_json::from_value(json!({
             "name":"Interactive session", "engine":"native", "duration":0.0,
             "nodes":[
-                {"id":"player1","class":"Player","name":"LocalPlayer","parent":"Players","properties":{"UserId":1}},
+                {"id":"player1","class":"Player","name":"LocalPlayer","parent":"Players","properties":{"UserId":1,"Character":{"tag":"instance","id":"character1"}}},
                 {"id":"playerScripts1","class":"PlayerScripts","name":"PlayerScripts","parent":"player1"},
-                {"id":"actor1","class":"Actor","name":"ConsoleActor","parent":"playerScripts1"}
+                {"id":"actor1","class":"Actor","name":"ConsoleActor","parent":"playerScripts1"},
+                {"id":"character1","class":"Model","name":"LocalPlayer","parent":"Workspace","properties":{"PrimaryPart":{"tag":"instance","id":"characterRoot1"}}},
+                {"id":"characterRoot1","class":"Part","name":"HumanoidRootPart","parent":"character1"},
+                {"id":"characterHead1","class":"Part","name":"Head","parent":"character1"},
+                {"id":"characterHumanoid1","class":"Humanoid","name":"Humanoid","parent":"character1"},
+                {"id":"characterAnimator1","class":"Animator","name":"Animator","parent":"characterHumanoid1"}
             ],
             "realms":[
                 {"id":"server","side":"server"},
@@ -307,6 +312,12 @@ impl Session {
             .complete_external(id,response).map_err(failure)?;
         self.poll_network()
     }
+    pub(crate) fn websocket_actions(&self)->Vec<Json>{self.host.network.as_ref().map_or_else(Vec::new,|network|network.socket_actions())}
+    pub(crate) fn websocket_event_external(&mut self,id:&str,event:Json)->Result<()> {
+        self.host.network.as_ref().ok_or_else(||failure("Network approval is unavailable"))?
+            .socket_event_external(id,event).map_err(failure)?;
+        self.poll_network()
+    }
     pub(crate) fn poll_network(&mut self) -> Result<()> {
         if self.network_blocked() { return Ok(()); }
         let Some(network) = self.host.network.clone() else { return Ok(()) };
@@ -411,9 +422,13 @@ impl Session {
                 bytes
             })
         } else { Ok(source.as_bytes().to_vec()) };
-        let function = input.and_then(|bytes| runtime.lua.load(bytes)
-            .set_mode(if format == "source" { mlua::chunk::ChunkMode::Text } else { mlua::chunk::ChunkMode::Binary })
-            .set_name(format!("=Console/{realm}/{context}/{}", self.next_command)).set_environment(environment.table.clone()).into_function());
+        let function = input.and_then(|bytes| {
+            let chunk = runtime.lua.load(bytes)
+                .set_mode(if format == "source" { mlua::chunk::ChunkMode::Text } else { mlua::chunk::ChunkMode::Binary })
+                .set_name(format!("=Console/{realm}/{context}/{}", self.next_command)).set_environment(environment.table.clone());
+            if context == "executor" { chunk.set_compiler(crate::native::executor_compiler(&runtime.lua)).into_function() }
+            else { chunk.into_function() }
+        });
         let function = match function {
             Ok(function) => function,
             Err(error) => {
@@ -545,6 +560,14 @@ impl Session {
         route(&self.host, &self.realms, &self.scenario)
     }
 
+    pub(crate) fn create_gc_viewer(&mut self, realm: &str) -> Result<()> {
+        if self.network_blocked() { return Err(failure("VMs are paused for network approval")); }
+        let realm=self.realms.iter().find(|candidate|candidate.config.id==realm && candidate.config.side=="client" && candidate.config.executor)
+            .ok_or_else(||failure("Select a client VM with executor enabled"))?;
+        realm.arm(self.scenario.cpu_ms);
+        crate::inspector::create_host_viewer(&realm.lua)
+    }
+
     pub(crate) fn keyboard_input(&mut self, realm: &str, key: &str, down: bool) -> Result<()> {
         if self.network_blocked() { return Err(failure("VMs are paused for network approval")); }
         let config=&self.realms.iter().find(|candidate|candidate.config.id==realm && candidate.config.side=="client")
@@ -663,6 +686,32 @@ impl Session {
             "closeGc"=>crate::inspector::close_viewer(&realm.lua,text("viewer")?),
             _=>Err(failure("Unknown inspector operation")),
         }
+    }
+
+    pub(crate) fn runtime_update(&mut self, body: &Json, running: bool) -> Result<Json> {
+        if self.network_blocked() { return Err(failure("VMs are paused for network approval")); }
+        let text = |key: &str| -> Result<&str> {
+            body.get(key).and_then(Json::as_str).filter(|s| s.len() <= 512)
+                .ok_or_else(|| failure(format!("Invalid runtime {key}")))
+        };
+        let realm_id = text("realm")?;
+        let context = text("context")?;
+        let result = {
+            let realm = self.realms.iter().find(|realm| realm.config.id == realm_id).ok_or_else(|| failure("Unknown realm"))?;
+            if context != realm.config.side && !(context == "executor" && realm.config.side == "client" && realm.config.executor) {
+                return Err(failure("Context is not available in the selected realm"));
+            }
+            if text("inspectorId")? != crate::inspector::identity(&realm.lua)? {
+                return Err(failure("Inspector belongs to another VM or an expired session"));
+            }
+            realm.arm(self.scenario.cpu_ms);
+            if running { model::runtime_update(&realm.lua, body)? }
+            else { scheduler::with_deferred_signals(&realm.lua, || model::runtime_update(&realm.lua, body))? }
+        };
+        // A paused edit changes only this VM immediately. Its queued signals and
+        // replication are delivered by the next scheduler step after resuming.
+        if running { self.pump(self.host.clock.get(), 0.0, false)?; }
+        Ok(result)
     }
 
     pub fn set_cpu_budget(&mut self, ms: u64) -> Result<()> {

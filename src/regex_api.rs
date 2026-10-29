@@ -115,7 +115,7 @@ impl UserData for Pattern {
     }
 }
 
-pub(super) fn install(lua: &Lua, env: &Table, caps: &Table) -> Result<()> {
+pub(super) fn install(lua: &Lua, env: &Table, caps: &crate::native::Capabilities) -> Result<()> {
     let library = lua.create_table()?;
     let count = Rc::new(Cell::new(0usize));
     super::set(lua, &library, "new", move |lua, pattern: LuaString| {

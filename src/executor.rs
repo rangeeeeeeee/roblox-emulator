@@ -103,7 +103,7 @@ pub fn unsupported_calls(lua:&Lua)->Result<BTreeMap<String,u64>> {
 pub fn run(lua:&Lua,source:&str,name:&str)->Result<mlua::Thread>{
     if !crate::internal::<Table>(lua,"__config")?.get::<bool>("executor")?{return Err(Error::lua_string("executor profile is disabled for this realm"));}
     let env:Table=crate::internal::<Table>(lua,"__emu")?.get("executorEnvironment")?;
-    let f=lua.load(source).set_mode(mlua::chunk::ChunkMode::Text).set_name(name).set_environment(env.clone()).into_function()?;
+    let f=lua.load(source).set_compiler(crate::native::executor_compiler(lua)).set_mode(mlua::chunk::ChunkMode::Text).set_name(name).set_environment(env.clone()).into_function()?;
     crate::native::mark_executor_function(lua,&f,&env)?;
     let thread=lua.create_thread(f)?;
     crate::scheduler::set_thread_environment(lua,&thread,&env)?;
@@ -128,26 +128,30 @@ fn set<A:mlua::FromLuaMulti,R:mlua::IntoLuaMulti>(lua:&Lua,env:&Table,name:&str,
 pub fn install(lua:&Lua)->Result<()> {
     install_identities(lua);
     let mac_744_4=crate::native::is_macsploit_7444(lua);
+    let loadfile_returns_error_tuple=crate::native::loadfile_returns_error_tuple(lua);
+    let unc_profile=crate::native::is_unc_profile(lua);
     let game=lua.globals();let env=lua.create_table()?;let mt=lua.create_table()?;mt.set("__index",game.clone())?;env.set_metatable(Some(mt))?;
     env.set("_G",env.clone())?;env.set("shared",lua.create_table()?)?;
-    let emu=lua.create_table()?;let caps=lua.create_table()?;let unsupported=lua.create_table()?;
+    let emu=lua.create_table()?;let caps=crate::native::Capabilities::default();let unsupported=lua.create_table()?;
     crate::encoding::install(lua,&env,&caps)?;
     regex_api::install(lua,&env,&caps)?;
     crate::drawing::install(lua,&env,&caps)?;
     crate::network::install(lua,&env,&caps)?;
-    emu.set("executorEnvironment",env.clone())?;emu.set("capabilities",caps.clone())?;emu.set("unsupported",unsupported.clone())?;
+    lua.set_app_data(caps.clone());
+    emu.set("executorEnvironment",env.clone())?;emu.set("unsupported",unsupported.clone())?;
+    crate::native::set_private_registry_value(lua,"emulator.executor.unsupported",unsupported.clone())?;
     let executor_env=env.clone();set(lua,&env,"getgenv",move|_,()|{executor_env.set_safeenv(false);Ok(executor_env.clone())})?;
     let game_env=game.clone();set(lua,&env,"getrenv",move|_,()|Ok(game_env.clone()))?;
     set(lua,&env,"checkcaller",|lua,()|Ok(crate::scheduler::current_origin(lua)=="executor"))?;
     set(lua,&env,"isourthread",|lua,thread:mlua::Thread|Ok(is_executor_thread(lua,thread)))?;
     caps.set("isourthread","partial: creation provenance of threads in the current VM")?;
-    set(lua,&env,"identifyexecutor",move|_,()|Ok(if mac_744_4{("MacSploit","744.4")}else{("RobloxEmulator","0.2.0")}))?;
+    set(lua,&env,"identifyexecutor",move|_,()|Ok(if mac_744_4{("MacSploit","744.4")}else{("RobloxEmulator",env!("CARGO_PKG_VERSION"))}))?;
     set(lua,&env,"isrbxactive",|_,()|Ok(false))?;
     env.set("isgameactive",env.get::<Function>("isrbxactive")?)?;
     caps.set("isrbxactive","native: no Roblox game window in headless mode")?;
     set(lua,&env,"getgcvalue",|lua,(viewer,snapshot,index):(String,u64,usize)|crate::inspector::gc_value(lua,&viewer,snapshot,index))?;
     caps.set("getgcvalue","emulator: current GCViewer snapshot; expires after refresh, close, reset or 10 minutes")?;
-    let rt:Table=game.get("__rt")?;env.set("getconnections",rt.get::<Function>("getConnections")?)?;
+    let rt:Table=crate::internal(lua,"__rt")?;env.set("getconnections",rt.get::<Function>("getConnections")?)?;
     env.set("firesignal",rt.get::<Function>("fireExecutorSignal")?)?;
     env.set("getconnection",rt.get::<Function>("getConnection")?)?;
     for (name,info) in [("getsignalarguments",false),("getsignalargumentsinfo",true)] {
@@ -254,9 +258,9 @@ pub fn install(lua:&Lua)->Result<()> {
     caps.set("getcallbackvalue","native: callback property of the selected VM's Instance")?;
     caps.set("gethui","native: detached per-VM UI container")?;
     for name in ["cloneref","compareinstances","getcallingscript","getscripts","getloadedmodules","getrunningscripts"]{caps.set(name,"native: isolated DataModel and current thread environment")?;}
-    for (name,host) in [("getgc","__host_getgc"),("iscclosure","__host_iscclosure"),("islclosure","__host_islclosure"),("newcclosure","__host_newcclosure"),("clonefunction","__host_clonefunction"),("getrawmetatable","__host_getrawmetatable"),("setrawmetatable","__host_setrawmetatable"),("setreadonly","__host_setreadonly"),("isreadonly","__host_isreadonly"),("getnamecallmethod","__host_getnamecallmethod"),("hookfunction","__host_hookfunction"),("restorefunction","__host_restorefunction"),("hookmetamethod","__host_hookmetamethod")]{env.set(name,game.get::<Function>(host)?)?;caps.set(name,"native: isolated Luau VM")?;}
+    for (name,host) in [("getgc","__host_getgc"),("iscclosure","__host_iscclosure"),("islclosure","__host_islclosure"),("newcclosure","__host_newcclosure"),("clonefunction","__host_clonefunction"),("getrawmetatable","__host_getrawmetatable"),("setrawmetatable","__host_setrawmetatable"),("setreadonly","__host_setreadonly"),("isreadonly","__host_isreadonly"),("getnamecallmethod","__host_getnamecallmethod"),("hookfunction","__host_hookfunction"),("restorefunction","__host_restorefunction"),("hookmetamethod","__host_hookmetamethod")]{env.set(name,crate::internal::<Function>(lua,host)?)?;caps.set(name,"native: isolated Luau VM")?;}
     for (name,host) in [("isnewcclosure","__host_isnewcclosure"),("isfunctionhooked","__host_isfunctionhooked"),("makereadonly","__host_makereadonly"),("makewritable","__host_makewritable"),("setnamecallmethod","__host_setnamecallmethod")] {
-        env.set(name,game.get::<Function>(host)?)?;caps.set(name,"native: isolated Luau VM")?;
+        env.set(name,crate::internal::<Function>(lua,host)?)?;caps.set(name,"native: isolated Luau VM")?;
     }
     caps.set("isfunctionhooked","partial: tracks hooks until restorefunction; re-hooking an original stays tracked")?;
     set(lua,&env,"getfunctionhash",|lua,function:Function|crate::native::function_hash(lua,&function))?;
@@ -275,7 +279,7 @@ pub fn install(lua:&Lua)->Result<()> {
     caps.set("isexecutorclosure","native: closure provenance within the selected VM")?;
     env.set("filtergc",crate::native::bind_filtergc(lua,&env,&unsupported)?)?;caps.set("filtergc","native: Name, Constants, Upvalues, IgnoreExecutor, Keys, Values, KeyValuePairs, Metatable; Hash unsupported")?;
     let debug=lua.create_table()?;for pair in game.get::<Table>("debug")?.pairs::<Value,Value>(){let(k,v)=pair?;debug.set(k,v)?;}
-    let isvalidlevel=game.get::<Function>("__host_isvalidlevel")?;
+    let isvalidlevel=crate::internal::<Function>(lua,"__host_isvalidlevel")?;
     crate::native::mark_executor_function(lua,&isvalidlevel,&env)?;
     debug.set("isvalidlevel",isvalidlevel)?;caps.set("debug.isvalidlevel","native: current VM stack")?;
     crate::native::bind_debug_helpers(lua,&env,&debug)?;
@@ -290,7 +294,7 @@ pub fn install(lua:&Lua)->Result<()> {
     }
     env.set("setinfo",debug.get::<Function>("setinfo")?)?;
     for(name,host)in[("getinfo","__host_getinfo"),("getupvalue","__host_getupvalue"),("getupvalues","__host_getupvalues"),("setupvalue","__host_setupvalue"),("getconstant","__host_getconstant"),("getconstants","__host_getconstants"),("setconstant","__host_setconstant"),("getproto","__host_getproto"),("getprotos","__host_getprotos"),("getstack","__host_getstack"),("setstack","__host_setstack")]{
-        let function=game.get::<Function>(host)?;crate::native::mark_executor_function(lua,&function,&env)?;
+        let function=crate::internal::<Function>(lua,host)?;crate::native::mark_executor_function(lua,&function,&env)?;
         debug.set(name,function.clone())?;env.set(name,function)?;
         caps.set(name,match name {
             "setconstant"=>"native: Luau function or stack level; preserves primitive constant type",
@@ -316,14 +320,19 @@ pub fn install(lua:&Lua)->Result<()> {
     let s=io.clone();set(lua,&env,"setclipboard",move|_,data:mlua::LuaString|{if data.as_bytes().len()>65536{return Err(Error::lua_string("virtual clipboard size limit exceeded"));}s.borrow_mut().clipboard=data.as_bytes().to_vec();Ok(())})?;
     let s=io.clone();set(lua,&env,"getclipboard",move|lua,()|lua.create_string(&s.borrow().clipboard))?;
     for(name,level)in[("rconsoleprint","executor"),("rconsolewarn","executor_warn"),("rconsoleerr","executor_error")]{set(lua,&env,name,move|lua,message:Value|{let tostring:Function=lua.globals().get("tostring")?;let message:mlua::LuaString=tostring.call(message)?;crate::host_log(lua,level,message)})?;}
-    let e=env.clone();set(lua,&env,"loadstring",move|lua,(source,name):(mlua::LuaString,Option<String>)|{if source.as_bytes().len()>8*1024*1024{return Err(Error::lua_string("source size limit exceeded"));}e.set_safeenv(false);match lua.load(source.as_bytes().as_ref()).set_mode(mlua::chunk::ChunkMode::Text).set_name(name.as_deref().unwrap_or("=executor")).set_environment(e.clone()).into_function(){Ok(f)=>{crate::native::mark_executor_function(lua,&f,&e)?;Ok((Value::Function(f),Value::Nil))},Err(e)=>Ok((Value::Nil,Value::String(lua.create_string(e.to_string())?)))}})?;
+    let e=env.clone();set(lua,&env,"loadstring",move|lua,(source,name):(mlua::LuaString,Option<String>)|{if source.as_bytes().len()>8*1024*1024{return Err(Error::lua_string("source size limit exceeded"));}e.set_safeenv(false);match lua.load(source.as_bytes().as_ref()).set_compiler(crate::native::executor_compiler(lua)).set_mode(mlua::chunk::ChunkMode::Text).set_name(name.as_deref().unwrap_or("=executor")).set_environment(e.clone()).into_function(){Ok(f)=>{crate::native::mark_executor_function(lua,&f,&e)?;Ok((Value::Function(f),Value::Nil))},Err(e)=>Ok((Value::Nil,Value::String(lua.create_string(e.to_string())?)))}})?;
     let e=env.clone();let s=io.clone();set(lua,&env,"loadfile",move|lua,name:String|{
         let name=path(&name)?;
         let data=s.borrow().files.get(&name).cloned().ok_or_else(||Error::lua_string(if mac_744_4{"the file you are trying to load quite simply does not exist lol."}else{"virtual file does not exist"}))?;
         e.set_safeenv(false);
-        match lua.load(data).set_mode(mlua::chunk::ChunkMode::Text).set_name(format!("@virtual/{name}")).set_environment(e.clone()).into_function(){
-            Ok(f)=>{crate::native::mark_executor_function(lua,&f,&e)?;Ok((Some(f),None::<String>))},
-            Err(err) if mac_744_4=>Ok((None,Some(err.to_string()))),
+        match lua.load(data).set_compiler(crate::native::executor_compiler(lua)).set_mode(mlua::chunk::ChunkMode::Text).set_name(format!("@virtual/{name}")).set_environment(e.clone()).into_function(){
+            Ok(f)=>{
+                crate::native::mark_executor_function(lua,&f,&e)?;
+                let mut values=vec![Value::Function(f)];
+                if !unc_profile {values.push(Value::Nil);}
+                Ok(MultiValue::from_vec(values))
+            },
+            Err(err) if loadfile_returns_error_tuple=>Ok(MultiValue::from_vec(vec![Value::Nil,Value::String(lua.create_string(err.to_string())?)])),
             Err(err)=>Err(Error::lua_string(err.to_string())),
         }
     })?;
@@ -357,7 +366,7 @@ pub fn install(lua:&Lua)->Result<()> {
     set(lua,&emu,"runExecutor",|lua,(source,name):(String,Option<String>)|run(lua,&source,name.as_deref().unwrap_or("=executor")))?;
     set(lua,&emu,"virtualState",move|lua,()|{let s=io.borrow();let t=lua.create_table()?;t.set("fileCount",s.files.len())?;t.set("fileBytes",s.files.values().map(Vec::len).sum::<usize>())?;t.set("clipboardBytes",s.clipboard.len())?;Ok(t)})?;
     for entry in env.pairs::<Value,Value>(){let(_,value)=entry?;if let Value::Function(function)=value{crate::native::mark_executor_function(lua,&function,&env)?;}}
-    env.set_safeenv(true);game.set("__emu",emu)
+    env.set_safeenv(true);crate::set_internal(lua,"__emu",emu)
 }
 
 #[cfg(all(test, emulator_local_tests))]

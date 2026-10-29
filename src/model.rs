@@ -304,10 +304,10 @@ pub(crate) fn register_custom_asset(lua:&Lua,bytes:Vec<u8>)->Result<String>{
     Ok(id)
 }
 pub(crate) fn calling_script(lua:&Lua)->Result<Value>{
-    lua.named_registry_value::<Table>(ENV_OWNERS)?.raw_get(lua.globals())
+    crate::native::private_registry_value::<Table>(lua,ENV_OWNERS)?.raw_get(lua.globals())
 }
 pub(crate) fn script_from_thread(lua:&Lua,thread:Thread)->Result<Value>{
-    let owners:Table=lua.named_registry_value(ENV_OWNERS)?;
+    let owners:Table=crate::native::private_registry_value(lua,ENV_OWNERS)?;
     unsafe { lua.exec_raw((owners,thread),|state|{
         ffi::lua_getfenv(state,2);ffi::lua_rawget(state,1);
         ffi::lua_replace(state,1);ffi::lua_settop(state,1);
@@ -316,7 +316,7 @@ pub(crate) fn script_from_thread(lua:&Lua,thread:Thread)->Result<Value>{
 pub(crate) fn script_thread(lua:&Lua,node:&Link)->Result<Option<Thread>>{
     if !instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(Error::lua_string("LuaSourceContainer expected"))}
     let id=node.borrow().id.clone();
-    let thread:Option<Thread>=lua.named_registry_value::<Table>(SCRIPT_THREADS)?.raw_get(id)?;
+    let thread:Option<Thread>=crate::native::private_registry_value::<Table>(lua,SCRIPT_THREADS)?.raw_get(id)?;
     Ok(thread.filter(|thread|!thread.is_finished()&&!thread.is_error()))
 }
 pub(crate) fn active_script_environment(lua:&Lua,node:&Link)->Result<Option<Table>>{
@@ -329,7 +329,7 @@ pub(crate) fn active_script_environment(lua:&Lua,node:&Link)->Result<Option<Tabl
         if ancestor.class=="Actor" {if ancestor.id!=realm_actor {return Ok(None)} break}
         parent=ancestor.parent.upgrade();
     }
-    let environment:Option<Table>=lua.named_registry_value::<Table>(ENVS)?.raw_get(id.as_str())?;
+    let environment:Option<Table>=crate::native::private_registry_value::<Table>(lua,ENVS)?.raw_get(id.as_str())?;
     let Some(environment)=environment else{return Err(Error::lua_string("Script is not currently running"))};
     let active_module=matches!(state.borrow().modules.get(&id),Some(Module::Loading{..}|Module::Ready(_)));
     let active_thread=script_thread(lua,node)?.is_some();
@@ -350,7 +350,7 @@ pub(crate) fn scripts(lua:&Lua,loaded_only:bool)->Result<Table>{
     instance::instance_list(lua,nodes)
 }
 pub(crate) fn running_scripts(lua:&Lua)->Result<Table>{
-    let owners:Table=lua.named_registry_value(ENV_OWNERS)?;
+    let owners:Table=crate::native::private_registry_value(lua,ENV_OWNERS)?;
     let mut seen=HashSet::new();
     let mut nodes=Vec::new();
     for env in crate::scheduler::running_game_environments(lua)? {
@@ -644,6 +644,12 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
 
 pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
     if state(lua).is_none(){return Ok(None)}
+    if matches!(key,"Enabled"|"Disabled") && instance::is_a(&node.borrow(),"BaseScript") {
+        let node = node.borrow();
+        if let Some(value) = node.properties.get(key) { return Ok(Some(value.clone())); }
+        let opposite = if key == "Enabled" { "Disabled" } else { "Enabled" };
+        if let Some(Value::Boolean(value)) = node.properties.get(opposite) { return Ok(Some(Value::Boolean(!value))); }
+    }
     if node.borrow().class=="AnimationTrack"{if let Some(value)=animation::read(lua,node,key)?{return Ok(Some(value))}}
     if instance::is_a(&node.borrow(),"BasePart")&&node.borrow().class!="Terrain"{
         match key{"Position"=>return Ok(Some(crate::spatial::position_value(node)?)),"CFrame"|"ExtentsCFrame"=>return Ok(Some(crate::spatial::part_frame(node)?.into_lua(lua)?)),"ExtentsSize"=>return Ok(Some(crate::spatial::extents_value(node)?)),_=>{}}
@@ -719,7 +725,10 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
         node.borrow_mut().properties.insert(key.into(),new.clone());changed(lua,node,key)?;
         if next.is_some(){fire(lua,node,"CharacterAdded",args([new.clone()]))?;}return Ok(true)
     }
-    let previous=||->Result<Option<Value>>{let stored=node.borrow().properties.get(key).cloned();if stored.is_some(){Ok(stored)}else{default(lua,node,key)}};
+    let previous=||->Result<Option<Value>>{
+        if matches!(key,"Enabled"|"Disabled") && instance::is_a(&node.borrow(),"BaseScript") { return read_property(lua,node,key); }
+        let stored=node.borrow().properties.get(key).cloned();if stored.is_some(){Ok(stored)}else{default(lua,node,key)}
+    };
     let same=|old:&Value,new:&Value|{
         if old==new{return true}
         // Compare native value types directly; never run a Lua __eq while assigning a property.
@@ -883,14 +892,14 @@ fn emit(lua:&Lua,kind:&str,payload:Json)->Result<()>{
 }
 
 pub(crate) fn env(lua:&Lua,node:&Link)->Result<Table>{
-    let table:Table=lua.named_registry_value(ENVS)?;let id=node.borrow().id.clone();
+    let table:Table=crate::native::private_registry_value(lua,ENVS)?;let id=node.borrow().id.clone();
     if let Value::Table(e)=table.raw_get(id.as_str())?{return Ok(e)}
-    let base:Table=lua.named_registry_value(BASE_ENV)?;
+    let base:Table=crate::native::private_registry_value(lua,BASE_ENV)?;
     let e=lua.create_table()?;e.raw_set("script",instance::wrapper(lua,node.clone())?)?;
     for key in ["_G","shared"]{e.raw_set(key,base.raw_get::<Value>(key)?)?;}
     let mt=lua.create_table()?;mt.raw_set("__index",base)?;e.set_metatable(Some(mt))?;
     e.set_safeenv(true);
-    lua.named_registry_value::<Table>(ENV_OWNERS)?.raw_set(e.clone(),instance::wrapper(lua,node.clone())?)?;
+    crate::native::private_registry_value::<Table>(lua,ENV_OWNERS)?.raw_set(e.clone(),instance::wrapper(lua,node.clone())?)?;
     table.raw_set(id,e.clone())?;Ok(e)
 }
 fn thread_environment(lua:&Lua,thread:&Thread,node:&Link)->Result<()>{crate::scheduler::set_thread_environment(lua,thread,&env(lua,node)?)}
@@ -1531,7 +1540,7 @@ pub(crate) fn script_error(lua:&Lua,message:&str,thread:&Thread)->Result<()>{
         }
         ffi::lua_settop(state,0);
     })?};
-    let owners:Table=lua.named_registry_value(ENV_OWNERS)?;
+    let owners:Table=crate::native::private_registry_value(lua,ENV_OWNERS)?;
     let owner:Value=unsafe{lua.exec_raw((owners,thread.clone()),|state|{
         let target=ffi::lua_tothread(state,2);
         // The task belongs to its initiating Script even when its function came from a ModuleScript.
@@ -1639,14 +1648,14 @@ fn load_nodes(lua:&Lua,nodes:Vec<Json>,wire:bool)->Result<()>{
 pub fn install(lua:&Lua)->Result<()>{install_impl(lua,true)}
 pub fn install_native_host(lua:&Lua)->Result<()>{install_impl(lua,false)}
 fn install_impl(lua:&Lua,expose_private_callbacks:bool)->Result<()>{
-    lua.set_named_registry_value(BASE_ENV,lua.globals())?;
+    crate::native::set_private_registry_value(lua,BASE_ENV,lua.globals())?;
     let config:Table=crate::internal(lua,"__config")?;let side:String=config.get("side")?;let client=config.get::<Option<String>>("clientId")?.unwrap_or_default();
     let logs=lua.app_data_ref::<LogRegistry>().map(|registry|registry.history(&side,&client)).unwrap_or_default();
     let s=Rc::new(RefCell::new(Model{realm:config.get("realmId")?,side,client,logs,actor:config.get::<Option<String>>("actorId")?.unwrap_or_default(),studio:config.get::<Option<bool>>("isStudio")?.unwrap_or(false),..Default::default()}));
     lua.set_app_data(s.clone());
-    let envs=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","v")?;envs.set_metatable(Some(mt))?;lua.set_named_registry_value(ENVS,envs)?;
-    let owners=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","k")?;owners.set_metatable(Some(mt))?;lua.set_named_registry_value(ENV_OWNERS,owners)?;
-    let threads=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","v")?;threads.set_metatable(Some(mt))?;lua.set_named_registry_value(SCRIPT_THREADS,threads)?;
+    let envs=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","v")?;envs.set_metatable(Some(mt))?;crate::native::set_private_registry_value(lua,ENVS,envs)?;
+    let owners=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","k")?;owners.set_metatable(Some(mt))?;crate::native::set_private_registry_value(lua,ENV_OWNERS,owners)?;
+    let threads=lua.create_table()?;let mt=lua.create_table()?;mt.set("__mode","v")?;threads.set_metatable(Some(mt))?;crate::native::set_private_registry_value(lua,SCRIPT_THREADS,threads)?;
     instance::install(lua)?;
     let game:AnyUserData=lua.globals().get("game")?;let game=game.borrow::<Instance>()?.0.clone();game.borrow_mut().id="game".into();s.borrow_mut().nodes.insert("game".into(),Rc::downgrade(&game));
     for child in &game.borrow().children{let id=child.borrow().class.clone();child.borrow_mut().id=id.clone();s.borrow_mut().nodes.insert(id,Rc::downgrade(child));}
@@ -1658,7 +1667,7 @@ fn install_impl(lua:&Lua,expose_private_callbacks:bool)->Result<()>{
         model.set("getInstances",lua.create_function(|lua,()|instances(lua,false))?)?;
         model.set("getNilInstances",lua.create_function(|lua,()|instances(lua,true))?)?;
         model.set("getEnvironment",lua.create_function(|lua,u:AnyUserData|env(lua,&u.borrow::<Instance>()?.0))?)?;
-        lua.globals().set("__model",model)?;
+        crate::set_internal(lua,"__model",model)?;
     }
     let require=unsafe{raw_function(lua,raw_require,c"require")?};lua.globals().set("require",require)?;
     if matches!(lua.globals().get::<Value>("shared")?,Value::Nil){lua.globals().set("shared",lua.create_table()?)?;}
@@ -1671,7 +1680,7 @@ pub fn apply_changes(lua:&Lua,nodes:&[Json])->Result<()>{let s=required(lua)?;s.
 pub fn run_script(lua:&Lua,id:&str)->Result<Thread>{
     let n=lookup(lua,id).ok_or_else(||Error::runtime("Script unavailable"))?;let f=compile(lua,&n)?;let thread=lua.create_thread(f.clone())?;
     thread_environment(lua,&thread,&n)?;
-    lua.named_registry_value::<Table>(SCRIPT_THREADS)?.raw_set(id,thread.clone())?;
+    crate::native::private_registry_value::<Table>(lua,SCRIPT_THREADS)?.raw_set(id,thread.clone())?;
     let name=n.borrow().name.clone();crate::scheduler::set_script_category(lua,&thread,&f,&name)?;
     crate::scheduler::spawn_with(lua,Value::Thread(thread),MultiValue::new(),Some("serial"),Some("game"))
 }
@@ -2210,7 +2219,7 @@ pub(crate) fn completions(lua: &Lua, path: &[String]) -> Result<Vec<Json>> {
         items.insert(name.clone(), completion_item(name,"property",detail.as_deref().unwrap_or(value.type_name()),"Stored Instance property in the selected VM"));
     }
     // Raw iteration reads existing key objects and never interns the user's path.
-    let methods: Table = lua.named_registry_value(instance::METHODS)?;
+    let methods: Table = crate::native::private_registry_value(lua,instance::METHODS)?;
     for entry in methods.pairs::<Value,Value>().take(512) {
         let (Value::String(name),Value::Function(_)) = entry? else { continue; };
         let Ok(name) = name.to_str() else { continue; };
@@ -2237,10 +2246,103 @@ fn inspect_text(text: &str) -> Json {
 fn inspect_reference(node: &instance::Node) -> Json {
     json!({"type":"Instance","id":node.id,"name":crate::console::display_bytes(node.name.as_bytes(),512),"class":node.class})
 }
+fn runtime_locked(node: &Link) -> bool {
+    let node = node.borrow();
+    node.id == "game" || (instance::SERVICES.contains(&node.class.as_str())
+        && node.parent.upgrade().is_some_and(|parent| parent.borrow().id == "game"))
+}
+
 fn inspect_row(node: &Link) -> Json {
+    let locked = runtime_locked(node);
     let node = node.borrow();
     json!({"id":node.id,"objectId":node.cache_id.to_string(),"name":crate::console::display_bytes(node.name.as_bytes(),512),"class":node.class,
-        "hasChildren":node.children.iter().any(|child| !child.borrow().destroyed)})
+        "locked":locked,"hasChildren":node.children.iter().any(|child| !child.borrow().destroyed)})
+}
+
+// Explorer mutations use stable VM-local identities and the same model operations
+// as Instance methods; they never evaluate a command inside the selected VM.
+pub(crate) fn runtime_update(lua: &Lua, body: &Json) -> Result<Json> {
+    let text = |key: &str| -> Result<&str> {
+        body.get(key).and_then(Json::as_str).filter(|value| value.len() <= 512)
+            .ok_or_else(|| Error::runtime(format!("Invalid runtime {key}")))
+    };
+    let node = |id: &str, object_id: &str| -> Result<Link> {
+        let node = lookup(lua, id).filter(|node| !node.borrow().destroyed)
+            .ok_or_else(|| Error::runtime("Instance unavailable in selected VM"))?;
+        if node.borrow().cache_id.to_string() != object_id {
+            return Err(Error::runtime("Instance changed; refresh Runtime Explorer"));
+        }
+        Ok(node)
+    };
+    let valid_name = |name: &str| !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control);
+    let action = text("action")?;
+    if action == "create" {
+        let parent_node = node(text("parent")?, text("parentObjectId")?)?;
+        let class = text("class")?;
+        if !instance::class_info(class).is_some_and(|info| info.creatable && !info.service) {
+            return Err(Error::runtime("Class is not creatable"));
+        }
+        let name = text("name")?;
+        if !valid_name(name) { return Err(Error::runtime("Invalid instance name")); }
+        let created_node = instance::create_node(lua, class)?;
+        created(lua, &created_node)?;
+        write_property(lua, &created_node, "Name", &Value::String(lua.create_string(name)?))?;
+        parent(lua, &created_node, Some(parent_node))?;
+        return Ok(inspect_row(&created_node));
+    }
+    let selected = node(text("id")?, text("objectId")?)?;
+    if runtime_locked(&selected) { return Err(Error::runtime("Cannot modify the DataModel or a service")); }
+    match action {
+        "rename" => {
+            let name = text("name")?;
+            if !valid_name(name) { return Err(Error::runtime("Invalid instance name")); }
+            write_property(lua, &selected, "Name", &Value::String(lua.create_string(name)?))?;
+        }
+        "reparent" => {
+            let target = if body.get("parent").is_some_and(Json::is_null) { None }
+                else { Some(node(text("parent")?, text("parentObjectId")?)?) };
+            parent(lua, &selected, target)?;
+        }
+        "duplicate" => {
+            let target = selected.borrow().parent.upgrade()
+                .ok_or_else(|| Error::runtime("Cannot duplicate an unparented instance"))?;
+            let copy = clone_node(lua, &selected)?.ok_or_else(|| Error::runtime("Instance is not Archivable"))?;
+            parent(lua, &copy, Some(target))?;
+            return Ok(inspect_row(&copy));
+        }
+        "delete" => { destroy(lua, &selected)?; }
+        "property" => {
+            let key = text("name")?;
+            let raw = body.get("value").ok_or_else(|| Error::runtime("Missing property value"))?;
+            let class = selected.borrow().class.clone();
+            let is_part = instance::is_a(&selected.borrow(), "BasePart");
+            let val = match key {
+                "Archivable" | "Enabled" | "Disabled" | "Anchored" | "CanCollide" | "CanTouch" | "CanQuery" | "Massless"
+                    if key == "Archivable" || (matches!(key, "Enabled" | "Disabled") && matches!(class.as_str(), "Script" | "LocalScript")) || is_part =>
+                    Value::Boolean(raw.as_bool().ok_or_else(|| Error::runtime("Property requires a boolean"))?),
+                "Value" if class == "StringValue" => {
+                    let string = raw.as_str().filter(|s| s.len() <= 8192).ok_or_else(|| Error::runtime("Invalid string value"))?;
+                    Value::String(lua.create_string(string)?)
+                },
+                "Value" if class == "BoolValue" => Value::Boolean(raw.as_bool().ok_or_else(|| Error::runtime("Property requires a boolean"))?),
+                "Value" | "Transparency" if matches!(class.as_str(), "NumberValue" | "IntValue") || (key == "Transparency" && is_part) => {
+                    let number = raw.as_f64().filter(|n| n.is_finite()).ok_or_else(|| Error::runtime("Property requires a finite number"))?;
+                    if class == "IntValue" && (number.fract() != 0.0 || number.abs() > 9_007_199_254_740_991.0) { return Err(Error::runtime("Property requires a safe integer")); }
+                    Value::Number(number)
+                },
+                "Position" | "Size" if is_part => {
+                    if raw["tag"] != "Vector3" || ["x", "y", "z"].iter().any(|key| raw[*key].as_f64().is_none_or(|n| !(n as f32).is_finite())) {
+                        return Err(Error::runtime("Property requires a finite Vector3"));
+                    }
+                    crate::types::decode_value(lua, raw)?.ok_or_else(|| Error::runtime("Invalid Vector3"))?
+                },
+                _ => return Err(Error::runtime("Property is read-only or unsupported in Runtime Explorer")),
+            };
+            if !write_property(lua, &selected, key, &val)? { return Err(Error::runtime("Property is not supported by this instance")); }
+        }
+        _ => return Err(Error::runtime("Unknown runtime action")),
+    }
+    Ok(inspect_row(&selected))
 }
 
 pub(crate) fn inspect_source(lua: &Lua, id: &str, object_id: &str) -> Result<Json> {
@@ -2329,6 +2431,13 @@ pub(crate) fn inspect_node(lua: &Lua, id: &str) -> Result<Json> {
     for (name,value) in &node.properties {
         let preview = crate::console::snapshot(lua,std::iter::once(value)).into_iter().next().unwrap_or_else(||json!({"type":value.type_name(),"truncated":true}));
         properties.insert(name.clone(),preview);
+    }
+    if instance::is_a(&node,"BaseScript") {
+        let get_bool = |name: &str| match node.properties.get(name) { Some(Value::Boolean(value)) => Some(*value), _ => None };
+        let enabled = get_bool("Enabled").or_else(|| get_bool("Disabled").map(|value| !value)).unwrap_or(true);
+        let disabled = get_bool("Disabled").or_else(|| get_bool("Enabled").map(|value| !value)).unwrap_or(false);
+        properties.insert("Enabled".into(), json!({"type":"boolean","value":enabled}));
+        properties.insert("Disabled".into(), json!({"type":"boolean","value":disabled}));
     }
     let mut attributes: Vec<Json> = node.attributes.iter().map(|(name,value)| {
         let value = match value {

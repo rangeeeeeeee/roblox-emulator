@@ -107,7 +107,7 @@ impl UserData for Drawing {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(MetaMethod::Index, |lua, this, name: String| {
             if matches!(name.as_str(), "Destroy" | "Remove") {
-                return lua.named_registry_value::<Table>(METHODS)?.get::<Value>(name);
+                return crate::native::private_registry_value::<Table>(lua,METHODS)?.get::<Value>(name);
             }
             this.read(lua, &name)
         });
@@ -151,7 +151,7 @@ fn named<A: mlua::FromLuaMulti, R: mlua::IntoLuaMulti>(lua: &Lua, env: &Table, n
     Ok(function)
 }
 
-pub(crate) fn install(lua: &Lua, env: &Table, caps: &Table) -> Result<()> {
+pub(crate) fn install(lua: &Lua, env: &Table, caps: &crate::native::Capabilities) -> Result<()> {
     let state = Rc::new(RefCell::new(State::default()));
     let methods = lua.create_table()?;
     let state_for_destroy = state.clone();
@@ -162,7 +162,7 @@ pub(crate) fn install(lua: &Lua, env: &Table, caps: &Table) -> Result<()> {
     })?;
     methods.set("Destroy", destroy.clone())?;
     methods.set("Remove", destroy)?;
-    lua.set_named_registry_value(METHODS, methods)?;
+    crate::native::set_private_registry_value(lua,METHODS, methods)?;
 
     let drawing = lua.create_table()?;
     let state_for_new = state.clone();
@@ -217,14 +217,14 @@ mod tests {
         let mt = lua.create_table()?;
         mt.set("__index", lua.globals())?;
         env.set_metatable(Some(mt))?;
-        install(&lua, &env, &lua.create_table()?)?;
+        install(&lua, &env, &crate::native::Capabilities::default())?;
         Ok((lua,env))
     }
 
     #[test]
     fn host_method_registry_is_not_visible_through_getgc() -> Result<()> {
         let (lua, _) = runtime()?;
-        let methods:Table=lua.named_registry_value(METHODS)?;
+        let methods:Table=crate::native::private_registry_value(&lua,METHODS)?;
         let getgc:Function=lua.globals().get("__host_getgc")?;
         let objects:Table=getgc.call(true)?;
         for object in objects.sequence_values::<Value>() {

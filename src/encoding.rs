@@ -148,7 +148,7 @@ fn named<A: mlua::FromLuaMulti, R: mlua::IntoLuaMulti>(
     Ok(function)
 }
 
-pub fn install(lua: &Lua, env: &Table, caps: &Table) -> Result<()> {
+pub fn install(lua: &Lua, env: &Table, caps: &crate::native::Capabilities) -> Result<()> {
     let mac_744_4 = crate::native::is_macsploit_7444(lua);
     let encode = named(lua, env, "base64encode", |lua, data: LuaString| {
         bounded(data.as_bytes().len())?;
@@ -267,7 +267,7 @@ mod tests {
         assert!(hmac(b"key", b"value", "bogus").is_err());
         let lua = Lua::new();
         let env = lua.globals();
-        let caps = lua.create_table().unwrap();
+        let caps = crate::native::Capabilities::default();
         install(&lua, &env, &caps).unwrap();
         lua.load(r#"
             local key = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='
@@ -297,7 +297,7 @@ mod tests {
     fn macsploit_explicit_iv_returns_no_second_result() {
         let lua=Lua::new();
         crate::native::set_executor_profile(&lua,"macsploit-744.4").unwrap();
-        install(&lua,&lua.globals(),&lua.create_table().unwrap()).unwrap();
+        install(&lua,&lua.globals(),&crate::native::Capabilities::default()).unwrap();
         lua.load(r#"
             local key = crypt.base64encode(string.rep('\1',32))
             local iv = crypt.base64encode(string.rep('\2',16))
@@ -317,7 +317,7 @@ mod tests {
     fn executor_environment_exposes_aliases_and_binary_roundtrips() {
         let lua = Lua::new();
         let env = lua.globals();
-        install(&lua, &env, &lua.create_table().unwrap()).unwrap();
+        install(&lua, &env, &crate::native::Capabilities::default()).unwrap();
         lua.load(r#"
             local bytes = "\000\255Hello, world! Hello, world!"
             assert(base64decode(base64encode(bytes)) == bytes)

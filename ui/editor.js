@@ -75,6 +75,8 @@ const executor = [
   entry('getgcvalue', '(viewerId, snapshot, index) → any', 'Get a GCViewer value in its executor VM. Insert from the viewer; expires on refresh, close, reset or after 10 minutes. Collected objects report an error.'),
   entry('filtergc', '(selector, options?, returnOne?) → any', 'Find GC objects matching the selector and filters.'),
   entry('Regex', 'table', 'Bounded byte-oriented regular expressions; unsupported syntax reports an error.', 'variable'),
+  entry('WebSocket', '.connect(url) → socket', 'Open a WebSocket connection after reviewing it in the approval window.', 'variable'),
+  entry('websocket', '.connect(url) → socket', 'Alias of WebSocket; requires approval.', 'variable'),
   entry('getupvalue', '(functionOrLevel, index) → any', 'Read a captured upvalue. Same native function as debug.getupvalue; C closures are unsupported.'),
   entry('getupvalues', '(functionOrLevel) → table', 'Read captured upvalues at their original indices. Same native function as debug.getupvalues.'),
   entry('setupvalue', '(functionOrLevel, index, value) → ()', 'Change a captured upvalue. Same native function as debug.setupvalue.'),
@@ -405,7 +407,9 @@ export function createEditor(parent, options) {
       if (httpService) names.push('GetAsync', 'PostAsync', 'RequestAsync');
       if (dataModel && context === 'executor') names.push('HttpGet');
       if (name === 'Regex' && context === 'executor' && operator === '.') names.push('new', 'Escape');
+      if ((name === 'WebSocket' || name === 'websocket') && context === 'executor' && operator === '.') names.push('connect');
       if ((name === 'http' || name === 'syn') && context === 'executor' && operator === '.') names.push('request');
+      if (name === 'syn' && context === 'executor' && operator === '.') names.push('websocket');
       const fallback = {from: token.from, options: names.map(label => ((name === 'debug' && context === 'executor') || networkMethods.some(method => method.label === label) || (name === 'http' && context === 'executor')) && docs.has(label)
         ? docs.get(label) : entry(label, operator === ':' ? 'method' : name || 'member', label)), validFor: /^\w*$/};
       return path ? completeInstance(request, path, operator, before.length - 1, fallback) : fallback;

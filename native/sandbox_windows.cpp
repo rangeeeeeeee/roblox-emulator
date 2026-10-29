@@ -327,4 +327,90 @@ extern "C" DWORD emu_sandbox_verify_current(char* stage, size_t stage_size)
     } catch (const std::bad_alloc&) { return ERROR_NOT_ENOUGH_MEMORY; }
       catch (...) { return ERROR_UNHANDLED_EXCEPTION; }
 }
+
+// The approved WebSocket transport has only its two IPC handles. Its job kills
+// it if the UI exits, even if a peer leaves a synchronous receive pending.
+extern "C" DWORD emu_websocket_spawn(const wchar_t* exe, EmuSandboxHandles* handles, char* stage, size_t stage_size)
+{
+    if (!exe || !handles || std::wcschr(exe, L'"')) return ERROR_INVALID_PARAMETER;
+    *handles = {};
+    try {
+        auto broker = std::make_unique<Sandbox>();
+        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+        set_stage(stage, stage_size, "create WebSocket pipes");
+        if (!CreatePipe(&broker->input_read, &broker->input_write, &sa, 0)
+            || !CreatePipe(&broker->output_read, &broker->output_write, &sa, 0)) return GetLastError();
+        if (!SetHandleInformation(broker->input_write, HANDLE_FLAG_INHERIT, 0)
+            || !SetHandleInformation(broker->output_read, HANDLE_FLAG_INHERIT, 0)) return GetLastError();
+        set_stage(stage, stage_size, "create WebSocket job");
+        broker->job = CreateJobObjectW(nullptr, nullptr);
+        if (!broker->job) return GetLastError();
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        limits.ProcessMemoryLimit = 256ull * 1024 * 1024;
+        limits.JobMemoryLimit = 256ull * 1024 * 1024;
+        if (!SetInformationJobObject(broker->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return GetLastError();
+        JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};ui.UIRestrictionsClass = JOB_OBJECT_UILIMIT_ALL;
+        if (!SetInformationJobObject(broker->job, JobObjectBasicUIRestrictions, &ui, sizeof(ui))) return GetLastError();
+        AttributeList attributes;
+        set_stage(stage, stage_size, "set WebSocket process attributes");
+        if (!attributes.initialize(3)) return GetLastError();
+        HANDLE inherited[] = {broker->input_read, broker->output_write};
+        DWORD no_children = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+        DWORD64 mitigation = PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
+        if (!attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited))
+            || !attributes.set(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &no_children, sizeof(no_children))
+            || !attributes.set(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation, sizeof(mitigation))) return GetLastError();
+        wchar_t system_dir[MAX_PATH + 1], windows_dir[MAX_PATH + 1];
+        UINT system_len = GetSystemDirectoryW(system_dir, MAX_PATH + 1);
+        UINT windows_len = GetWindowsDirectoryW(windows_dir, MAX_PATH + 1);
+        if (!system_len || system_len > MAX_PATH || !windows_len || windows_len > MAX_PATH) return ERROR_INSUFFICIENT_BUFFER;
+        std::wstring environment = L"SystemRoot=";environment += windows_dir;environment.push_back(L'\0');environment.push_back(L'\0');
+        std::wstring command = L"\"";command += exe;command += L"\" --websocket-broker";
+        STARTUPINFOEXW startup{};startup.StartupInfo.cb = sizeof(startup);startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = broker->input_read;startup.StartupInfo.hStdOutput = broker->output_write;
+        startup.StartupInfo.hStdError = nullptr;startup.lpAttributeList = attributes.list;
+        PROCESS_INFORMATION process{};
+        set_stage(stage, stage_size, "create WebSocket process");
+        if (!CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT,
+            environment.data(), system_dir, &startup.StartupInfo, &process)) return GetLastError();
+        broker->process = process.hProcess;broker->thread = process.hThread;
+        close_handle(broker->input_read);close_handle(broker->output_write);
+        set_stage(stage, stage_size, "verify WebSocket mitigations");
+        if (DWORD error = verify_mitigations(broker->process)) return error;
+        set_stage(stage, stage_size, "assign WebSocket job");
+        if (!AssignProcessToJobObject(broker->job, broker->process)) return GetLastError();
+        BOOL in_job = FALSE;
+        if (!IsProcessInJob(broker->process, broker->job, &in_job)) return GetLastError();
+        if (!in_job) return ERROR_ACCESS_DENIED;
+        set_stage(stage, stage_size, "start WebSocket process");
+        if (ResumeThread(broker->thread) == static_cast<DWORD>(-1)) return GetLastError();
+        close_handle(broker->thread);
+        handles->input = broker->input_write;handles->output = broker->output_read;
+        broker->input_write = nullptr;broker->output_read = nullptr;
+        handles->sandbox = broker.release();set_stage(stage, stage_size, "");return ERROR_SUCCESS;
+    } catch (const std::bad_alloc&) { return ERROR_NOT_ENOUGH_MEMORY; }
+      catch (...) { return ERROR_UNHANDLED_EXCEPTION; }
+}
+
+extern "C" DWORD emu_websocket_job_verify()
+{
+    BOOL in_job = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &in_job) || !in_job) return ERROR_ACCESS_DENIED;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    if (!QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &limits, sizeof(limits), nullptr)) return GetLastError();
+    constexpr DWORD required = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+    if ((limits.BasicLimitInformation.LimitFlags & required) != required || limits.BasicLimitInformation.ActiveProcessLimit != 1
+        || limits.ProcessMemoryLimit > 256ull * 1024 * 1024 || limits.JobMemoryLimit > 256ull * 1024 * 1024)
+        return ERROR_ACCESS_DENIED;
+    if (DWORD error = verify_mitigations(GetCurrentProcess())) return error;
+    JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};
+    if (!QueryInformationJobObject(nullptr, JobObjectBasicUIRestrictions, &ui, sizeof(ui), nullptr)) return GetLastError();
+    if ((ui.UIRestrictionsClass & JOB_OBJECT_UILIMIT_ALL) != JOB_OBJECT_UILIMIT_ALL) return ERROR_ACCESS_DENIED;
+    return ERROR_SUCCESS;
+}
 #endif

@@ -1,6 +1,75 @@
 use mlua::{Function, Lua, Result, Table, ffi, chunk::Compiler};
 use sha2::{Digest, Sha384};
 
+// Private registry keys are host addresses, so their names never enter the
+// Luau heap. The slots are shared as identifiers, not as registry values.
+static PRIVATE_REGISTRY_KEYS: [u8; 19] = [0; 19];
+fn private_registry_key(name:&[u8])->Option<*const std::ffi::c_void>{
+    let index=match name {
+        b"emulator.internal"=>0,
+        b"emulator.inspector.values"=>1, b"emulator.inspector.scan"=>2,
+        b"emulator.inspector.viewer.metatable"=>3,
+        b"emulator.drawing.methods"=>4,
+        b"emulator.native.instances"=>5, b"emulator.native.instance.methods"=>6,
+        b"emulator.native.environments"=>7, b"emulator.native.environment.owners"=>8,
+        b"emulator.native.script.threads"=>9, b"emulator.native.base.environment"=>10,
+        b"emulator.memory.default.environments"=>11, b"emulator.memory.default.threads"=>12,
+        b"emulator.signal.metatable"=>13, b"emulator.connection.metatable"=>14,
+        b"emulator.connectionview.metatable"=>15, b"emulator.scheduler.tostring"=>16,
+        b"emulator.inspector.objects"=>17, b"emulator.executor.unsupported"=>18,
+        _=>return None,
+    };
+    Some((&PRIVATE_REGISTRY_KEYS[index] as *const u8).cast())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn emu_private_registry_key(name:*const std::ffi::c_char)->*const std::ffi::c_void{
+    if name.is_null(){return std::ptr::null()}
+    private_registry_key(unsafe{std::ffi::CStr::from_ptr(name)}.to_bytes()).unwrap_or(std::ptr::null())
+}
+
+pub(crate) fn private_registry_value<T:mlua::FromLua>(lua:&Lua,name:&str)->Result<T>{
+    let key=private_registry_key(name.as_bytes()).ok_or_else(||mlua::Error::runtime("Unknown private registry key"))?;
+    unsafe {lua.exec_raw((),|state|{ffi::lua_rawgetp(state,ffi::LUA_REGISTRYINDEX,key);})}
+}
+pub(crate) fn set_private_registry_value<T:mlua::IntoLua>(lua:&Lua,name:&str,value:T)->Result<()>{
+    let key=private_registry_key(name.as_bytes()).ok_or_else(||mlua::Error::runtime("Unknown private registry key"))?;
+    unsafe {lua.exec_raw(value,|state|{ffi::lua_rawsetp(state,ffi::LUA_REGISTRYINDEX,key);})}
+}
+
+pub(crate) unsafe fn raw_private_registry_get(state:*mut ffi::lua_State,name:&std::ffi::CStr){
+    let key=private_registry_key(name.to_bytes()).unwrap_or(std::ptr::null());
+    if key.is_null(){unsafe{ffi::luaL_error(state,c"Unknown private registry key".as_ptr())}}
+    unsafe{ffi::lua_rawgetp(state,ffi::LUA_REGISTRYINDEX,key);}
+}
+pub(crate) unsafe fn raw_private_registry_set(state:*mut ffi::lua_State,name:&std::ffi::CStr){
+    let key=private_registry_key(name.to_bytes()).unwrap_or(std::ptr::null());
+    if key.is_null(){unsafe{ffi::luaL_error(state,c"Unknown private registry key".as_ptr())}}
+    unsafe{ffi::lua_rawsetp(state,ffi::LUA_REGISTRYINDEX,key);}
+}
+
+pub(crate) fn register_gc_viewer_objects(lua:&Lua,viewer:&mlua::AnyUserData)->Result<()>{
+    let objects:Option<Table>=private_registry_value(lua,"emulator.inspector.objects")?;
+    let objects=match objects {
+        Some(objects)=>objects,
+        None=>{
+            let objects=lua.create_table()?;let meta=lua.create_table()?;
+            meta.raw_set("__mode","k")?;objects.set_metatable(Some(meta))?;
+            set_private_registry_value(lua,"emulator.inspector.objects",objects.clone())?;objects
+        },
+    };
+    unsafe {lua.exec_raw::<()>((viewer.clone(),objects),|state|emu_inspector_mark_objects(state))}
+}
+
+// Capability descriptions are host diagnostics, not part of the Lua heap.
+#[derive(Clone,Default)]
+pub(crate) struct Capabilities(std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String,&'static str>>>);
+impl Capabilities {
+    pub(crate) fn set(&self,name:impl Into<String>,description:&'static str)->Result<()>{
+        self.0.borrow_mut().insert(name.into(),description);Ok(())
+    }
+}
+
 pub(crate) fn random_bytes(bytes:&mut [u8])->std::io::Result<()> {
     #[cfg(windows)] {
         #[link(name="bcrypt")]
@@ -14,6 +83,7 @@ pub(crate) fn random_bytes(bytes:&mut [u8])->std::io::Result<()> {
 }
 
 unsafe extern "C-unwind" {
+    fn emu_inspector_mark_objects(state: *mut ffi::lua_State);
     fn emu_set_executor_profile(state: *mut ffi::lua_State, profile: std::ffi::c_int);
     fn emu_getgc(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_inspectgc(state: *mut ffi::lua_State) -> std::ffi::c_int;
@@ -88,9 +158,23 @@ struct ExecutorProfile(i32);
 pub(crate) fn is_macsploit_7444(lua: &Lua) -> bool {
     lua.app_data_ref::<ExecutorProfile>().is_some_and(|profile| profile.0 == 2)
 }
+pub(crate) fn loadfile_returns_error_tuple(lua: &Lua) -> bool {
+    lua.app_data_ref::<ExecutorProfile>().is_some_and(|profile| matches!(profile.0, 2 | 3))
+}
+pub(crate) fn is_unc_profile(lua: &Lua) -> bool {
+    lua.app_data_ref::<ExecutorProfile>().is_some_and(|profile| profile.0 == 3)
+}
+pub(crate) fn executor_compiler(lua: &Lua) -> Compiler {
+    let compiler=Compiler::new().set_mutable_globals(["_G", "shared", "script"]);
+    if is_unc_profile(lua) {
+        compiler.set_debug_level(2)
+    } else {
+        compiler
+    }
+}
 pub fn set_executor_profile(lua: &Lua, name: &str) -> Result<()> {
-    let profile=match name {"generic"=>0,"macsploit-744.2"=>1,"macsploit-744.4"=>2,_=>return Err(mlua::Error::runtime("Unknown executor profile"))};
-    unsafe {lua.exec_raw::<()>((),|state|emu_set_executor_profile(state,profile))?;}
+    let (profile,native)=match name {"generic"=>(0,0),"macsploit-744.2"=>(1,1),"macsploit-744.4"=>(2,2),"unc"=>(3,0),_=>return Err(mlua::Error::runtime("Unknown executor profile"))};
+    unsafe {lua.exec_raw::<()>((),|state|emu_set_executor_profile(state,native))?;}
     lua.set_app_data(ExecutorProfile(profile));
     Ok(())
 }
@@ -206,7 +290,8 @@ pub fn install(lua: &Lua) -> Result<()> {
         let closure: Function = unsafe {
             lua.exec_raw((), |state| ffi::lua_pushcfunctiond(state, function, debug_name.as_ptr()))?
         };
-        lua.globals().set(name, closure)?;
+        if name.starts_with("__") {crate::set_internal(lua,name,closure)?;}
+        else {lua.globals().set(name,closure)?;}
     }
     Ok(())
 }

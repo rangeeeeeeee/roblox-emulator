@@ -67,6 +67,7 @@ fn execute(session: &mut Option<Session>, request: &Value) -> Result<Value,Strin
         "snapshot" => Ok(Value::Null),
         "trace" => done(session.set_trace_errors(request.get("enabled").and_then(Value::as_bool).ok_or("Missing enabled")?)),
         "execute" => session.execute_input(string(request,"realm")?,string(request,"context")?,string(request,"source")?,string(request,"format")?).map_err(|error|error.to_string()),
+        "gc_create" => done(session.create_gc_viewer(string(request,"realm")?)),
         "input" => done(session.keyboard_input(string(request,"realm")?,string(request,"key")?,request.get("down").and_then(Value::as_bool).ok_or("Missing down")?)),
         "advance" => done(session.advance(request.get("seconds").and_then(Value::as_f64).ok_or("Missing seconds")?).map(|_|())),
         "completions" => {
@@ -76,10 +77,12 @@ fn execute(session: &mut Option<Session>, request: &Value) -> Result<Value,Strin
         "workspace_list" => session.workspace_files(string(request,"realm")?).map_err(|error|error.to_string()),
         "workspace_read" => session.workspace_file(string(request,"realm")?,string(request,"name")?).map_err(|error|error.to_string()),
         "inspect" => session.inspect(request.get("body").ok_or("Missing body")?).map_err(|error|error.to_string()),
+        "runtime_update" => session.runtime_update(request.get("body").ok_or("Missing body")?,request.get("running").and_then(Value::as_bool).ok_or("Missing running state")?).map_err(|error|error.to_string()),
         "budget" => done(session.set_cpu_budget(request.get("cpuMs").and_then(Value::as_u64).ok_or("Missing cpuMs")?)),
         "clear" => {session.clear_output();Ok(Value::Null)},
         "network_decide" => done(session.network_decide(string(request,"id")?,request.get("allow").and_then(Value::as_bool).ok_or("Missing allow")?)),
         "network_complete" => done(session.network_complete_external(string(request,"id")?,request.get("response").cloned().ok_or("Missing response")?)),
+        "websocket_event" => done(session.websocket_event_external(string(request,"id")?,request.get("event").cloned().ok_or("Missing event")?)),
         _ => Err("Unknown worker operation".into()),
     }
 }
@@ -95,11 +98,11 @@ pub(crate) fn run() -> io::Result<()> {
         let result=execute(&mut session,&request);
         let (ok,value)=match result {Ok(value)=>(true,value),Err(error)=>(false,Value::String(error.chars().take(4096).collect()))};
         let compact=matches!(request.get("op").and_then(Value::as_str),Some("advance"|"lint"));
-        let (state,pending)=match session.as_ref() {
-            Some(session)=>(if compact {Value::Null} else {session.snapshot().map_err(|error|io::Error::other(error.to_string()))?},session.network_pending()),
-            None=>(Value::Null,None),
+        let (state,pending,socket_actions)=match session.as_ref() {
+            Some(session)=>(if compact {Value::Null} else {session.snapshot().map_err(|error|io::Error::other(error.to_string()))?},session.network_pending(),session.websocket_actions()),
+            None=>(Value::Null,None,Vec::new()),
         };
-        write_frame(&mut output,&json!({"nonce":nonce,"ok":ok,"value":value,"state":state,"pending":pending}))?;
+        write_frame(&mut output,&json!({"nonce":nonce,"ok":ok,"value":value,"state":state,"pending":pending,"socketActions":socket_actions}))?;
     }
     Ok(())
 }

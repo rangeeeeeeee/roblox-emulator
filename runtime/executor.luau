@@ -4,23 +4,7 @@ local executorEnvironment = setmetatable({}, { __index = gameEnvironment })
 local files, folders, clipboard = {}, { [""] = true }, ""
 local byteLimit = config.virtualFileBytes or 1048576
 local fileLimit = config.virtualFileCount or 256
-local capabilities = {
-    scheduler = "approximate: virtual ticks and configured immediate/deferred signals",
-    actorParallelism = "approximate: isolated VM and phase rules; cooperative host scheduling",
-    gc = "native Luau garbage collector",
-    getgenv = "implemented: executor environment within this realm",
-    getrenv = "implemented: game global environment within this realm",
-    checkcaller = "approximate: originating scheduled task and signal connection",
-    getconnections = "implemented: same-VM emulator signals",
-    filesystem = "virtual: memory only, bounded bytes and file count",
-    clipboard = "virtual: memory only",
-    getgc = "unsupported",
-    hookfunction = "unsupported",
-    hookmetamethod = "unsupported",
-    newcclosure = "unsupported",
-    request = "unsupported: no external network",
-}
-__emu = { capabilities = capabilities, executorEnvironment = executorEnvironment, unsupported = {} }
+__emu = { executorEnvironment = executorEnvironment, unsupported = {} }
 
 local function unavailable(name)
     return function(...)
@@ -146,7 +130,6 @@ for _, name in {
     "firetouchinterest", "fireclickdetector", "fireproximityprompt", "setfpscap", "getfpscap", "shutdown",
 } do
     api[name] = unavailable(name)
-    if not capabilities[name] then capabilities[name] = "unsupported" end
 end
 
 api.loadstring = function(source, name)
@@ -160,16 +143,10 @@ if __host_getgc then
     api.getgc = __host_getgc
     api.iscclosure = __host_iscclosure
     api.islclosure = __host_islclosure
-    capabilities.getgc = "native: Luau740 same-VM non-dead functions/userdata and optional tables"
-    capabilities.iscclosure = "native Luau closure classification"
-    capabilities.islclosure = "native Luau closure classification"
     api.debug = table.clone(gameEnvironment.debug)
     api.debug.getupvalue = __host_getupvalue
     api.debug.getupvalues = __host_getupvalues
     api.debug.setupvalue = __host_setupvalue
-    capabilities["debug.getupvalue"] = "native: Lua closure upvalues"
-    capabilities["debug.getupvalues"] = "native: Lua closure upvalues"
-    capabilities["debug.setupvalue"] = "native: Lua closure upvalues"
 end
 executorEnvironment._G = executorEnvironment
 executorEnvironment.shared = {}

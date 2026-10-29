@@ -11,6 +11,7 @@ unsafe extern "C" {
     fn emu_sandbox_spawn(exe: *const u16, profile: *const u16, handles: *mut Handles, stage: *mut c_char, stage_size: usize) -> u32;
     fn emu_sandbox_close(sandbox: *mut c_void);
     fn emu_sandbox_verify_current(stage: *mut c_char, stage_size: usize) -> u32;
+    fn emu_websocket_spawn(exe: *const u16, handles: *mut Handles, stage: *mut c_char, stage_size: usize) -> u32;
 }
 
 pub(crate) struct WorkerProcess {
@@ -55,4 +56,18 @@ pub(crate) fn verify_worker_security() -> io::Result<()> {
     let mut stage = [0 as c_char; 128];
     let code = unsafe { emu_sandbox_verify_current(stage.as_mut_ptr(), stage.len()) };
     checked_error(code, &stage)
+}
+
+pub(crate) fn spawn_websocket_broker() -> io::Result<WorkerProcess> {
+    let executable=std::env::current_exe()?;
+    let exe:Vec<u16>=executable.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut handles=Handles{sandbox:ptr::null_mut(),input:ptr::null_mut(),output:ptr::null_mut()};
+    let mut stage=[0 as c_char;128];
+    let code=unsafe{emu_websocket_spawn(exe.as_ptr(),&mut handles,stage.as_mut_ptr(),stage.len())};
+    checked_error(code,&stage)?;
+    if handles.sandbox.is_null()||handles.input.is_null()||handles.output.is_null(){
+        if !handles.sandbox.is_null(){unsafe{emu_sandbox_close(handles.sandbox);}}
+        return Err(io::Error::other("WebSocket broker returned invalid handles"));
+    }
+    Ok(WorkerProcess{stdin:unsafe{File::from_raw_handle(handles.input)},stdout:unsafe{File::from_raw_handle(handles.output)},sandbox:handles.sandbox})
 }

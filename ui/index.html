@@ -302,7 +302,7 @@
       <label for="budgetSelect">Execution limit</label>
       <select id="budgetSelect" title="Continuous execution limit. It interrupts long-running code; it does not fix loops or cyclic tables." disabled><option value="">—</option></select>
       <label for="profileSelect">Reset profile</label>
-      <select id="profileSelect"><option value="generic">generic</option><option value="macsploit-744.2">macsploit-744.2</option><option value="macsploit-744.4">macsploit-744.4</option></select>
+      <select id="profileSelect"><option value="generic">generic (sUNC loadfile)</option><option value="unc">unc (UNC loadfile)</option><option value="macsploit-744.2">macsploit-744.2</option><option value="macsploit-744.4">macsploit-744.4</option></select>
       <button id="resetButton" class="danger" type="button" disabled>Reset VMs…</button>
     </div>
   </section>
@@ -528,7 +528,7 @@
     const NIL_PARENT = Symbol('nil instances'), NIL_COLLAPSED = Symbol('nil collapsed');
     let gcView = null, gcSerial = 0, gcSearchTimer = null;
     let place = null, placeView = false, placeSelection = '', placeDirty = false, placeEpoch = 0, placeRequestSerial = 0, placeImportError = '', placeAutosaveError = '', placeHasRecovery = false, profileChosenByUser = false;
-    let placeInsertParent = null;
+    let placeInsertParent = null, placeInsertObjectId = '', explorerSelected = null;
     let activeScriptId = null, activeRuntimeKey = null, switchingDocument = false, displayedNetworkId = null;
     let scriptAutosaveTimer = null, scriptAutosaveBlocked = false, savingScripts = false, replacingPlace = false;
     const scriptDocs = new Map(), runtimeDocs = new Map(), placeExpanded = new Set();
@@ -544,7 +544,7 @@
     for (const [id, name] of [['showTimestamp', 'show-timestamp'], ['showContext', 'show-context'], ['showSource', 'show-source']]) {
       $('logList').classList.toggle(name, $(id).checked);
     }
-    if (['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(stored.profile)) $('profileSelect').value = stored.profile;
+    if (['generic', 'unc', 'macsploit-744.2', 'macsploit-744.4'].includes(stored.profile)) $('profileSelect').value = stored.profile;
     const editor = EmulatorEditor.createEditor($('source'), {
       doc: drafts[mode], context: mode, format: formats[mode], getToken: () => token, getRealm: editorRealm,
       getPlaceCompletions: placeCompletions, getSourceLimit: () => activeRuntimeKey ? RUNTIME_SOURCE_LIMIT : activeScriptId ? PLACE_SOURCE_LIMIT : EmulatorEditor.MAX_SOURCE_BYTES, onChange: editChanged, onCursor: cursor,
@@ -653,9 +653,10 @@
       $('budgetSelect').disabled = !available || !Number.isFinite(state?.limits?.cpuMs);
       $('refreshExplorer').disabled = !available || !$('realmSelect').value;
       for (const id of ['placeNew', 'placeSave', 'placeLoad', 'placeRecover']) $(id).disabled = !available || (id === 'placeSave' && !place);
-      const selected = place?.nodes?.find(node => node.id === placeSelection);
-      $('placeCreate').disabled = !available || !selected;
-      for (const id of ['placeRename', 'placeMove', 'placeDuplicate', 'placeDelete']) $(id).disabled = !available || !selected || selected.builtin;
+      const selected = placeView ? place?.nodes?.find(node => node.id === placeSelection) : explorerSelected;
+      const runtimeUnavailable = !placeView && (!!state?.stopped || !explorerOrigin?.inspectorId);
+      $('placeCreate').disabled = !available || !selected || runtimeUnavailable;
+      for (const id of ['placeRename', 'placeMove', 'placeDuplicate', 'placeDelete']) $(id).disabled = !available || !selected || selected.builtin || selected.locked || runtimeUnavailable;
       $('placeClass').disabled = !available;
       for (const input of $('instanceProperties').querySelectorAll('[data-place-property]')) input.disabled = !available || input.dataset.placeProperty === 'locked';
       $('inputFormat').disabled = !!(activeScriptId || activeRuntimeKey);
@@ -820,6 +821,9 @@
       if (!pending) { if (dialog.open) dialog.close(); displayedNetworkId = null; $('networkError').hidden = true; return; }
       if (pending.id !== displayedNetworkId) {
         displayedNetworkId = pending.id; $('networkError').hidden = true;
+        $('networkIntro').textContent = pending.api === 'executor.websocket'
+          ? 'All VMs are paused. Allowing opens a persistent connection; subsequent messages use it without separate approval prompts.'
+          : 'All VMs are paused. Review this request before allowing or denying it.';
         $('networkUrl').textContent = String(pending.method || '') + ' ' + String(pending.url || '');
         $('networkOrigin').textContent = [pending.realm, pending.context, pending.api].filter(value => typeof value === 'string' && value).join(' · ');
         $('networkHeaders').textContent = pending.headers && typeof pending.headers === 'object' ? JSON.stringify(pending.headers, null, 2) : String(pending.headers || '(none)');
@@ -967,7 +971,7 @@
     }
     function setPlace(value, replace = false) {
       if (!value || !Array.isArray(value.nodes) || typeof value.name !== 'string') throw new Error('Invalid test place response.');
-      if (!place && !profileChosenByUser && ['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(value.profile)) $('profileSelect').value = value.profile;
+      if (!place && !profileChosenByUser && ['generic', 'unc', 'macsploit-744.2', 'macsploit-744.4'].includes(value.profile)) $('profileSelect').value = value.profile;
       if (replace) {
         closePlaceInsert();
         showConsole(); for (const id of scriptDocs.keys()) editor.forgetDocument('place:' + placeEpoch + ':' + id);
@@ -1011,7 +1015,7 @@
       return names.reverse().join(' / ');
     }
     function closePlaceInsert() {
-      $('placeInsertMenu').hidden = true; placeInsertParent = null;
+      $('placeInsertMenu').hidden = true; placeInsertParent = null; placeInsertObjectId = '';
     }
     function renderPlaceInsertList() {
       const list = $('placeInsertList'), query = $('placeInsertSearch').value.trim().toLowerCase();
@@ -1033,7 +1037,8 @@
           const button = element('button', 'insert-item'); button.type = 'button';
           button.append(treeIcon(className), element('span', '', className));
           button.addEventListener('click', () => {
-            const parent = placeInsertParent; closePlaceInsert();
+            const parent = placeInsertParent, objectId = placeInsertObjectId, runtime = !placeView; closePlaceInsert();
+            if (runtime) { if (parent && objectId) runtimeAction({action: 'create', parent, parentObjectId: objectId, class: className, name: className}); return; }
             if (!parent || !place?.nodes?.some(node => node.id === parent)) return;
             placeAction('Creating instance…', async () => {
               const result = await updatePlace({action: 'create', parent, class: className, name: className});
@@ -1045,11 +1050,11 @@
       }
       if (!count) list.append(element('div', 'inspection-note', 'No matching objects.'));
     }
-    function openPlaceInsert(parent, anchor) {
-      if (!placeView || !connected || busy || state?.network?.pending) return;
+    function openPlaceInsert(parent, anchor, objectId = '') {
+      if (!connected || busy || (!placeView && state?.stopped) || state?.network?.pending) return;
       const menu = $('placeInsertMenu'), search = $('placeInsertSearch');
       if (!menu.hidden && placeInsertParent === parent) { closePlaceInsert(); return; }
-      placeInsertParent = parent; search.value = ''; menu.hidden = false; renderPlaceInsertList();
+      placeInsertParent = parent; placeInsertObjectId = objectId; search.value = ''; menu.hidden = false; renderPlaceInsertList();
       const rect = anchor.getBoundingClientRect();
       menu.style.left = Math.max(6, Math.min(window.innerWidth - menu.offsetWidth - 6, rect.right - menu.offsetWidth)) + 'px';
       menu.style.top = Math.max(6, Math.min(window.innerHeight - menu.offsetHeight - 6, rect.bottom)) + 'px';
@@ -1186,9 +1191,10 @@
     function setExplorerPlace(value) {
       if (!value) closePlaceInsert();
       placeView = value; setPlaceImportError(placeImportError); $('runtimeExplorer').setAttribute('aria-pressed', String(!value)); $('placeExplorer').setAttribute('aria-pressed', String(value));
-      $('placeToolbar').hidden = !value; $('placeTree').hidden = !value; $('explorerTree').hidden = value;
+      $('placeToolbar').hidden = false; $('placeSearch').hidden = !value; $('placeTree').hidden = !value; $('explorerTree').hidden = value;
       if (value) { ++propertySerial; ++explorerEpoch; renderPlaceTree(); refreshPlace(); }
       else { $('explorerContext').textContent = explorerOrigin?.realm ? titles[explorerOrigin.context] + ' · ' + explorerOrigin.realm : 'Select a VM.'; refreshExplorer(); }
+      updateActions();
     }
     async function updatePlace(body) {
       ++placeRequestSerial;
@@ -1239,6 +1245,27 @@
       catch (error) { showError(error.message); status('Request failed'); if (placeView) renderPlaceTree(); else renderTargets(); }
       finally { busy = false; updateActions(); if (!scriptAutosaveBlocked && hasPendingPlaceAutosave()) scheduleScriptAutosave(placeAutosaveError ? 5000 : 700); }
     }
+    async function runtimeAction(body) {
+      const origin = explorerOrigin && {...explorerOrigin};
+      if (busy || !connected || state?.stopped || state?.network?.pending || !origin?.inspectorId) return;
+      busy = true; apiError = ''; renderError(); updateActions(); status('Updating runtime…');
+      try {
+        const payload = await request('runtime/update', {...body, realm: origin.realm, context: origin.context, inspectorId: origin.inspectorId});
+        if (!sameOrigin(origin, explorerOrigin) || origin.inspectorId !== explorerOrigin.inspectorId) return;
+        const item = payload.result;
+        if (body.parent && body.parentObjectId) explorerExpanded.add(JSON.stringify([body.parent, body.parentObjectId]));
+        if (body.action === 'delete') {
+          explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null;
+          propertiesTitle(); $('instanceProperties').replaceChildren(element('span', 'value-note', 'Select an instance to inspect its properties.'));
+        } else if (item?.id && item?.objectId) {
+          explorerSelection = item.id; explorerSelectionObjectId = item.objectId; explorerSelected = item;
+        }
+        ++explorerRevision; await refreshExplorer();
+        status(body.action === 'create' && ['Script', 'LocalScript'].includes(body.class)
+          ? 'Created a runtime script. Newly created scripts do not start automatically.' : 'Runtime updated');
+      } catch (error) { showError(error.message); status('Runtime update failed'); }
+      finally { busy = false; updateActions(); }
+    }
     async function withPlaceReplacement(callback) {
       replacingPlace = true; editor.setReadOnly(true);
       try { return await callback(); }
@@ -1287,6 +1314,22 @@
         const choices = place.nodes.filter(node => !invalid.has(node.id)).map(node => [node.id, placePath(node.id)]).sort((a, b) => a[1].localeCompare(b[1]));
         setOptions($('moveParent'), choices, place.nodes.find(node => node.id === placeSelection)?.parent || '');
         function done() { dialog.removeEventListener('close', done); resolve(dialog.returnValue === 'ok' ? $('moveParent').value : null); }
+        dialog.addEventListener('close', done); dialog.returnValue = ''; dialog.showModal();
+      });
+    }
+    function askRuntimeMoveParent() {
+      return new Promise(resolve => {
+        const dialog = $('moveDialog');
+        const rows = [...$('explorerTree').querySelectorAll('.tree-row[data-instance]')]
+          .filter(row => row.dataset.instance !== explorerSelection && row.dataset.objectId);
+        const choices = [['__nil__', 'Nil Instances'], ...rows.map(row => [row.dataset.objectId, row.dataset.name + ' · ' + row.dataset.class])];
+        setOptions($('moveParent'), choices, '');
+        function done() {
+          dialog.removeEventListener('close', done);
+          const value = dialog.returnValue === 'ok' ? $('moveParent').value : '';
+          const row = rows.find(row => row.dataset.objectId === value);
+          resolve(value === '__nil__' ? {id:null,objectId:null} : row ? {id: row.dataset.instance, objectId: row.dataset.objectId} : null);
+        }
         dialog.addEventListener('close', done); dialog.returnValue = ''; dialog.showModal();
       });
     }
@@ -1493,14 +1536,14 @@
     }
     function resetInspections() {
       ++inspectionGeneration; ++explorerEpoch; ++propertySerial;
-      explorerOrigin = null; explorerSelection = ''; explorerSelectionObjectId = ''; explorerExpanded.clear(); explorerLoadedOffsets.clear(); viewerSeen.clear(); hideGc(); closeRuntimeDocuments();
+      explorerOrigin = null; explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null; explorerExpanded.clear(); explorerLoadedOffsets.clear(); viewerSeen.clear(); hideGc(); closeRuntimeDocuments();
       rows.clear(); expanded.clear(); $('logList').replaceChildren();
     }
     function syncInspectorTarget() {
       const origin = {realm: $('realmSelect').value, context: mode, generation: inspectionGeneration};
       const changed = !sameOrigin(origin, explorerOrigin);
       if (changed) {
-        explorerOrigin = origin; explorerSelection = ''; explorerSelectionObjectId = ''; explorerExpanded.clear(); explorerLoadedOffsets.clear(); hideGc();
+        explorerOrigin = origin; explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null; explorerExpanded.clear(); explorerLoadedOffsets.clear(); hideGc();
         if (!placeView) {
           $('explorerContext').textContent = origin.realm ? titles[origin.context] + ' · ' + origin.realm : 'Select a VM.';
           $('explorerTree').replaceChildren(); propertiesTitle();
@@ -1511,7 +1554,7 @@
       syncGcViewers(changed);
     }
     function autoExplorerAvailable(generation = explorerAutoGeneration) {
-      return generation === explorerAutoGeneration && $('explorerAutoRefresh').checked && connected && !busy && !state?.network?.pending && !document.hidden && !explorerSourcePending;
+      return generation === explorerAutoGeneration && $('explorerAutoRefresh').checked && connected && !busy && !state?.network?.pending && !document.hidden && !explorerSourcePending && !$('instanceProperties').contains(document.activeElement);
     }
     function configureExplorerAuto() {
       ++explorerAutoGeneration; clearInterval(explorerAutoTimer); explorerAutoTimer = null;
@@ -1561,6 +1604,15 @@
       const toggle = element('button', 'tree-toggle', open ? '▾' : '▸'); toggle.type = 'button';
       const label = element('button', 'tree-name'); label.type = 'button';
       label.append(treeIcon('Folder'), element('span', 'tree-label', 'Nil Instances'));
+      const dragType = 'application/x-emulator-runtime-instance';
+      row.addEventListener('dragover', event => { if (event.dataTransfer.types.includes(dragType)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+      row.addEventListener('drop', event => {
+        event.preventDefault(); event.stopPropagation();
+        let source; try { source = JSON.parse(event.dataTransfer.getData(dragType)); } catch { return; }
+        if (!sameOrigin(source, explorerOrigin) || source.inspectorId !== explorerOrigin.inspectorId || !source.id || !source.objectId) return;
+        explorerExpanded.delete(NIL_COLLAPSED);
+        runtimeAction({action:'reparent', id:source.id, objectId:source.objectId, parent:null});
+      });
       const children = element('div', 'tree-children'); children.hidden = !open; children.setAttribute('role', 'group');
       const setExpanded = expanded => {
         if (expanded) explorerExpanded.delete(NIL_COLLAPSED); else explorerExpanded.add(NIL_COLLAPSED);
@@ -1603,7 +1655,7 @@
         note.remove();
         if (page.unavailable) { container.append(element('div', 'inspection-note', 'This instance is no longer available.')); return true; }
         if (typeof page.inspectorId === 'string') {
-          if (origin.inspectorId && origin.inspectorId !== page.inspectorId) { explorerSelection = ''; explorerSelectionObjectId = ''; explorerExpanded.clear(); explorerLoadedOffsets.clear(); closeRuntimeDocuments(); }
+          if (origin.inspectorId && origin.inspectorId !== page.inspectorId) { explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null; explorerExpanded.clear(); explorerLoadedOffsets.clear(); closeRuntimeDocuments(); }
           origin.inspectorId = page.inspectorId;
         }
         if (!automatic) {
@@ -1614,6 +1666,7 @@
           const branch = element('div', 'tree-branch'); branch.setAttribute('role', 'treeitem');
           branch.setAttribute('aria-selected', String(explorerSelection === item.id));
           const row = element('div', 'tree-row'); row.dataset.instance = item.id; row.dataset.objectId = typeof item.objectId === 'string' ? item.objectId : '';
+          row.dataset.name = item.name; row.dataset.class = item.class; row.dataset.locked = String(!!item.locked);
           row.dataset.selected = String(explorerSelection === item.id && (!explorerSelectionObjectId || row.dataset.objectId === explorerSelectionObjectId));
           const toggle = element('button', 'tree-toggle', item.hasChildren ? '▸' : ''); toggle.type = 'button';
           toggle.disabled = !item.hasChildren; toggle.setAttribute('aria-label', 'Expand ' + item.name);
@@ -1638,6 +1691,26 @@
           if (item.hasChildren) branch.setAttribute('aria-expanded', 'false');
           toggle.addEventListener('click', () => toggleBranch());
           name.addEventListener('click', () => { lastTreeClickAt = Date.now(); explorerRevision++; selectInstance(item.id, origin, item.objectId); });
+          const dragType = 'application/x-emulator-runtime-instance';
+          row.draggable = !item.locked;
+          row.addEventListener('dragstart', event => {
+            if (busy || state?.stopped || state?.network?.pending || !origin.inspectorId) { event.preventDefault(); return; }
+            event.dataTransfer.setData(dragType, JSON.stringify({id:item.id, objectId:item.objectId, realm:origin.realm, context:origin.context, generation:origin.generation, inspectorId:origin.inspectorId}));
+            event.dataTransfer.effectAllowed = 'move';
+          });
+          row.addEventListener('dragover', event => { if (event.dataTransfer.types.includes(dragType)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+          row.addEventListener('drop', event => {
+            event.preventDefault(); event.stopPropagation();
+            let source; try { source = JSON.parse(event.dataTransfer.getData(dragType)); } catch { return; }
+            if (!sameOrigin(source, explorerOrigin) || source.inspectorId !== explorerOrigin.inspectorId || !source.id || !source.objectId || source.id === item.id) return;
+            runtimeAction({action:'reparent', id:source.id, objectId:source.objectId, parent:item.id, parentObjectId:item.objectId});
+          });
+          const add = element('button', 'tree-add', '+'); add.type = 'button';
+          add.title = 'Insert object'; add.setAttribute('aria-label', 'Insert object into ' + item.name);
+          add.addEventListener('click', event => {
+            event.stopPropagation(); explorerSelection = item.id; explorerSelectionObjectId = item.objectId; explorerSelected = item;
+            updateActions(); openPlaceInsert(item.id, add, item.objectId);
+          });
           if (['Script', 'LocalScript', 'ModuleScript'].includes(item.class)) {
             name.addEventListener('dblclick', () => openRuntimeSource(item, origin, epoch, page.inspectorId));
           }
@@ -1653,7 +1726,7 @@
               visible[visible.indexOf(name) + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
             }
           });
-          row.append(toggle, name); branch.append(row, children); container.append(branch);
+          row.append(toggle, name, add); branch.append(row, children); container.append(branch);
           if (item.hasChildren && explorerExpanded.has(expandedKey)) { const pending = toggleBranch(true, true); if (pending) childLoads.push(pending); }
         }
         if (!items.length && offset === 0) container.append(element('div', 'inspection-note', 'No instances.'));
@@ -1680,18 +1753,48 @@
       try {
         const instance = await request('inspect', {realm: origin.realm, context: origin.context, kind: 'instance', id}, false);
         if (ticket !== propertySerial || !sameOrigin(origin, explorerOrigin) || automatic && !autoExplorerAvailable(generation)) return;
-        if (instance.unavailable) { panel.replaceChildren(element('span', 'value-note', 'This instance is no longer available.')); return; }
+        if (instance.unavailable || (objectId && instance.objectId !== objectId)) { explorerSelected = null; updateActions(); panel.replaceChildren(element('span', 'value-note', 'This instance is no longer available.')); return; }
+        explorerSelected = instance; updateActions();
         propertiesTitle(instance.name, instance.class); panel.replaceChildren();
         const opened = new Set();
         for (const [field, label] of [['properties', 'Data'], ['attributes', 'Attributes']]) {
           panel.append(element('h3', '', label));
-          const entries = Array.isArray(instance[field]) ? instance[field] : [];
+          const entries = Array.isArray(instance[field]) ? [...instance[field]] : [];
+          if (field === 'properties') {
+            const defaults = instance.class === 'Part' ? [['Anchored',false],['CanCollide',true],['CanTouch',true],['CanQuery',true],['Massless',false],['Transparency',0],
+              ['Position',{tag:'Vector3',x:0,y:0,z:0}],['Size',{tag:'Vector3',x:4,y:1.2,z:2}]]
+              : ({StringValue:[['Value','']],BoolValue:[['Value',false]],NumberValue:[['Value',0]],IntValue:[['Value',0]],Script:[['Enabled',true]],LocalScript:[['Enabled',true]]})[instance.class] || [];
+            for (const [name, value] of defaults) if (!entries.some(entry => entry.name === name) && !(name === 'Position' && entries.some(entry => entry.name === 'CFrame'))) entries.push({name, value:{type:value?.tag || typeof value,value}});
+          }
           if (!entries.length) panel.append(element('div', 'value-note', '(none)'));
           entries.forEach((entry, index) => {
             const row = element('div', 'property-row'), value = element('div', 'property-value');
-            if (entry.value?.type === 'boolean') {
-              const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = entry.value.value === true; checkbox.disabled = true; checkbox.setAttribute('aria-label', entry.name + ' (read-only)'); value.append(checkbox);
-            } else value.append(renderValue(entry.value, opened, field + '/' + index, false, origin));
+            const editable = field === 'properties' && !instance.locked && (entry.name === 'Name' || entry.name === 'Archivable'
+              || (['Script','LocalScript'].includes(instance.class) && ['Enabled','Disabled'].includes(entry.name))
+              || (instance.class === 'Part' && ['Anchored','CanCollide','CanTouch','CanQuery','Massless','Transparency','Position','Size'].includes(entry.name))
+              || (['StringValue','BoolValue','NumberValue','IntValue'].includes(instance.class) && entry.name === 'Value'));
+            const preview = entry.value, simple = preview && ['string','boolean','number','Vector3'].includes(preview.type) && !preview.truncated && (preview.encoding === undefined || preview.encoding === 'utf8')
+              && (preview.type !== 'Vector3' || [preview.value?.x,preview.value?.y,preview.value?.z].every(Number.isFinite));
+            if (editable && simple) {
+              const input = document.createElement('input'); input.setAttribute('aria-label', entry.name); input.dataset.placeProperty = 'editable';
+              if (preview.type === 'boolean') { input.type = 'checkbox'; input.checked = preview.value === true; }
+              else { input.type = preview.type === 'number' ? 'number' : 'text'; input.value = preview.type === 'Vector3' ? [preview.value.x,preview.value.y,preview.value.z].join(', ') : String(preview.value); if (input.type === 'number') input.step = 'any'; }
+              if (entry.name === 'Name') input.maxLength = 128;
+              input.addEventListener('change', () => {
+                let next = preview.type === 'boolean' ? input.checked : preview.type === 'number' ? Number(input.value) : input.value;
+                if (preview.type === 'Vector3') {
+                  const parts = input.value.split(',').map(part => Number(part.trim()));
+                  if (parts.length !== 3 || parts.some(part => !Number.isFinite(part))) { showError('Enter three finite numbers separated by commas.'); return; }
+                  next = {tag:'Vector3',x:parts[0],y:parts[1],z:parts[2]};
+                }
+                if (preview.type === 'number' && (!Number.isFinite(next) || (instance.class === 'IntValue' && !Number.isSafeInteger(next)))) { showError('Enter a valid number.'); return; }
+                const action = entry.name === 'Name' ? {action:'rename',name:next} : {action:'property',name:entry.name,value:next};
+                runtimeAction({...action,id:instance.id,objectId:instance.objectId});
+              });
+              value.append(input);
+            } else if (preview?.type === 'boolean') {
+              const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = preview.value === true; checkbox.disabled = true; checkbox.setAttribute('aria-label', entry.name + ' (read-only)'); value.append(checkbox);
+            } else value.append(renderValue(preview, opened, field + '/' + index, false, origin));
             row.append(element('span', 'property-name', entry.name), value); panel.append(row);
           });
         }
@@ -1973,7 +2076,7 @@
       if (viewer) { openGcViewer(viewer, false); return; }
       const realm = $('realmSelect').value;
       if (mode !== 'executor' || !realm || busy || state?.network?.pending) return;
-      mutate('execute', {realm, context: 'executor', source: 'Instance.new("GCViewer")'}, 'Creating GC viewer…', 'GC viewer created');
+      mutate('gc/create', {realm}, 'Creating GC viewer…', 'GC viewer created');
     });
     $('gcViewerSelect').addEventListener('change', () => openGcViewer(eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value), false));
     $('refreshGc').addEventListener('click', () => loadGcPage(true, 0));
@@ -2030,21 +2133,39 @@
       });
     });
     $('placeRename').addEventListener('click', async () => {
+      if (!placeView) {
+        const node = explorerSelected; if (!node || node.locked) return;
+        const name = await askPlaceName('Rename instance', node.name, 'Rename'); if (name === null || name === node.name) return;
+        return runtimeAction({action:'rename',id:node.id,objectId:node.objectId,name});
+      }
       const node = place?.nodes?.find(item => item.id === placeSelection); if (!node || node.builtin) return;
       const name = await askPlaceName('Rename instance', node.name, 'Rename'); if (name === null || name === node.name) return;
       placeAction('Renaming instance…', async () => updatePlace({action: 'rename', id: node.id, name}));
     });
     $('placeMove').addEventListener('click', async () => {
+      if (!placeView) {
+        const node = explorerSelected; if (!node || node.locked) return;
+        const parent = await askRuntimeMoveParent(); if (!parent) return;
+        return runtimeAction({action:'reparent',id:node.id,objectId:node.objectId,parent:parent.id,parentObjectId:parent.objectId});
+      }
       const node = place?.nodes?.find(item => item.id === placeSelection); if (!node || node.builtin) return;
       const parent = await askMoveParent(); if (!parent || parent === node.parent) return;
       placeAction('Moving instance…', async () => { await updatePlace({action: 'reparent', id: node.id, parent}); placeExpanded.add(parent); renderPlaceTree(); });
     });
     $('placeDelete').addEventListener('click', () => {
+      if (!placeView) {
+        const node = explorerSelected; if (!node || node.locked || !confirm('Delete ' + node.name + ' and its descendants from this runtime?')) return;
+        return runtimeAction({action:'delete',id:node.id,objectId:node.objectId});
+      }
       const node = place?.nodes?.find(item => item.id === placeSelection); if (!node || node.builtin) return;
       if (!confirm('Delete ' + node.name + ', its descendants, and their unsaved edits?')) return;
       placeAction('Deleting instance…', async () => { await updatePlace({action: 'delete', id: node.id}); placeSelection = ''; renderPlaceTree(); });
     });
     $('placeDuplicate').addEventListener('click', () => {
+      if (!placeView) {
+        const node = explorerSelected; if (!node || node.locked) return;
+        return runtimeAction({action:'duplicate',id:node.id,objectId:node.objectId});
+      }
       const node=place?.nodes?.find(item=>item.id===placeSelection); if (!node || node.builtin) return;
       placeAction('Duplicating instance…', async () => {
         await commitScripts(true);
@@ -2068,7 +2189,7 @@
       const menu = $('placeInsertMenu');
       if (!menu.hidden && !menu.contains(event.target) && !(event.target instanceof Element && event.target.closest('.tree-add'))) closePlaceInsert();
     });
-    $('placeTree').addEventListener('keydown', event => {
+    for (const tree of [$('placeTree'), $('explorerTree')]) tree.addEventListener('keydown', event => {
       if (event.key === 'F2' && !$('placeRename').disabled) {event.preventDefault();$('placeRename').click();}
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && !$('placeDuplicate').disabled) {event.preventDefault();$('placeDuplicate').click();}
       else if (event.key === 'Delete' && !$('placeDelete').disabled) {event.preventDefault();$('placeDelete').click();}
@@ -2118,7 +2239,7 @@
           if (placeAutosaveError) throw new Error('Cannot open an auto save until the current recovery copy is saved: ' + placeAutosaveError);
           const payload = await request('place/recover', {id}, false);
           placeDirty = true; placeAutosaveError = ''; placeHasRecovery = true; setPlaceImportError(null); setPlace(payload.place, true);
-          if (['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(place.profile)) $('profileSelect').value = place.profile;
+          if (['generic', 'unc', 'macsploit-744.2', 'macsploit-744.4'].includes(place.profile)) $('profileSelect').value = place.profile;
           save(); setExplorerPlace(true); $('recoverDialog').close();
         } catch (error) { $('recoverError').textContent = String(error.message || error); $('recoverError').hidden = false; throw error; }
       });
@@ -2131,20 +2252,20 @@
         let value; try { value = JSON.parse(await file.text()); } catch { throw new Error('Place file is not valid JSON.'); }
         const payload = await request('place/load', {place: value}, false);
         placeDirty = false; placeAutosaveError = ''; placeHasRecovery = false; setPlaceImportError(null); setPlace(payload.place, true);
-        if (['generic', 'macsploit-744.2', 'macsploit-744.4'].includes(place.profile)) $('profileSelect').value = place.profile;
+        if (['generic', 'unc', 'macsploit-744.2', 'macsploit-744.4'].includes(place.profile)) $('profileSelect').value = place.profile;
         save(); setExplorerPlace(true);
       }));
     });
     $('placeRun').addEventListener('click', () => {
       if (state?.usingPlace || $('testMode').value === 'runtime') {
-        mutate('running', {running: true}, 'Resuming runtime…', 'Runtime playing'); return;
+        mutate('running', {running: true}, 'Resuming runtime…', 'Runtime playing').then(() => { if (state?.running) setExplorerPlace(false); }); return;
       }
       if (!place) return;
       placeAction('Starting test place…', async () => {
         await commitScripts(true); await syncPlaceProfile(); await commitScripts(true);
         resetInspections();
         const payload = await request('place/run', {}, true); if (payload.place) setPlace(payload.place);
-        renderTargets();
+        renderTargets(); setExplorerPlace(false);
       });
     });
     $('placeStop').addEventListener('click', () => {
@@ -2153,7 +2274,7 @@
         await commitScripts(true);
         resetInspections();
         await request('place/stop', {}, true);
-        renderTargets();
+        renderTargets(); setExplorerPlace(true);
       });
     });
     for (const [id, key] of [['clientSelect', 'client'], ['actorSelect', 'actor'], ['realmSelect', 'realm']]) $(id).addEventListener('change', () => { choices[mode][key] = $(id).value; editor.refreshCompletions(); renderTargets(); save(); });

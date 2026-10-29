@@ -77,7 +77,7 @@ fn valid_property(class: &str, name: &str, value: &Value) -> bool {
         _ => false,
     }
 }
-fn valid_profile(profile: &str) -> bool { matches!(profile, "generic" | "macsploit-744.2" | "macsploit-744.4") }
+fn valid_profile(profile: &str) -> bool { matches!(profile, "generic" | "unc" | "macsploit-744.2" | "macsploit-744.4") }
 fn valid_name(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(|c| c.is_control())
 }

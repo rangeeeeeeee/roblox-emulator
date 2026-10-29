@@ -2,10 +2,35 @@
 use crate::{Scenario, network::{self, ApprovedRequest}, session::Session as LocalSession, worker};
 use mlua::{Error, Result};
 use serde_json::{Value, json};
-use std::{cell::RefCell, collections::HashSet, io, path::Path, sync::mpsc, time::Duration};
+use std::{cell::RefCell, collections::{HashMap,HashSet}, io, path::Path, sync::mpsc, time::Duration};
 
 const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_IN_FLIGHT: usize = 8;
+const MAX_SOCKETS: usize = 8;
+const MAX_SOCKET_ACTIONS: usize = 32;
+const MAX_SOCKET_MESSAGE: usize = 256 * 1024;
+
+pub(crate) fn validate_socket_actions(value:Option<&Value>,connected:impl Fn(&str)->bool)->std::result::Result<Vec<(String,Value)>,String> {
+    let actions=value.and_then(Value::as_array).ok_or("Invalid WebSocket action list")?;
+    if actions.len()>MAX_SOCKET_ACTIONS{return Err("WebSocket action limit exceeded".into())}
+    let mut result=Vec::with_capacity(actions.len());
+    for action in actions {
+        let id=action.get("id").and_then(Value::as_str).filter(|id|id.len()==32&&id.bytes().all(|byte|byte.is_ascii_hexdigit())).ok_or("Invalid WebSocket action id")?;
+        if !connected(id){return Err("WebSocket is no longer active".into())}
+        let command=match action.get("op").and_then(Value::as_str) {
+            Some("send")=>{
+                let data=action.get("data").and_then(Value::as_str).filter(|data|data.len()<=((MAX_SOCKET_MESSAGE+2)/3)*4).ok_or("Invalid WebSocket data")?;
+                let bytes=base64::decode(data).map_err(|_|"Invalid WebSocket data")?;
+                if bytes.len()>MAX_SOCKET_MESSAGE{return Err("WebSocket message exceeds limit".into())}
+                json!({"op":"send","data":base64::encode(bytes)})
+            },
+            Some("close")=>json!({"op":"close"}),
+            _=>return Err("Invalid WebSocket operation".into()),
+        };
+        result.push((id.to_owned(),command));
+    }
+    Ok(result)
+}
 
 struct RpcWorker {
     process: Option<crate::sandbox_windows::WorkerProcess>,
@@ -92,6 +117,9 @@ struct Live {
     inflight: HashSet<String>,
     sender: mpsc::Sender<(String,Value)>,
     receiver: mpsc::Receiver<(String,Value)>,
+    sockets: HashMap<String,network::HostedWebSocket>,
+    socket_sender: mpsc::SyncSender<(String,Value)>,
+    socket_receiver: mpsc::Receiver<(String,Value)>,
 }
 impl Live {
     fn call(&mut self, request: Value) -> std::result::Result<Value,String> {
@@ -129,6 +157,11 @@ impl Live {
             }
             (None,None)=>{},
         }
+        let actions=validate_socket_actions(reply.get("socketActions"),|id|self.sockets.contains_key(id)&&!self.inflight.contains(id));
+        let actions=match actions {Ok(actions)=>actions,Err(error)=>{self.worker.close();self.sockets.clear();return Err(error)}};
+        for (id,command) in actions {
+            if let Err(error)=self.sockets.get(&id).unwrap().command(command) {self.worker.close();self.sockets.clear();return Err(error)}
+        }
         if let Some(state)=state {self.state=Value::Object(state.clone());}
         if ok {Ok(reply.get("value").cloned().unwrap_or(Value::Null))}
         else {Err(reply.get("value").and_then(Value::as_str).unwrap_or("Sandbox worker operation failed").to_owned())}
@@ -151,7 +184,8 @@ impl Session {
         let trace=scenario.trace_errors;
         let worker=RpcWorker::start().map_err(Self::failure)?;
         let (sender,receiver)=mpsc::channel();
-        let mut live=Live{worker,state:Value::Null,pending:None,inflight:HashSet::new(),sender,receiver};
+        let (socket_sender,socket_receiver)=mpsc::sync_channel(64);
+        let mut live=Live{worker,state:Value::Null,pending:None,inflight:HashSet::new(),sender,receiver,sockets:HashMap::new(),socket_sender,socket_receiver};
         live.call(json!({"op":"init","scenario":scenario,"origin":origin})).map_err(Self::failure)?;
         Ok(Self{live:RefCell::new(Some(live)),lint_worker:RefCell::new(None),scenario,profile,trace,stopped:Value::Null})
     }
@@ -194,9 +228,17 @@ impl Session {
             live.pending=Some(pending);return Err(Self::failure("Request is no longer awaiting approval"));
         }
         if allow && live.inflight.len()>=MAX_IN_FLIGHT {live.pending=Some(pending);return Err(Self::failure("HTTP request limit exceeded"));}
+        if allow && pending.approved.is_websocket() && live.sockets.len()>=MAX_SOCKETS {live.pending=Some(pending);return Err(Self::failure("WebSocket connection limit exceeded"));}
         let child_id=pending.approved.child_id().to_owned();
         live.call(json!({"op":"network_decide","id":child_id,"allow":allow})).map_err(Self::failure)?;
         if allow {
+            if pending.approved.is_websocket() {
+                match network::spawn_websocket(pending.approved,live.socket_sender.clone()) {
+                    Ok(socket)=>{live.inflight.insert(child_id.clone());live.sockets.insert(child_id,socket);},
+                    Err(error)=>{live.call(json!({"op":"network_complete","id":child_id,"response":{"ok":false,"error":error}})).map_err(Self::failure)?;}
+                }
+                return Ok(());
+            }
             let send=live.sender.clone();let approved=pending.approved;let completion_id=child_id.clone();
             match std::thread::Builder::new().name("emulator-approved-http".into()).spawn(move||{
                 let _=send.send((completion_id,network::perform_approved(approved)));
@@ -215,6 +257,28 @@ impl Session {
             live.call(json!({"op":"network_complete","id":id,"response":response})).map_err(Self::failure)?;
             if live.pending.is_some(){break;}
         }
+        while live.pending.is_none() {
+            let Ok((id,event))=live.socket_receiver.try_recv() else {break};
+            if !live.sockets.contains_key(&id){continue}
+            let kind=event.get("event").and_then(Value::as_str).unwrap_or("");
+            if kind=="open" && live.inflight.remove(&id) {
+                live.call(json!({"op":"network_complete","id":id,"response":{"ok":true,"websocket":true}})).map_err(Self::failure)?;
+            } else if kind=="message" && !live.inflight.contains(&id) {
+                let data=event.get("data").and_then(Value::as_str).filter(|data|data.len()<=((MAX_SOCKET_MESSAGE+2)/3)*4).ok_or_else(||Self::failure("Invalid WebSocket event"))?;
+                let bytes=base64::decode(data).map_err(|_|Self::failure("Invalid WebSocket event"))?;
+                if bytes.len()>MAX_SOCKET_MESSAGE{return Err(Self::failure("WebSocket event exceeds limit"))}
+                live.call(json!({"op":"websocket_event","id":id,"event":{"event":"message","data":base64::encode(bytes)}})).map_err(Self::failure)?;
+            } else if matches!(kind,"close"|"error") {
+                let connecting=live.inflight.remove(&id);
+                if connecting {
+                    let error=event.get("error").and_then(Value::as_str).filter(|error|error.len()<=4096).unwrap_or("WebSocket closed before connecting");
+                    live.call(json!({"op":"network_complete","id":id,"response":{"ok":false,"error":error}})).map_err(Self::failure)?;
+                } else {
+                    live.call(json!({"op":"websocket_event","id":id,"event":{"event":"close"}})).map_err(Self::failure)?;
+                }
+                live.sockets.remove(&id);
+            } else {live.worker.close();live.sockets.clear();return Err(Self::failure("Invalid WebSocket broker event"));}
+        }
         Ok(())
     }
     pub(crate) fn snapshot(&self)->Result<Value> {
@@ -230,6 +294,9 @@ impl Session {
     pub(crate) fn execute_input(&mut self,realm:&str,context:&str,source:&str,format:&str)->Result<Value> {
         self.call(json!({"op":"execute","realm":realm,"context":context,"source":source,"format":format}))
     }
+    pub(crate) fn create_gc_viewer(&mut self,realm:&str)->Result<()> {
+        self.call(json!({"op":"gc_create","realm":realm})).map(|_|())
+    }
     pub(crate) fn keyboard_input(&mut self,realm:&str,key:&str,down:bool)->Result<()> {
         self.call(json!({"op":"input","realm":realm,"key":key,"down":down})).map(|_|())
     }
@@ -240,6 +307,7 @@ impl Session {
     pub(crate) fn workspace_files(&self,realm:&str)->Result<Value> {self.call(json!({"op":"workspace_list","realm":realm}))}
     pub(crate) fn workspace_file(&self,realm:&str,name:&str)->Result<Value> {self.call(json!({"op":"workspace_read","realm":realm,"name":name}))}
     pub(crate) fn inspect(&self,body:&Value)->Result<Value> {self.call(json!({"op":"inspect","body":body}))}
+    pub(crate) fn runtime_update(&mut self,body:&Value,running:bool)->Result<Value> {self.call(json!({"op":"runtime_update","body":body,"running":running}))}
     pub(crate) fn set_cpu_budget(&mut self,ms:u64)->Result<()> {self.call(json!({"op":"budget","cpuMs":ms})).map(|_|())}
     pub(crate) fn clear_output(&mut self) {let _=self.call(json!({"op":"clear"}));}
     pub(crate) fn last_output(&self)->Value {

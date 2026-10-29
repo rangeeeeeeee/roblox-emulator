@@ -20,12 +20,26 @@
 
 extern "C" int emu_is_protected_function(lua_CFunction function);
 extern "C" int emu_is_reference_thread(lua_State* state, lua_State* thread);
-static constexpr const char* hook_registry = "emulator.executor.hooks";
-static constexpr const char* hook_entries_registry = "emulator.executor.hook.entries";
+extern "C" const void* emu_private_registry_key(const char* name);
+// Registry keys are opaque host addresses, not interned Luau strings. A script
+// may still create an identical string and discover it through its own GC view.
+static char hook_registry_key;
+static char hook_entries_registry_key;
+
+static void private_registry_get(lua_State* state, const char* name)
+{
+    const void* key = emu_private_registry_key(name);
+    if (!key) luaL_error(state, "Unknown private registry key");
+    lua_rawgetp(state, LUA_REGISTRYINDEX, const_cast<void*>(key));
+}
 
 #if defined(EMULATOR_LOCAL_TEST)
 // Test the real Luau bytecode inliner, not a simulated CMPPROTO branch.
 extern "C" void emu_test_enable_inliner(lua_State* state) { Luau::JitInliner::setup(state); }
+extern "C" void emu_test_push_hook_registry(lua_State* state, int entries)
+{
+    lua_rawgetp(state, LUA_REGISTRYINDEX, entries ? &hook_entries_registry_key : &hook_registry_key);
+}
 extern "C" int emu_test_has_inlined_guard(lua_State* state)
 {
     const TValue* value = luaA_toobject(state, 1);
@@ -273,9 +287,17 @@ struct Scan
     const void* inspector_scan;
     const void* registry;
     LuaTable* hook_entries = nullptr;
-    const void* host_tables[32] = {};
+    LuaTable* inspector_objects = nullptr;
+    const void* host_tables[64] = {};
     int host_table_count = 0;
 };
+
+static void add_host_table(Scan& scan, const void* table)
+{
+    if (scan.host_table_count >= int(sizeof(scan.host_tables) / sizeof(scan.host_tables[0])))
+        luaL_error(scan.state, "GcEnumerationLimit: too many host tables");
+    scan.host_tables[scan.host_table_count++] = table;
+}
 
 static bool visit(void* context, lua_Page*, GCObject* object)
 {
@@ -293,6 +315,13 @@ static bool visit(void* context, lua_Page*, GCObject* object)
         key.value.gc = object;
         key.tt = LUA_TTABLE;
         if (!ttisnil(luaH_get(scan.hook_entries, &key))) return false;
+    }
+    if ((type == LUA_TTABLE || type == LUA_TFUNCTION) && scan.inspector_objects)
+    {
+        TValue key = {};
+        key.value.gc = object;
+        key.tt = type;
+        if (!ttisnil(luaH_get(scan.inspector_objects, &key))) return false;
     }
     if (type != LUA_TFUNCTION && type != LUA_TUSERDATA && !(scan.tables && type == LUA_TTABLE)
         && !(scan.extended && (type == LUA_TSTRING || type == LUA_TTHREAD))
@@ -317,54 +346,107 @@ static bool visit(void* context, lua_Page*, GCObject* object)
 static Scan prepare_scan(lua_State* state, bool tables, bool extended)
 {
     // Only these host bookkeeping tables are excluded; their user values remain visible.
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.values");
+    private_registry_get(state, "emulator.inspector.values");
     const void* inspector = lua_topointer(state, -1);
     const void* inspector_metatable = nullptr;
     if (lua_getmetatable(state, -1)) { inspector_metatable = lua_topointer(state, -1); lua_pop(state, 1); }
     lua_pop(state, 1);
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
+    private_registry_get(state, "emulator.inspector.scan");
     const void* inspector_scan = lua_topointer(state, -1);
     lua_pop(state, 1);
     Scan scan{state, tables, extended, false, false, 0, nullptr, inspector, inspector_metatable,
         inspector_scan, lua_topointer(state, LUA_REGISTRYINDEX)};
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.internal");
+    private_registry_get(state, "emulator.internal");
     if (lua_istable(state, -1))
     {
-        scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
-        for (const char* name : {"__config", "__emu", "__rt", "__model", "__types"})
+        add_host_table(scan, lua_topointer(state, -1));
+        int private_table = lua_absindex(state, -1);
+        lua_pushnil(state);
+        while (lua_next(state, private_table))
         {
-            lua_rawgetfield(state, -1, name);
-            if (lua_istable(state, -1)) scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
+            if (lua_istable(state, -1)) add_host_table(scan, lua_topointer(state, -1));
             lua_pop(state, 1);
         }
-        lua_rawgetfield(state, -1, "__emu");
-        if (lua_istable(state, -1))
-            for (const char* name : {"capabilities", "unsupported"})
-            {
-                lua_rawgetfield(state, -1, name);
-                if (lua_istable(state, -1)) scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
-                lua_pop(state, 1);
-            }
-        lua_pop(state, 1);
     }
     lua_pop(state, 1);
     for (const char* name : {"emulator.drawing.methods", "emulator.native.instances",
         "emulator.native.instance.methods", "emulator.native.environments", "emulator.native.environment.owners",
         "emulator.native.script.threads", "emulator.memory.default.environments", "emulator.memory.default.threads",
-        hook_registry, hook_entries_registry})
+        "emulator.inspector.viewer.metatable", "emulator.inspector.objects", "emulator.executor.unsupported"})
     {
-        lua_rawgetfield(state, LUA_REGISTRYINDEX, name);
+        private_registry_get(state, name);
         if (lua_istable(state, -1))
         {
-            scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1);
-            if (lua_getmetatable(state, -1)) { scan.host_tables[scan.host_table_count++] = lua_topointer(state, -1); lua_pop(state, 1); }
+            add_host_table(scan, lua_topointer(state, -1));
+            if (lua_getmetatable(state, -1)) { add_host_table(scan, lua_topointer(state, -1)); lua_pop(state, 1); }
         }
         lua_pop(state, 1);
     }
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, hook_entries_registry);
+    for (void* key : {&hook_registry_key, &hook_entries_registry_key})
+    {
+        lua_rawgetp(state, LUA_REGISTRYINDEX, key);
+        if (lua_istable(state, -1))
+        {
+            add_host_table(scan, lua_topointer(state, -1));
+            if (lua_getmetatable(state, -1)) { add_host_table(scan, lua_topointer(state, -1)); lua_pop(state, 1); }
+        }
+        lua_pop(state, 1);
+    }
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &hook_entries_registry_key);
     if (lua_istable(state, -1)) scan.hook_entries = hvalue(luaA_toobject(state, -1));
     lua_pop(state, 1);
+    private_registry_get(state, "emulator.inspector.objects");
+    if (lua_istable(state, -1)) scan.inspector_objects = hvalue(luaA_toobject(state, -1));
+    lua_pop(state, 1);
     return scan;
+}
+
+// The viewer's generated index/newindex closures capture private getter,
+// setter and method tables. Mark only these concrete host objects; user tables
+// with the same fields and global functions captured alongside them stay visible.
+extern "C" void emu_inspector_mark_objects(lua_State* state)
+{
+    luaL_checktype(state, 1, LUA_TUSERDATA);
+    luaL_checktype(state, 2, LUA_TTABLE);
+    luaL_checkstack(state, 8, "inspector metadata");
+    if (!lua_getmetatable(state, 1)) return;
+    int meta = lua_absindex(state, -1);
+    for (const char* name : {"__index", "__newindex"})
+    {
+        lua_rawgetfield(state, meta, name);
+        if (!lua_isfunction(state, -1)) { lua_pop(state, 1); continue; }
+        int closure = lua_absindex(state, -1);
+        lua_pushvalue(state, closure);
+        lua_pushboolean(state, true);
+        lua_rawset(state, 2);
+        if (!lua_iscfunction(state, closure))
+        {
+            for (int index = 1; lua_getupvalue(state, closure, index); ++index)
+            {
+                if (lua_istable(state, -1))
+                {
+                    int table = lua_absindex(state, -1);
+                    lua_pushvalue(state, table);
+                    lua_pushboolean(state, true);
+                    lua_rawset(state, 2);
+                    lua_pushnil(state);
+                    while (lua_next(state, table))
+                    {
+                        if (lua_isfunction(state, -1))
+                        {
+                            lua_pushvalue(state, -1);
+                            lua_pushboolean(state, true);
+                            lua_rawset(state, 2);
+                        }
+                        lua_pop(state, 1);
+                    }
+                }
+                lua_pop(state, 1);
+            }
+        }
+        lua_pop(state, 1);
+    }
+    lua_settop(state, 0);
 }
 
 static void scan_objects(Scan& scan)
@@ -382,7 +464,7 @@ extern "C" int emu_getgc(lua_State* state)
     bool tables = lua_toboolean(state, 1) != 0;
     const bool extended = executor_profile(state) != 0;
     lua_settop(state, 0);
-    luaL_checkstack(state, 3, "getgc");
+    luaL_checkstack(state, 8, "getgc");
     GcPause pause(state);
     Scan scan = prepare_scan(state, tables, extended);
     scan_objects(scan);
@@ -398,8 +480,8 @@ extern "C" int emu_getgc(lua_State* state)
 extern "C" int emu_inspectgc(lua_State* state)
 {
     lua_settop(state, 0);
-    luaL_checkstack(state, 3, "inspectgc");
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
+    luaL_checkstack(state, 8, "inspectgc");
+    private_registry_get(state, "emulator.inspector.scan");
     if (!lua_istable(state, -1)) luaL_error(state, "Inspector scan table is not initialized");
     lua_cleartable(state, -1);
     GcPause pause(state);
@@ -826,7 +908,7 @@ extern "C" int emu_inspectconstants(lua_State* state)
 {
     Proto* proto = check_lua_closure(state)->l.p;
     lua_settop(state, 1);
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, "emulator.inspector.scan");
+    private_registry_get(state, "emulator.inspector.scan");
     if (!lua_istable(state, -1)) luaL_error(state, "Inspector scan table is not initialized");
     lua_cleartable(state, -1);
     fill_constants(state, proto);
@@ -938,7 +1020,7 @@ static int hook_call(lua_State* state);
 
 static void mark_hook_entry(lua_State* state, int entry)
 {
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, hook_entries_registry);
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &hook_entries_registry_key);
     if (!lua_istable(state, -1))
     {
         lua_pop(state, 1);
@@ -948,7 +1030,7 @@ static void mark_hook_entry(lua_State* state, int entry)
         lua_setfield(state, -2, "__mode");
         lua_setmetatable(state, -2);
         lua_pushvalue(state, -1);
-        lua_rawsetfield(state, LUA_REGISTRYINDEX, hook_entries_registry);
+        lua_rawsetp(state, LUA_REGISTRYINDEX, &hook_entries_registry_key);
     }
     lua_pushvalue(state, entry);
     lua_pushboolean(state, true);
@@ -958,7 +1040,7 @@ static void mark_hook_entry(lua_State* state, int entry)
 
 static void push_hooks(lua_State* state)
 {
-    lua_getfield(state, LUA_REGISTRYINDEX, hook_registry);
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &hook_registry_key);
     if (lua_istable(state, -1)) return;
     lua_pop(state, 1);
     lua_newtable(state);
@@ -967,7 +1049,7 @@ static void push_hooks(lua_State* state)
     lua_setfield(state, -2, "__mode");
     lua_setmetatable(state, -2);
     lua_pushvalue(state, -1);
-    lua_setfield(state, LUA_REGISTRYINDEX, hook_registry);
+    lua_rawsetp(state, LUA_REGISTRYINDEX, &hook_registry_key);
 }
 
 static int hook_call(lua_State* state)
@@ -1003,7 +1085,7 @@ extern "C" int emu_isnewcclosure(lua_State* state)
     Closure* closure = clvalue(luaA_toobject(state, 1));
     if (closure->isC && closure->c.f == hook_call)
     {
-        lua_rawgetfield(state, LUA_REGISTRYINDEX, hook_registry);
+        lua_rawgetp(state, LUA_REGISTRYINDEX, &hook_registry_key);
         if (lua_istable(state, -1))
         {
             lua_pushvalue(state, 1);
@@ -1022,7 +1104,7 @@ extern "C" int emu_isnewcclosure(lua_State* state)
 extern "C" int emu_isfunctionhooked(lua_State* state)
 {
     luaL_checktype(state, 1, LUA_TFUNCTION);
-    lua_rawgetfield(state, LUA_REGISTRYINDEX, hook_registry);
+    lua_rawgetp(state, LUA_REGISTRYINDEX, &hook_registry_key);
     if (!lua_istable(state, -1)) { lua_pushboolean(state, false); return 1; }
     lua_pushvalue(state, 1);
     lua_rawget(state, -2);

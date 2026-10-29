@@ -109,6 +109,14 @@ fn fail(message: impl Into<String>) -> Error { Error::lua_string(message) }
 fn shared(lua: &Lua) -> Result<Shared> {
     lua.app_data_ref::<Shared>().map(|value| value.clone()).ok_or_else(|| fail("scheduler is not installed"))
 }
+pub(crate) fn with_deferred_signals<T>(lua: &Lua, action: impl FnOnce() -> Result<T>) -> Result<T> {
+    struct Restore(Shared, bool);
+    impl Drop for Restore { fn drop(&mut self) { self.0.borrow_mut().deferred_signals = self.1; } }
+    let state = shared(lua)?;
+    let previous = std::mem::replace(&mut state.borrow_mut().deferred_signals, true);
+    let _restore = Restore(state, previous);
+    action()
+}
 pub fn status(lua: &Lua) -> Result<Status> {
     let shared = shared(lua)?;
     let state = shared.borrow();
@@ -174,9 +182,9 @@ fn memory_category(lua: &Lua, name: mlua::LuaString) -> Result<u8> {
 
 pub fn set_script_category(lua: &Lua, thread: &Thread, function: &Function, name: &str) -> Result<()> {
     let category = memory_category(lua, lua.create_string(name)?)?;
-    lua.named_registry_value::<Table>(MEMORY_THREADS)?.raw_set(thread.clone(), category)?;
+    crate::native::private_registry_value::<Table>(lua,MEMORY_THREADS)?.raw_set(thread.clone(), category)?;
     if let Some(environment) = function.environment() {
-        lua.named_registry_value::<Table>(MEMORY_ENVIRONMENTS)?.raw_set(environment, category)?;
+        crate::native::private_registry_value::<Table>(lua,MEMORY_ENVIRONMENTS)?.raw_set(environment, category)?;
     }
     unsafe { ffi::lua_setmemcat(thread.state(), category as i32); }
     Ok(())
@@ -225,7 +233,7 @@ unsafe fn default_memory_category(state: *mut ffi::lua_State) -> i32 {
     unsafe {
         ffi::luaL_checkstack(state, 5, c"memory category lookup".as_ptr());
         let top = ffi::lua_gettop(state);
-        ffi::lua_rawgetfield(state, ffi::LUA_REGISTRYINDEX, c"emulator.memory.default.threads".as_ptr());
+        crate::native::raw_private_registry_get(state,c"emulator.memory.default.threads");
         if ffi::lua_type(state, -1) != ffi::LUA_TTABLE {
             ffi::lua_pushstring(state, c"MemoryCategoryError: private thread map is not a table".as_ptr());
             ffi::lua_error(state);
@@ -238,7 +246,7 @@ unsafe fn default_memory_category(state: *mut ffi::lua_State) -> i32 {
             return category;
         }
         ffi::lua_pop(state, 1);
-        ffi::lua_rawgetfield(state, ffi::LUA_REGISTRYINDEX, c"emulator.memory.default.environments".as_ptr());
+        crate::native::raw_private_registry_get(state,c"emulator.memory.default.environments");
         if ffi::lua_type(state, -1) != ffi::LUA_TTABLE {
             ffi::lua_pushstring(state, c"MemoryCategoryError: private environment map is not a table".as_ptr());
             ffi::lua_error(state);
@@ -324,10 +332,10 @@ fn ensure_task(lua: &Lua, thread: &Thread, mode: Option<&str>, origin: Option<&s
 fn to_thread(lua: &Lua, callable: Value, mode: Option<&str>, origin: Option<&str>) -> Result<Thread> {
     let thread = match callable {
         Value::Function(function) => {
-            let defaults: Table = lua.named_registry_value(MEMORY_THREADS)?;
+            let defaults: Table = crate::native::private_registry_value(lua,MEMORY_THREADS)?;
             let parent_default: Option<u8> = defaults.raw_get(lua.current_thread())?;
             let category = if let Some(category) = parent_default { category } else {
-                function.environment().map(|environment| lua.named_registry_value::<Table>(MEMORY_ENVIRONMENTS)?.raw_get::<Option<u8>>(environment)).transpose()?.flatten().unwrap_or(0)
+                function.environment().map(|environment| crate::native::private_registry_value::<Table>(lua,MEMORY_ENVIRONMENTS)?.raw_get::<Option<u8>>(environment)).transpose()?.flatten().unwrap_or(0)
             };
             let thread = lua.create_thread(function)?;
             defaults.raw_set(thread.clone(), category)?;
@@ -804,7 +812,7 @@ enum Op {
 unsafe fn is_native_userdata(state: *mut ffi::lua_State, registry: &CStr) -> bool {
     unsafe {
         if ffi::lua_type(state, 1) != ffi::LUA_TUSERDATA || ffi::lua_getmetatable(state, 1) == 0 { return false; }
-        ffi::lua_rawgetfield(state, ffi::LUA_REGISTRYINDEX, registry.as_ptr());
+        crate::native::raw_private_registry_get(state,registry);
         let matches = ffi::lua_rawequal(state, -1, -2) != 0;
         ffi::lua_pop(state, 2);
         matches
@@ -870,7 +878,7 @@ unsafe fn raw_print_body(state: *mut ffi::lua_State, warn: bool) -> i32 {
     unsafe {
         let count = ffi::lua_gettop(state);
         ffi::luaL_checkstack(state, count + 3, c"print arguments".as_ptr());
-        ffi::lua_rawgetfield(state, ffi::LUA_REGISTRYINDEX, c"emulator.scheduler.tostring".as_ptr());
+        crate::native::raw_private_registry_get(state,c"emulator.scheduler.tostring");
         // Keep the real tostring C frame and original errors, outside Rust guards.
         for index in 1..=count {
             ffi::lua_pushvalue(state, count + 1);
@@ -1139,7 +1147,7 @@ fn set_meta(lua: &Lua, sample: AnyUserData, index: Op, tostring: Op, readonly: O
         lua.exec_raw::<()>((sample, index, tostring, readonly), |state| {
             ffi::lua_getmetatable(state, 1);
             ffi::lua_pushvalue(state, -1);
-            ffi::lua_rawsetfield(state, ffi::LUA_REGISTRYINDEX, registry.as_ptr());
+            crate::native::raw_private_registry_set(state,registry);
             for (argument, name) in [(2, c"__index"), (3, c"__tostring"), (4, c"__newindex")] {
                 ffi::lua_pushvalue(state, argument);
                 ffi::lua_rawsetfield(state, -2, name.as_ptr());
@@ -1155,7 +1163,7 @@ fn set_meta(lua: &Lua, sample: AnyUserData, index: Op, tostring: Op, readonly: O
 pub fn install(lua: &Lua) -> Result<()> { install_impl(lua, true) }
 pub fn install_native_host(lua: &Lua) -> Result<()> { install_impl(lua, false) }
 fn install_impl(lua: &Lua, expose_private_callbacks: bool) -> Result<()> {
-    lua.set_named_registry_value("emulator.scheduler.tostring", lua.globals().get::<Function>("tostring")?)?;
+    crate::native::set_private_registry_value(lua,"emulator.scheduler.tostring", lua.globals().get::<Function>("tostring")?)?;
     let config = crate::internal::<Option<Table>>(lua, "__config")?;
     let max_tasks = config.as_ref().and_then(|config| config.get::<usize>("maxTasks").ok()).unwrap_or(10000).clamp(1, 100000);
     let max_resumes = config.as_ref().and_then(|config| config.get::<usize>("maxResumes").ok()).unwrap_or(10000).clamp(1, 100000);
@@ -1176,7 +1184,7 @@ fn install_impl(lua: &Lua, expose_private_callbacks: bool) -> Result<()> {
         let meta = lua.create_table()?;
         meta.raw_set("__mode", "k")?;
         table.set_metatable(Some(meta))?;
-        lua.set_named_registry_value(name, table)?;
+        crate::native::set_private_registry_value(lua,name, table)?;
     }
     let default_category = lua.create_string("Default")?;
     lua.set_app_data(Rc::new(RefCell::new(Scheduler {
@@ -1211,7 +1219,7 @@ fn install_impl(lua: &Lua, expose_private_callbacks: bool) -> Result<()> {
     let connection = connection_data(&sample_connection)?;
     set_meta(lua, lua.create_userdata(ConnectionView(connection))?, Op::ViewIndex, Op::ConnectionString, Op::ConnectionReadOnly)?;
     disconnect_all(lua, &sample)?;
-    lua.globals().set("__rt", rt)?;
+    crate::set_internal(lua,"__rt",rt)?;
     task.set_readonly(true);
     lua.globals().set("task", task)?;
     for (name, debug_name, op) in [("print", c"print", Op::Print), ("warn", c"warn", Op::Warn), ("time", c"time", Op::Time),

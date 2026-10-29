@@ -1,6 +1,22 @@
 use mlua::{AnyUserData, Error, Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, ObjectLike, Result, Table, UserData, UserDataFields, UserDataMethods, UserDataRegistry, Value, ffi};
 use serde_json::{Value as Json, json};
 
+// Dynamic enum/type registry names live in Rust, not as interned Lua strings.
+// Each Lua instance owns its own map and releases its RegistryKeys on drop.
+#[derive(Default)]
+struct TypeRegistry(std::cell::RefCell<std::collections::HashMap<String,mlua::RegistryKey>>);
+fn type_registry_value<T:mlua::FromLua>(lua:&Lua,name:&str)->Result<T>{
+    let registry=lua.app_data_ref::<TypeRegistry>().ok_or_else(||Error::runtime("Type registry unavailable"))?;
+    let values=registry.0.borrow();
+    match values.get(name) {Some(key)=>lua.registry_value(key),None=>T::from_lua(Value::Nil,lua)}
+}
+fn set_type_registry_value<T:mlua::IntoLua>(lua:&Lua,name:&str,value:T)->Result<()>{
+    let key=lua.create_registry_value(value)?;
+    let registry=lua.app_data_ref::<TypeRegistry>().ok_or_else(||Error::runtime("Type registry unavailable"))?;
+    registry.0.borrow_mut().insert(name.to_owned(),key);
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UDim { pub scale:f32, pub offset:i32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -70,7 +86,7 @@ fn dimension_metatable<const TWO:bool>(lua:&Lua,sample:Value)->Result<()>{unsafe
 fn install_dimensions(lua:&Lua)->Result<()>{
     dimension_metatable::<false>(lua,UDim::default().into_lua(lua)?)?;dimension_metatable::<true>(lua,UDim2::default().into_lua(lua)?)?;
     let api=lua.create_table()?;api.set("new",named(lua,c"new",|lua,args:MultiValue|Ok(UDim{scale:dimension_number(lua,&args,0)? as f32,offset:dimension_int(dimension_number(lua,&args,1)?)}))?)?;api.set_readonly(true);lua.globals().set("UDim",api)?;
-    let methods=lua.create_table()?;methods.set("Lerp",named(lua,c"Lerp",dimension_lerp)?)?;methods.set("lerp",named(lua,c"lerp",dimension_lerp)?)?;lua.set_named_registry_value("types.methods.UDim2",methods)?;
+    let methods=lua.create_table()?;methods.set("Lerp",named(lua,c"Lerp",dimension_lerp)?)?;methods.set("lerp",named(lua,c"lerp",dimension_lerp)?)?;set_type_registry_value(lua,"types.methods.UDim2",methods)?;
     let api=lua.create_table()?;api.set("new",named(lua,c"new",|lua,args:MultiValue|{
         if let Some(x)=args.front().and_then(dimension::<false>){return Ok(UDim2{x:x.x,y:args.get(1).and_then(dimension::<false>).map(|v|v.x).unwrap_or_default()})}
         Ok(UDim2{x:UDim{scale:dimension_number(lua,&args,0)? as f32,offset:dimension_int(dimension_number(lua,&args,1)?)},y:UDim{scale:dimension_number(lua,&args,2)? as f32,offset:dimension_int(dimension_number(lua,&args,3)?)}})
@@ -173,7 +189,7 @@ fn install_random(lua:&Lua)->Result<()>{
     let methods=lua.create_table()?;
     for (name,callback)in [(c"NextInteger",random_call::<1>as ffi::lua_CFunction),(c"NextNumber",random_call::<2>),(c"Clone",random_call::<3>)]{
         let f:Function=unsafe{lua.exec_raw((),|s|ffi::lua_pushcfunctiond(s,callback,name.as_ptr()))?};methods.set(name.to_str().unwrap(),f)?;
-    }lua.set_named_registry_value("types.methods.Random",methods)?;
+    }set_type_registry_value(lua,"types.methods.Random",methods)?;
     unsafe{lua.exec_raw::<()>(Random::seeded(0),|state|{
         ffi::lua_getmetatable(state,1);for(key,f)in [(c"__index",random_meta::<0>as ffi::lua_CFunction),(c"__newindex",random_meta::<1>),(c"__eq",random_meta::<2>),(c"__tostring",random_meta::<3>)]{ffi::lua_pushcfunction(state,f);ffi::lua_rawsetfield(state,-2,key.as_ptr());}
         ffi::lua_pushstring(state,c"The metatable is locked".as_ptr());ffi::lua_rawsetfield(state,-2,c"__metatable".as_ptr());ffi::lua_settop(state,0);
@@ -207,7 +223,7 @@ fn number(v:&Value)->Result<f32> { match v { Value::Integer(v)=>Ok(*v as f32),Va
 fn components<const N:usize>(v:&Value)->Result<[f32;N]> {
     if let Ok(v)=number(v) { Ok([v;N]) } else { Ok(vector::<N>(v)?.0) }
 }
-fn lookup(lua:&Lua,name:&str,key:&str)->Result<Value> { lua.named_registry_value::<Table>(format!("types.methods.{name}").as_str())?.raw_get(key) }
+fn lookup(lua:&Lua,name:&str,key:&str)->Result<Value> { type_registry_value::<Table>(lua,format!("types.methods.{name}").as_str())?.raw_get(key) }
 fn vector_index<const N:usize>(lua:&Lua,v:&Vector<N>,key:&str)->Result<Value> {
     if let Some(i)=[("X","x"),("Y","y"),("Z","z")].iter().position(|(a,b)|*a==key||*b==key) { if i<N { return Ok(Value::Number(v.0[i] as f64)); } }
     match key { "Magnitude"|"magnitude"=>Ok(Value::Number(v.length() as f64)),"Unit"|"unit"=>vector_value(lua,v.unit()),
@@ -332,11 +348,11 @@ fn readonly(name:&str,key:&str)->Error {
 }
 fn userdata_copy<T:UserData+Clone+'static>(value:&Value)->Option<T>{if let Value::UserData(value)=value{value.borrow::<T>().ok().map(|v|v.clone())}else{None}}
 fn numeric(lua:&Lua,args:&MultiValue,index:usize)->Result<f32>{lua.coerce_number(args.get(index).cloned().unwrap_or(Value::Nil))?.map(|v|v as f32).ok_or_else(||Error::lua_string(format!("invalid argument #{} to 'new' (number expected)",index+1)))}
-fn enumeration(lua:&Lua,family:&str,name:&str)->Result<Value>{lua.named_registry_value::<Table>(&format!("types.enum.{family}"))?.raw_get(name)}
+fn enumeration(lua:&Lua,family:&str,name:&str)->Result<Value>{type_registry_value::<Table>(lua,&format!("types.enum.{family}"))?.raw_get(name)}
 fn enumeration_name(lua:&Lua,value:&Value,family:&str,numeric:bool)->Result<Option<String>>{
     if let Some(item)=userdata_copy::<EnumItem>(value){return Ok((item.family==family).then_some(item.name))}
     if numeric {if let Some(number)=match value{Value::Integer(n)=>Some(*n as f64),Value::Number(n)=>Some(*n),_=>None}{
-        for entry in lua.named_registry_value::<Table>(&format!("types.enumlist.{family}"))?.sequence_values::<AnyUserData>(){
+        for entry in type_registry_value::<Table>(lua,&format!("types.enumlist.{family}"))?.sequence_values::<AnyUserData>(){
             let entry=entry?;let item=entry.borrow::<EnumItem>()?;if item.value as f64==number{return Ok(Some(item.name.clone()))}
         }
     }}Ok(None)
@@ -445,7 +461,7 @@ impl<const O:bool> UserData for QueryParams<O>{
 fn install_query_params<const O:bool>(lua:&Lua)->Result<()>{
     let sample=lock(lua,lua.create_userdata(QueryParams::<O>::new())?)?;
     let method=sample.get::<Function>("AddToFilter")?;crate::native::name_function(lua,&method,c"AddToFilter")?;
-    let methods=lua.create_table()?;methods.raw_set("AddToFilter",method)?;lua.set_named_registry_value(&format!("types.methods.{}",QueryParams::<O>::name()),methods)?;
+    let methods=lua.create_table()?;methods.raw_set("AddToFilter",method)?;set_type_registry_value(lua,&format!("types.methods.{}",QueryParams::<O>::name()),methods)?;
     let api=lua.create_table()?;api.set("new",named(lua,c"new",|_,_:MultiValue|Ok(QueryParams::<O>::new()))?)?;api.set_readonly(true);lua.globals().set(QueryParams::<O>::name(),api)
 }
 fn install_int_vector<const N:usize>(lua:&Lua)->Result<()>{
@@ -492,7 +508,7 @@ fn install_value_types(lua:&Lua)->Result<()>{
 fn seal<T:UserData+'static>(lua:&Lua,sample:T,name:&str,names:&[(&str,&'static std::ffi::CStr)],index:Function)->Result<()> {
     let sample=lua.create_userdata(sample)?; let methods=lua.create_table()?;
     for (key,debug_name) in names {let f=sample.get::<Function>(*key)?;crate::native::name_function(lua,&f,debug_name)?;methods.raw_set(*key,f)?;}
-    lua.set_named_registry_value(format!("types.methods.{name}").as_str(),methods)?;
+    set_type_registry_value(lua,format!("types.methods.{name}").as_str(),methods)?;
     unsafe {lua.exec_raw::<()>((sample,index),|s|{ffi::lua_getmetatable(s,1);ffi::lua_pushvalue(s,2);ffi::lua_rawsetfield(s,-2,c"__index".as_ptr());ffi::lua_pushstring(s,c"The metatable is locked".as_ptr());ffi::lua_rawsetfield(s,-2,c"__metatable".as_ptr());ffi::lua_settop(s,0);})?;}
     Ok(())
 }
@@ -513,7 +529,7 @@ fn install_vector3(lua:&Lua)->Result<()> {
     methods.set("Cross",named(lua,c"Cross",|lua,(a,b):(Value,Value)|vector_value(lua,vector::<3>(&a)?.cross(vector(&b)?)))?)?;
     methods.set("Lerp",named(lua,c"Lerp",|lua,(a,b,t):(Value,Value,f32)|{let a=vector::<3>(&a)?;vector_value(lua,a.add(vector(&b)?.sub(a).scale(t)))})?)?;
     methods.set("FuzzyEq",named(lua,c"FuzzyEq",|_,(a,b,e):(Value,Value,Option<f32>)|{let a=vector::<3>(&a)?;let b=vector::<3>(&b)?;Ok(a.sub(b).length()<=e.unwrap_or(1e-5)*(a.length()+b.length()+1.))})?)?;
-    lua.set_named_registry_value("types.methods.Vector3",methods)?;
+    set_type_registry_value(lua,"types.methods.Vector3",methods)?;
     let mt=lua.create_table()?;mt.set("__type","Vector3")?;mt.set("__metatable","The metatable is locked")?;
     mt.set("__index",lua.create_function(|lua,(a,k):(Value,String)|vector_index(lua,&vector::<3>(&a)?,&k))?)?;
     mt.set("__tostring",lua.create_function(|_,a:Value|Ok(vector::<3>(&a)?.0.iter().map(|v|v.to_string()).collect::<Vec<_>>().join(", ")))?)?;
@@ -523,6 +539,8 @@ fn install_vector3(lua:&Lua)->Result<()> {
     api.set_readonly(true);lua.globals().set("Vector3",api)
 }
 pub fn install(lua:&Lua)->Result<()> {
+    let needs_registry=lua.app_data_ref::<TypeRegistry>().is_none();
+    if needs_registry {lua.set_app_data(TypeRegistry::default());}
     install_enums(lua)?;
     install_dimensions(lua)?;install_path_point(lua)?;install_random(lua)?;
     install_vector::<2>(lua)?;install_vector3(lua)?;
@@ -547,7 +565,7 @@ pub fn install(lua:&Lua)->Result<()> {
     let api=lua.create_table()?;
     api.set("encode",lua.create_function(|lua,v:Value|{match encode_value(&v)?{Some(v)=>lua.to_value(&v),None=>Ok(Value::Nil)}})?)?;
     api.set("decode",lua.create_function(|lua,v:Value|{decode_value(lua,&lua.from_value(v)?)?.ok_or_else(||Error::lua_string("Unsupported wire datatype"))})?)?;
-    lua.globals().set("__types",api)
+    crate::set_internal(lua,"__types",api)
 }
 pub fn encode_value(v:&Value)->Result<Option<Json>> {
     if let Value::Vector(v)=v{return Ok(Some(json!({"tag":"Vector3","x":v.x(),"y":v.y(),"z":v.z()})));}
@@ -582,7 +600,7 @@ pub fn decode_value(lua:&Lua,v:&Json)->Result<Option<Value>> {
         "UDim"=>Some(UDim{scale:n("scale"),offset:dimension_int(v["offset"].as_f64().unwrap_or(0.))}.into_lua(lua)?),
         "UDim2"=>Some(UDim2{x:UDim{scale:n("xScale"),offset:dimension_int(v["xOffset"].as_f64().unwrap_or(0.))},y:UDim{scale:n("yScale"),offset:dimension_int(v["yOffset"].as_f64().unwrap_or(0.))}}.into_lua(lua)?),
         "Path2DControlPoint"=>{let dim=|key:&str|->Result<UDim2>{decode_value(lua,&v[key])?.as_ref().and_then(dimension::<true>).ok_or_else(||Error::lua_string("Invalid Path2DControlPoint wire value"))};Some(Path2DControlPoint{position:dim("position")?,left:dim("leftTangent")?,right:dim("rightTangent")?}.into_lua(lua)?)},
-        "EnumItem"=>{let family=v["enum"].as_str().unwrap_or("");let name=v["name"].as_str().unwrap_or("");let items:Table=lua.named_registry_value(format!("types.enum.{family}").as_str())?;let item:Value=items.get(name)?;if item.is_nil(){return Err(Error::lua_string("Invalid EnumItem wire value"));}Some(item)},_=>None})
+        "EnumItem"=>{let family=v["enum"].as_str().unwrap_or("");let name=v["name"].as_str().unwrap_or("");let items:Table=type_registry_value(lua,format!("types.enum.{family}").as_str())?;let item:Value=items.get(name)?;if item.is_nil(){return Err(Error::lua_string("Invalid EnumItem wire value"));}Some(item)},_=>None})
 }
 
 fn wire_numbers<const N:usize>(v:&Json)->Result<[f32;N]>{
@@ -660,18 +678,18 @@ unsafe extern "C-unwind" fn enum_index<const KIND:usize>(state:*mut ffi::lua_Sta
         if !matches!(args.get(1),Some(Value::String(_)|Value::Number(_)|Value::Integer(_))){return Ok(mlua::state::NativeCall::Dispatch(enum_key_error))}
         let key=lua.coerce_string(args[1].clone())?.unwrap().to_string_lossy();
         let value=match KIND {
-            0=>{if key=="GetEnums" {lua.named_registry_value("types.GetEnums")?}else{
-                let value:Value=lua.named_registry_value::<Table>("types.enums")?.raw_get(key.as_str())?;
+            0=>{if key=="GetEnums" {type_registry_value(lua,"types.GetEnums")?}else{
+                let value:Value=type_registry_value::<Table>(lua,"types.enums")?.raw_get(key.as_str())?;
                 if value.is_nil(){return Err(Error::lua_string(format!("{key} is not a valid member of \"Enum\"")))} value
             }},
-            1=>{if key=="GetEnumItems" {lua.named_registry_value("types.GetEnumItems")?}else{
+            1=>{if key=="GetEnumItems" {type_registry_value(lua,"types.GetEnumItems")?}else{
                 let family=family.unwrap().0;
-                let value:Value=lua.named_registry_value::<Table>(format!("types.enum.{family}").as_str())?.raw_get(key.as_str())?;
+                let value:Value=type_registry_value::<Table>(lua,format!("types.enum.{family}").as_str())?.raw_get(key.as_str())?;
                 if value.is_nil(){return Err(Error::lua_string(format!("{key} is not a valid member of \"Enum.{family}\"")))} value
             }},
             _=>{let item=item.unwrap();match key.as_str(){
                 "Name"=>item.name.into_lua(lua)?,"Value"=>Value::Integer(item.value),
-                "EnumType"=>lua.named_registry_value::<Table>("types.enums")?.raw_get(item.family.as_str())?,
+                "EnumType"=>type_registry_value::<Table>(lua,"types.enums")?.raw_get(item.family.as_str())?,
                 _=>return Err(Error::lua_string(format!("{key} is not a valid member of \"Enum.{}.{}\"",item.family,item.name)))
             }}
         };
@@ -691,13 +709,13 @@ unsafe extern "C-unwind" fn enum_list<const KIND:usize>(state:*mut ffi::lua_Stat
         let result=lua.create_table()?;
         if KIND==0 {
             if enum_value::<EnumRoot>(&args).is_none(){return Ok(mlua::state::NativeCall::Dispatch(enum_self_error::<0>))}
-            let source:Table=lua.named_registry_value("types.enums")?;
+            let source:Table=type_registry_value(lua,"types.enums")?;
             let mut entries=source.pairs::<String,Value>().collect::<Result<Vec<_>>>()?;
             entries.sort_by(|a,b|a.0.cmp(&b.0));
             for (i,(_,value)) in entries.into_iter().enumerate(){result.raw_set(i+1,value)?;}
         } else {
             let Some(family)=enum_value::<EnumType>(&args) else{return Ok(mlua::state::NativeCall::Dispatch(enum_self_error::<1>))};
-            let source:Table=lua.named_registry_value(format!("types.enumlist.{}",family.0).as_str())?;
+            let source:Table=type_registry_value(lua,format!("types.enumlist.{}",family.0).as_str())?;
             for (i,value) in source.sequence_values::<Value>().enumerate(){result.raw_set(i+1,value?)?;}
         }
         Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![Value::Table(result)])))
@@ -715,16 +733,16 @@ fn enum_metatable<const KIND:usize>(lua:&Lua,sample:AnyUserData)->Result<()> { u
 fn lock(lua:&Lua,u:AnyUserData)->Result<AnyUserData>{unsafe{lua.exec_raw::<()>(u.clone(),|s|{ffi::lua_getmetatable(s,1);ffi::lua_pushstring(s,c"The metatable is locked".as_ptr());ffi::lua_rawsetfield(s,-2,c"__metatable".as_ptr());ffi::lua_settop(s,0);})?;}Ok(u)}
 fn install_enums(lua:&Lua)->Result<()> {
     let definitions:Json=serde_json::from_str(include_str!("../native/enums.json")).map_err(Error::external)?;
-    let families=lua.create_table()?;lua.set_named_registry_value("types.enums",families.clone())?;
-    for (family,items) in definitions.as_object().unwrap(){let by_name=lua.create_table()?;let list=lua.create_table()?;for (i,item) in items.as_array().unwrap().iter().enumerate(){let name=item["name"].as_str().unwrap();let value=item["value"].as_i64().unwrap();let u=lock(lua,lua.create_userdata(EnumItem{family:family.clone(),name:name.into(),value})?)?;by_name.set(name,u.clone())?;list.set(i+1,u)?;}lua.set_named_registry_value(format!("types.enum.{family}").as_str(),by_name)?;lua.set_named_registry_value(format!("types.enumlist.{family}").as_str(),list)?;families.set(family.as_str(),lock(lua,lua.create_userdata(EnumType(family.clone()))?)?)?;}
+    let families=lua.create_table()?;set_type_registry_value(lua,"types.enums",families.clone())?;
+    for (family,items) in definitions.as_object().unwrap(){let by_name=lua.create_table()?;let list=lua.create_table()?;for (i,item) in items.as_array().unwrap().iter().enumerate(){let name=item["name"].as_str().unwrap();let value=item["value"].as_i64().unwrap();let u=lock(lua,lua.create_userdata(EnumItem{family:family.clone(),name:name.into(),value})?)?;by_name.set(name,u.clone())?;list.set(i+1,u)?;}set_type_registry_value(lua,format!("types.enum.{family}").as_str(),by_name)?;set_type_registry_value(lua,format!("types.enumlist.{family}").as_str(),list)?;families.set(family.as_str(),lock(lua,lua.create_userdata(EnumType(family.clone()))?)?)?;}
     let get_items:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunction(state,enum_list::<1>))?};
-    crate::native::name_function(lua,&get_items,c"GetEnumItems")?;lua.set_named_registry_value("types.GetEnumItems",get_items)?;
+    crate::native::name_function(lua,&get_items,c"GetEnumItems")?;set_type_registry_value(lua,"types.GetEnumItems",get_items)?;
     let get_enums:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunction(state,enum_list::<0>))?};
-    crate::native::name_function(lua,&get_enums,c"GetEnums")?;lua.set_named_registry_value("types.GetEnums",get_enums)?;
+    crate::native::name_function(lua,&get_enums,c"GetEnums")?;set_type_registry_value(lua,"types.GetEnums",get_enums)?;
     let root=lua.create_userdata(EnumRoot)?;
     enum_metatable::<0>(lua,root.clone())?;
     enum_metatable::<1>(lua,families.raw_get("HumanoidStateType")?)?;
-    enum_metatable::<2>(lua,lua.named_registry_value::<Table>("types.enum.HumanoidStateType")?.raw_get("Running")?)?;
+    enum_metatable::<2>(lua,type_registry_value::<Table>(lua,"types.enum.HumanoidStateType")?.raw_get("Running")?)?;
     lua.globals().set("Enum",root)
 }
 

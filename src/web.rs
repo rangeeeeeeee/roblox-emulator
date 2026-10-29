@@ -271,6 +271,12 @@ impl App {
                 .map_err(|error|error.to_string());
         }
         if path == "/api/inspect" { return self.session.inspect(&body).map_err(|error|error.to_string()); }
+        if path == "/api/runtime/update" {
+            let result = self.session.runtime_update(&body,self.running).map_err(|error|error.to_string())?;
+            let mut state = self.snapshot().map_err(|error|error.to_string())?;
+            state["result"] = result;
+            return Ok(state);
+        }
         if path == "/api/lint" {
             let source = body.get("source").and_then(Value::as_str).ok_or("Source must be a string")?;
             let context = body.get("context").and_then(Value::as_str).ok_or("Select a context")?;
@@ -289,6 +295,10 @@ impl App {
         }
         let mut command = None;
         match path {
+            "/api/gc/create" => {
+                let realm = body.get("realm").and_then(Value::as_str).ok_or("Select a client VM")?;
+                self.session.create_gc_viewer(realm).map_err(|e|e.to_string())?;
+            }
             "/api/input" => {
                 let realm = body.get("realm").and_then(Value::as_str).ok_or("Select a client VM")?;
                 let key = body.get("key").and_then(Value::as_str).ok_or("Key must be a string")?;

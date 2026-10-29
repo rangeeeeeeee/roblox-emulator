@@ -83,8 +83,31 @@ impl BudgetClock {
 }
 
 
+#[derive(Default)]
+struct HostInternals(RefCell<HashMap<String,i64>>);
+
+fn initialize_internals(lua:&Lua)->LuaResult<()> {
+    crate::native::set_private_registry_value(lua,"emulator.internal",lua.create_table()?)?;
+    lua.set_app_data(HostInternals::default());
+    Ok(())
+}
+
 pub(crate) fn internal<T: mlua::FromLua>(lua:&Lua,name:&str)->LuaResult<T> {
-    if let Ok(table)=lua.named_registry_value::<Table>("emulator.internal") { table.get(name) } else {lua.globals().get(name)}
+    let index=lua.app_data_ref::<HostInternals>().map(|state|state.0.borrow().get(name).copied());
+    match index {
+        None=>lua.globals().get(name),
+        Some(Some(index))=>crate::native::private_registry_value::<Table>(lua,"emulator.internal")?.raw_get(index),
+        Some(None)=>T::from_lua(Value::Nil,lua),
+    }
+}
+
+pub(crate) fn set_internal<T:mlua::IntoLua>(lua:&Lua,name:&str,value:T)->LuaResult<()> {
+    let index=lua.app_data_ref::<HostInternals>().map(|state|{
+        let mut names=state.0.borrow_mut();
+        if let Some(index)=names.get(name){*index}else{let index=(names.len()+1) as i64;names.insert(name.to_owned(),index);index}
+    });
+    if let Some(index)=index {crate::native::private_registry_value::<Table>(lua,"emulator.internal")?.raw_set(index,value)}
+    else {lua.globals().set(name,value)}
 }
 
 struct HostLogSink(Rc<dyn Fn(&Lua, &str, mlua::LuaString) -> LuaResult<()>>);
@@ -95,11 +118,11 @@ pub(crate) fn host_log(lua:&Lua,level:&str,message:mlua::LuaString)->LuaResult<(
 }
 
 fn hide_internals(lua:&Lua)->LuaResult<()> {
-    let private=lua.create_table()?;
+    let needs_registry=lua.app_data_ref::<HostInternals>().is_none();
+    if needs_registry {initialize_internals(lua)?;}
     let globals=lua.globals();
     let keys=globals.clone().pairs::<Value,Value>().filter_map(|entry|match entry{Ok((Value::String(k),v)) if k.to_string_lossy().starts_with("__")=>Some(Ok((k,v))),Ok(_)=>None,Err(e)=>Some(Err(e))}).collect::<LuaResult<Vec<_>>>()?;
-    for (key,value) in keys {private.raw_set(key.clone(),value)?;globals.raw_set(key,Value::Nil)?;}
-    lua.set_named_registry_value("emulator.internal",private)?;
+    for (key,value) in keys {set_internal(lua,&key.to_string_lossy(),value)?;globals.raw_set(key,Value::Nil)?;}
     globals.set("_G",lua.create_table()?)?;
     globals.set_safeenv(true);
     Ok(())
@@ -178,6 +201,8 @@ impl Host {
 
     fn realm(&self, cfg: &RealmConfig, scenario: &Scenario) -> LuaResult<Realm> {
         let lua = Lua::new();
+        let native_mode=scenario.engine=="native";
+        if native_mode {initialize_internals(&lua)?;}
         if let Some(network) = &self.network { network.attach(&lua, &cfg.id); }
         self.log_registry.attach(&lua,&cfg.side,cfg.client_id.as_deref().unwrap_or(""));
         lua.set_app_data(self.bindables.clone());
@@ -199,11 +224,10 @@ impl Host {
         if let Some(id) = &cfg.client_id { config["clientId"] = json!(id); }
         if let Some(id) = &cfg.actor_id { config["actorId"] = json!(id); }
         let config = lua.to_value(&config)?;
-        globals.set("__config", config)?;
+        set_internal(&lua,"__config",config)?;
         let logs = self.logs.clone();
         let clock = self.clock.clone();
         let realm_id = cfg.id.clone();
-        let native_mode=scenario.engine=="native";
         let log_sequence = self.log_sequence.clone();
         let interactive = self.interactive;
         let quiet = self.quiet;
@@ -545,7 +569,7 @@ fn run_scenario(scenario: Scenario, source_snapshots: Vec<Json>) -> Result<Json,
     let mut ids = std::collections::HashSet::new();
     for r in &scenario.realms {
         if !ids.insert(r.id.clone()) || !matches!(r.side.as_str(), "server"|"client") || (r.side == "client" && r.client_id.is_none()) { return Err("Invalid/duplicate realm identity".into()); }
-        if !matches!(r.executor_profile.as_str(),"generic"|"macsploit-744.2"|"macsploit-744.4") {return Err("Unknown executor profile".into());}
+        if !matches!(r.executor_profile.as_str(),"generic"|"unc"|"macsploit-744.2"|"macsploit-744.4") {return Err("Unknown executor profile".into());}
         if scenario.engine!="native" && r.executor_profile!="generic" {return Err("Executor compatibility profiles require the native engine".into());}
     }
     let mut error_rules = std::collections::HashSet::new();
@@ -671,6 +695,12 @@ fn io_error(message:String)->std::io::Error {std::io::Error::other(message)}
 
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    #[cfg(windows)]
+    if args.first().is_some_and(|arg|arg=="--websocket-broker") {
+        if args.len()!=1 {eprintln!("Invalid WebSocket broker arguments");std::process::exit(2);}
+        if let Err(error)=network::websocket_broker_main() {eprintln!("WebSocket broker failed: {error}");std::process::exit(2);}
+        return;
+    }
     if args.first().is_some_and(|arg|arg=="--isolated-worker") {
         if args.len()!=1 {eprintln!("Invalid worker arguments");std::process::exit(2);}
         #[cfg(windows)]
@@ -741,14 +771,15 @@ fn normalize_probe(value: &mut Json) {
 
 fn native_probe_data(probe: &str, mut expected: Json, full_runtime: bool) -> Result<Json, Box<dyn std::error::Error>> {
     let lua = Lua::new();
+    if full_runtime {initialize_internals(&lua)?;}
     lua.set_memory_limit(64 * 1024 * 1024)?;
     let deadline = Instant::now() + Duration::from_secs(3);
     lua.set_interrupt(move |_| if Instant::now() > deadline { Err(LuaError::runtime("BudgetExceeded: native probe")) } else { Ok(VmState::Continue) });
     native::install(&lua)?;
     types::install(&lua)?;
     if full_runtime {
-        lua.globals().set("__config",lua.to_value(&json!({"realmId":"probe","side":"server","isStudio":true,"executor":false,"signalBehavior":"deferred"}))?)?;
-        lua.globals().set("__host_log",lua.create_function(|_,(level,message):(String,mlua::LuaString)|{eprintln!("[probe][{level}] {}",console::display_bytes(&message.as_bytes(),4096));Ok(())})?)?;
+        set_internal(&lua,"__config",lua.to_value(&json!({"realmId":"probe","side":"server","isStudio":true,"executor":false,"signalBehavior":"deferred"}))?)?;
+        set_internal(&lua,"__host_log",lua.create_function(|_,(level,message):(String,mlua::LuaString)|{eprintln!("[probe][{level}] {}",console::display_bytes(&message.as_bytes(),4096));Ok(())})?)?;
         scheduler::install_native_host(&lua)?;
         model::install_native_host(&lua)?;
         hide_internals(&lua)?;

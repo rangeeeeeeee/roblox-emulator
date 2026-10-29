@@ -102,7 +102,7 @@ pub(crate) fn create_node(lua:&Lua,class:&str)->Result<Link>{
 }
 
 pub(crate) fn wrapper(lua: &Lua, node: Link) -> Result<AnyUserData> {
-    let cache: Table = lua.named_registry_value(CACHE)?;
+    let cache: Table = crate::native::private_registry_value(lua,CACHE)?;
     prune_cache(lua,&cache,false)?;
     let key = node.borrow().cache_id as i64;
     if let Value::UserData(value) = cache.raw_get(key)? { return Ok(value); }
@@ -141,7 +141,7 @@ fn cache_node(value:&AnyUserData, api:&str, index:usize)->Result<Link>{
 
 pub(crate) fn cache_invalidate(lua:&Lua, value:AnyUserData)->Result<()> {
     let key=cache_node(&value,"cache.invalidate",1)?.borrow().cache_id as i64;
-    let cache:Table=lua.named_registry_value(CACHE)?;
+    let cache:Table=crate::native::private_registry_value(lua,CACHE)?;
     prune_cache(lua,&cache,false)?;
     cache.raw_set(key,Value::Nil)?;
     cache_state(lua)?.0.borrow_mut().replaced.remove(&key);
@@ -150,7 +150,7 @@ pub(crate) fn cache_invalidate(lua:&Lua, value:AnyUserData)->Result<()> {
 
 pub(crate) fn cache_is_cached(lua:&Lua, value:AnyUserData)->Result<bool> {
     let key=cache_node(&value,"cache.iscached",1)?.borrow().cache_id as i64;
-    let cache:Table=lua.named_registry_value(CACHE)?;
+    let cache:Table=crate::native::private_registry_value(lua,CACHE)?;
     prune_cache(lua,&cache,false)?;
     Ok(matches!(cache.raw_get::<Value>(key)?,Value::UserData(_)))
 }
@@ -159,7 +159,7 @@ pub(crate) fn cache_replace(lua:&Lua, (original,replacement):(AnyUserData,AnyUse
     let original_node=cache_node(&original,"cache.replace",1)?;
     let replacement_node=cache_node(&replacement,"cache.replace",2)?;
     let key=original_node.borrow().cache_id as i64;
-    let cache:Table=lua.named_registry_value(CACHE)?;
+    let cache:Table=crate::native::private_registry_value(lua,CACHE)?;
     prune_cache(lua,&cache,false)?;
     let state=cache_state(lua)?;
     let foreign=!Rc::ptr_eq(&original_node,&replacement_node);
@@ -349,7 +349,7 @@ unsafe extern "C-unwind" fn raw_index(state:*mut ffi::lua_State)->std::ffi::c_in
             let child=find_child(&instance.0,raw.as_bytes(),false).ok_or_else(||missing_member(&instance.0.borrow(),&crate::console::display_bytes(&raw.as_bytes(),512)))?;
             return Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![Value::UserData(wrapper(lua,child)?)])))
         }};
-        let method:Value=lua.named_registry_value::<Table>(METHODS)?.raw_get(key.as_str())?;
+        let method:Value=crate::native::private_registry_value::<Table>(lua,METHODS)?.raw_get(key.as_str())?;
         let value=if !method.is_nil()&&validate_method(&instance.0.borrow(),&key).is_ok(){method}else{read_property(lua,&instance,&key)?};
         Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![value])))
     })
@@ -512,7 +512,7 @@ pub fn install(lua: &Lua) -> Result<()> {
     let weak = lua.create_table()?;
     weak.set("__mode", "v")?;
     cache.set_metatable(Some(weak))?;
-    lua.set_named_registry_value(CACHE, cache)?;
+    crate::native::set_private_registry_value(lua,CACHE, cache)?;
     let instance = lua.create_table()?;
     let constructor = lua.create_function(|lua, values:MultiValue| {
         let (class,parent)=<(String,Option<AnyUserData>)as mlua::FromLuaMulti>::from_lua_args(values,1,Some("new"),lua).map_err(argument_error)?;
@@ -556,7 +556,7 @@ pub fn install(lua: &Lua) -> Result<()> {
     }
     crate::model::install_yielding_methods(lua, &game, &native_methods)?;
     crate::native::clear_function_name(lua, &game.metatable()?.get::<Function>("__namecall")?)?;
-    lua.set_named_registry_value(METHODS,native_methods)?;
+    crate::native::set_private_registry_value(lua,METHODS,native_methods)?;
     let index:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunction(state,raw_index))?};
     let original:Function=game.metatable()?.get("__newindex")?;
     let newindex:Function=unsafe{lua.exec_raw(original,|state|{

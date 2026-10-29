@@ -49,8 +49,8 @@ pub(crate) fn install(lua: &Lua) -> Result<()> {
     let mt = lua.create_table()?;
     mt.raw_set("__mode", "v")?;
     values.set_metatable(Some(mt))?;
-    lua.set_named_registry_value(VALUES, values.clone())?;
-    lua.set_named_registry_value("emulator.inspector.scan", lua.create_table()?)?;
+    crate::native::set_private_registry_value(lua,VALUES, values.clone())?;
+    crate::native::set_private_registry_value(lua,"emulator.inspector.scan", lua.create_table()?)?;
     let mut random = [0; 8];
     crate::native::random_bytes(&mut random).map_err(Error::external)?;
     lua.set_app_data(Rc::new(Inspector { values, prefix: format!("{:016x}", u64::from_le_bytes(random)), next: Cell::new(0), pointers: RefCell::new(HashMap::new()), viewers: RefCell::new(BTreeMap::new()) }));
@@ -177,13 +177,31 @@ impl UserData for GcViewer {
     }
 }
 
-pub(crate) fn create_viewer(lua: &Lua) -> Result<AnyUserData> {
-    let inspector=state(lua)?;
+fn prepare_viewer(inspector:&Inspector) -> Result<(String,Rc<RefCell<Viewer>>)> {
     inspector.viewers.borrow_mut().retain(|_,v|!v.borrow().destroyed&&(v.borrow().enabled||Rc::strong_count(v)>1));
     if inspector.viewers.borrow().values().filter(|v|v.borrow().enabled).count()>=16 { return Err(Error::runtime("Close an existing GCViewer before creating another")); }
     let id=format!("{}:{}",inspector.prefix,inspector.next());
     let viewer=Rc::new(RefCell::new(Viewer{id:id.clone(),name:"GC Viewer".into(),enabled:true,revision:1,..Viewer::default()}));
+    Ok((id,viewer))
+}
+
+pub(crate) fn create_host_viewer(lua: &Lua) -> Result<()> {
+    let inspector=state(lua)?;
+    let (id,viewer)=prepare_viewer(&inspector)?;
+    inspector.viewers.borrow_mut().insert(id,viewer);
+    Ok(())
+}
+
+pub(crate) fn create_viewer(lua: &Lua) -> Result<AnyUserData> {
+    let inspector=state(lua)?;
+    let (id,viewer)=prepare_viewer(&inspector)?;
     let object=lua.create_userdata(GcViewer(viewer.clone()))?;
+    crate::native::register_gc_viewer_objects(lua,&object)?;
+    let meta:Table=unsafe{lua.exec_raw(object.clone(),|state|{
+        if mlua::ffi::lua_getmetatable(state,1)==0 {mlua::ffi::lua_pushnil(state);}
+        mlua::ffi::lua_remove(state,1);
+    })?};
+    crate::native::set_private_registry_value(lua,"emulator.inspector.viewer.metatable",meta)?;
     inspector.viewers.borrow_mut().insert(id,viewer);
     Ok(object)
 }
