@@ -1276,8 +1276,11 @@ fn gui_geometry(node:&Link)->Result<GuiGeometry>{
         let angle=result.rotation.to_radians();
         if parent.is_some()&&angle!=0. {
             let pivot=[result.position[0]+result.size[0]*0.5,result.position[1]+result.size[1]*0.5];
-            let delta=[origin[0]+absolute[0]*0.5-pivot[0],origin[1]+absolute[1]*0.5-pivot[1]];
-            let (s,c)=angle.sin_cos();origin=[pivot[0]+delta[0]*c-delta[1]*s-absolute[0]*0.5,pivot[1]+delta[0]*s+delta[1]*c-absolute[1]*0.5];
+            let delta=[origin[0]+absolute[0]*0.5-pivot[0],origin[1]+absolute[1]*0.5-pivot[1]].map(|value|value as f32);
+            let pivot=pivot.map(|value|value as f32);
+            let (s,c)=angle.sin_cos();let (s,c)=(s as f32,c as f32);
+            origin=[(pivot[0]+delta[0]*c-delta[1]*s-absolute[0] as f32*0.5) as f64,
+                (pivot[1]+delta[0]*s+delta[1]*c-absolute[1] as f32*0.5) as f64];
         }
         result=GuiGeometry{size:absolute,position:origin.map(|value|value as f32 as f64),rotation:result.rotation+gui_number(&current,"Rotation",0.),scale:result.scale*own_scale};
         parent=Some(current);
