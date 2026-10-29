@@ -1,4 +1,4 @@
-use mlua::{AnyUserData, Error, FromLua, FromLuaMulti, Function, IntoLuaMulti, Lua, MultiValue, Result, Table, Thread, UserData, UserDataFields, Value, ffi};
+use mlua::{AnyUserData, Error, FromLua, FromLuaMulti, Function, IntoLuaMulti, Lua, MetaMethod, MultiValue, Result, Table, Thread, UserData, UserDataFields, UserDataMethods, Value, ffi};
 use mlua::state::NativeCall;
 use std::{cell::RefCell, collections::{HashMap, VecDeque}, ffi::CStr, rc::{Rc, Weak}, time::Instant};
 
@@ -99,6 +99,11 @@ struct ConnectionData {
 
 impl UserData for Signal {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) { fields.add_meta_field("__type", "RBXScriptSignal"); }
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(MetaMethod::Eq, |_, this, other: AnyUserData| {
+            Ok(other.borrow::<Signal>().is_ok_and(|other| Rc::ptr_eq(&this.0, &other.0)))
+        });
+    }
 }
 impl UserData for Connection {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) { fields.add_meta_field("__type", "RBXScriptConnection"); }
@@ -666,6 +671,9 @@ pub fn resume_step(lua: &Lua) -> Result<usize> {
 }
 
 pub fn new_signal(lua: &Lua) -> Result<AnyUserData> { new_named_signal(lua, "", "", "") }
+pub(crate) fn signal_reference(lua: &Lua, signal: &AnyUserData) -> Result<AnyUserData> {
+    lua.create_userdata(signal.borrow::<Signal>()?.clone())
+}
 pub fn new_named_signal(lua: &Lua, label: &str, owner_class:&str, event_name:&str) -> Result<AnyUserData> {
     lua.create_userdata(Signal(Rc::new(RefCell::new(SignalData { label: label.into(),owner_class:owner_class.into(),event_name:event_name.into(),..SignalData::default() }))))
 }
@@ -820,6 +828,25 @@ unsafe fn is_native_userdata(state: *mut ffi::lua_State, registry: &CStr) -> boo
 }
 unsafe extern "C-unwind" fn dispatch(state: *mut ffi::lua_State) -> i32 {
     let opcode = unsafe { ffi::lua_tointeger(state, ffi::lua_upvalueindex(1)) as i32 };
+    unsafe {
+        if opcode == Op::Cancel as i32 { ffi::luaL_checktype(state, 1, ffi::LUA_TTHREAD); }
+        if opcode == Op::Wait as i32 || opcode == Op::Delay as i32 {
+            if ffi::lua_isnoneornil(state, 1) == 0 {
+                let number = ffi::luaL_checknumber(state, 1);
+                if ffi::lua_type(state, 1) == ffi::LUA_TSTRING { ffi::lua_pushnumber(state, number); ffi::lua_replace(state, 1); }
+            }
+        }
+        let required = if opcode == Op::Spawn as i32 { Some((1, c"invalid argument #1 to 'spawn' (function or thread expected)")) }
+            else if opcode == Op::Defer as i32 { Some((1, c"invalid argument #1 to 'defer' (function or thread expected)")) }
+            else if opcode == Op::Delay as i32 { Some((2, c"invalid argument #2 to 'delay' (function or thread expected)")) }
+            else { None };
+        if let Some((index, message)) = required {
+            let kind = ffi::lua_type(state, index);
+            if kind != ffi::LUA_TFUNCTION && kind != ffi::LUA_TTHREAD {
+                ffi::lua_pushstring(state, message.as_ptr()); ffi::lua_error(state);
+            }
+        }
+    }
     if opcode == Op::ProfileBegin as i32 {
         unsafe {
             if ffi::lua_isnoneornil(state, 1) != 0 {

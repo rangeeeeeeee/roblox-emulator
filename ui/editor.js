@@ -9,7 +9,8 @@ import {linter, lintGutter, lintKeymap, setDiagnostics, openLintPanel} from '@co
 import {lua} from '@codemirror/legacy-modes/mode/lua';
 import {tags} from '@lezer/highlight';
 
-export const MAX_SOURCE_BYTES = 256 * 1024;
+export const MAX_SOURCE_BYTES = 1024 * 1024;
+const MAX_LINT_BYTES = 256 * 1024;
 const encoder = new TextEncoder();
 export const sourceBytes = source => encoder.encode(source).length;
 const luauKeywords = new Set(['continue', 'type', 'export', 'declare']);
@@ -480,7 +481,7 @@ export function createEditor(parent, options) {
     const version = generation, document = view.state.doc, source = document.toString(), requestedContext = context;
     const token = options.getToken?.();
     if (!token) { options.onLintStatus?.('Lint offline'); return; }
-    if (sourceBytes(source) > MAX_SOURCE_BYTES) {
+    if (sourceBytes(source) > MAX_LINT_BYTES) {
       view.dispatch(setDiagnostics(view.state, []));
       options.onLintStatus?.('Lint skipped', 'The lint service supports source up to 256 KiB'); return;
     }

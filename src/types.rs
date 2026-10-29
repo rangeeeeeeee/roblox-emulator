@@ -146,6 +146,7 @@ impl Random {
 fn random_int(value:f64)->i64{if !value.is_finite()||value< -9223372036854775808.||value>=9223372036854775808.{i64::MIN}else{value as i64}}
 unsafe extern "C-unwind" fn random_self_error(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_typeerror(state,1,c"Random".as_ptr())}}
 unsafe extern "C-unwind" fn random_number_error<const ARG:i32>(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_typeerror(state,ARG,c"number".as_ptr())}}
+unsafe extern "C-unwind" fn random_table_error(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_typeerror(state,2,c"table".as_ptr())}}
 unsafe extern "C-unwind" fn random_count_error(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{ffi::luaL_error(state,c"Random:NextNumber requires 0 or 2 arguments".as_ptr())}}
 unsafe extern "C-unwind" fn random_call<const OP:u8>(state:*mut ffi::lua_State)->std::ffi::c_int{unsafe{
     Lua::invoke_native_callback(state,|lua,args|{
@@ -159,7 +160,21 @@ unsafe extern "C-unwind" fn random_call<const OP:u8>(state:*mut ffi::lua_State)-
         }
         let Some(Value::UserData(userdata))=args.front()else{return Ok(Dispatch(random_self_error))};
         let Ok(random)=userdata.borrow::<Random>()else{return Ok(Dispatch(random_self_error))};
-        let result=if OP==3 {(*random).clone().into_lua(lua)?}else{
+        if OP==5 {
+            let Some(Value::Table(values))=args.get(1) else{return Ok(Dispatch(random_table_error))};
+            for i in (2..=values.raw_len()).rev() {
+                let j=1+((i as u128*random.next()as u128)>>32)as usize;
+                let a=values.raw_get::<Value>(i)?;let b=values.raw_get::<Value>(j)?;
+                values.raw_set(i,b)?;values.raw_set(j,a)?;
+            }
+            return Ok(Return(MultiValue::new()))
+        }
+        let result=if OP==3 {(*random).clone().into_lua(lua)?}else if OP==4 {
+            let angle=random.next()as f64/4294967296.0*std::f64::consts::TAU;
+            let z=random.next()as f64/4294967296.0*2.0-1.0;
+            let radius=(1.0-z*z).sqrt();
+            Value::Vector(mlua::Vector::new((radius*angle.cos())as f32,(radius*angle.sin())as f32,z as f32))
+        }else{
             if OP==2&&args.len()==2{return Ok(Dispatch(random_count_error))}
             let (a,b)=if OP==2&&args.len()==1{(0.,1.)}else{
                 let Some(a)=lua.coerce_number(args.get(1).cloned().unwrap_or(Value::Nil))?else{return Ok(Dispatch(random_number_error::<2>))};
@@ -187,7 +202,7 @@ unsafe extern "C-unwind" fn random_meta<const OP:u8>(state:*mut ffi::lua_State)-
 }}
 fn install_random(lua:&Lua)->Result<()>{
     let methods=lua.create_table()?;
-    for (name,callback)in [(c"NextInteger",random_call::<1>as ffi::lua_CFunction),(c"NextNumber",random_call::<2>),(c"Clone",random_call::<3>)]{
+    for (name,callback)in [(c"NextInteger",random_call::<1>as ffi::lua_CFunction),(c"NextNumber",random_call::<2>),(c"Clone",random_call::<3>),(c"NextUnitVector",random_call::<4>),(c"Shuffle",random_call::<5>)]{
         let f:Function=unsafe{lua.exec_raw((),|s|ffi::lua_pushcfunctiond(s,callback,name.as_ptr()))?};methods.set(name.to_str().unwrap(),f)?;
     }set_type_registry_value(lua,"types.methods.Random",methods)?;
     unsafe{lua.exec_raw::<()>(Random::seeded(0),|state|{
@@ -539,6 +554,7 @@ fn install_vector3(lua:&Lua)->Result<()> {
     api.set_readonly(true);lua.globals().set("Vector3",api)
 }
 pub fn install(lua:&Lua)->Result<()> {
+    #[cfg(windows)] crate::unicode::install(lua)?;
     let needs_registry=lua.app_data_ref::<TypeRegistry>().is_none();
     if needs_registry {lua.set_app_data(TypeRegistry::default());}
     install_enums(lua)?;
@@ -682,12 +698,13 @@ unsafe extern "C-unwind" fn enum_index<const KIND:usize>(state:*mut ffi::lua_Sta
                 let value:Value=type_registry_value::<Table>(lua,"types.enums")?.raw_get(key.as_str())?;
                 if value.is_nil(){return Err(Error::lua_string(format!("{key} is not a valid member of \"Enum\"")))} value
             }},
-            1=>{if key=="GetEnumItems" {type_registry_value(lua,"types.GetEnumItems")?}else{
+            1=>{if matches!(key.as_str(),"GetEnumItems"|"FromName"|"FromValue") {type_registry_value(lua,&format!("types.{key}"))?}else{
                 let family=family.unwrap().0;
                 let value:Value=type_registry_value::<Table>(lua,format!("types.enum.{family}").as_str())?.raw_get(key.as_str())?;
                 if value.is_nil(){return Err(Error::lua_string(format!("{key} is not a valid member of \"Enum.{family}\"")))} value
             }},
             _=>{let item=item.unwrap();match key.as_str(){
+                "IsA"=>type_registry_value(lua,"types.EnumItem.IsA")?,
                 "Name"=>item.name.into_lua(lua)?,"Value"=>Value::Integer(item.value),
                 "EnumType"=>type_registry_value::<Table>(lua,"types.enums")?.raw_get(item.family.as_str())?,
                 _=>return Err(Error::lua_string(format!("{key} is not a valid member of \"Enum.{}.{}\"",item.family,item.name)))
@@ -721,6 +738,34 @@ unsafe extern "C-unwind" fn enum_list<const KIND:usize>(state:*mut ffi::lua_Stat
         Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![Value::Table(result)])))
     })
 }}
+unsafe extern "C-unwind" fn enum_arg_error<const BY_VALUE:bool>(state:*mut ffi::lua_State)->std::ffi::c_int {
+    unsafe {ffi::luaL_typeerror(state,2,if BY_VALUE {c"number".as_ptr()} else {c"string".as_ptr()})}
+}
+unsafe extern "C-unwind" fn enum_item_is_a(state:*mut ffi::lua_State)->std::ffi::c_int { unsafe {
+    Lua::invoke_native_callback(state,|lua,args|{
+        let Some(item)=enum_value::<EnumItem>(&args) else{return Ok(mlua::state::NativeCall::Dispatch(enum_self_error::<2>))};
+        let Some(value)=args.get(1).filter(|value|matches!(value,Value::String(_)|Value::Integer(_)|Value::Number(_))) else{return Ok(mlua::state::NativeCall::Dispatch(enum_arg_error::<false>))};
+        let name=lua.coerce_string(value.clone())?.unwrap();
+        Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![Value::Boolean(name.as_bytes().as_ref()==item.family.as_bytes())])))
+    })
+}}
+unsafe extern "C-unwind" fn enum_from<const BY_VALUE:bool>(state:*mut ffi::lua_State)->std::ffi::c_int { unsafe {
+    Lua::invoke_native_callback(state,|lua,args|{
+        let Some(family)=enum_value::<EnumType>(&args) else{return Ok(mlua::state::NativeCall::Dispatch(enum_self_error::<1>))};
+        let value=if BY_VALUE {
+            let number=match args.get(1){Some(Value::Integer(value))=>*value,Some(Value::Number(value))=>*value as i64,_=>return Ok(mlua::state::NativeCall::Dispatch(enum_arg_error::<true>))};
+            let items:Table=type_registry_value(lua,&format!("types.enumlist.{}",family.0))?;
+            let mut found=Value::Nil;
+            for item in items.sequence_values::<AnyUserData>() {let item=item?;if item.borrow::<EnumItem>()?.value==number {found=Value::UserData(item);break}}
+            found
+        } else {
+            let Some(Value::String(name))=args.get(1) else{return Ok(mlua::state::NativeCall::Dispatch(enum_arg_error::<false>))};
+            let names:Table=type_registry_value(lua,&format!("types.enum.{}",family.0))?;
+            names.raw_get::<Value>(name.clone())?
+        };
+        Ok(mlua::state::NativeCall::Return(MultiValue::from_vec(vec![value])))
+    })
+}}
 fn enum_metatable<const KIND:usize>(lua:&Lua,sample:AnyUserData)->Result<()> { unsafe {
     lua.exec_raw::<()>(sample,|state|{
         ffi::lua_getmetatable(state,1);
@@ -737,6 +782,12 @@ fn install_enums(lua:&Lua)->Result<()> {
     for (family,items) in definitions.as_object().unwrap(){let by_name=lua.create_table()?;let list=lua.create_table()?;for (i,item) in items.as_array().unwrap().iter().enumerate(){let name=item["name"].as_str().unwrap();let value=item["value"].as_i64().unwrap();let u=lock(lua,lua.create_userdata(EnumItem{family:family.clone(),name:name.into(),value})?)?;by_name.set(name,u.clone())?;list.set(i+1,u)?;}set_type_registry_value(lua,format!("types.enum.{family}").as_str(),by_name)?;set_type_registry_value(lua,format!("types.enumlist.{family}").as_str(),list)?;families.set(family.as_str(),lock(lua,lua.create_userdata(EnumType(family.clone()))?)?)?;}
     let get_items:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunction(state,enum_list::<1>))?};
     crate::native::name_function(lua,&get_items,c"GetEnumItems")?;set_type_registry_value(lua,"types.GetEnumItems",get_items)?;
+    for (name,debug_name,callback) in [("FromName",c"FromName",enum_from::<false> as ffi::lua_CFunction),("FromValue",c"FromValue",enum_from::<true>)] {
+        let function:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunctiond(state,callback,debug_name.as_ptr()))?};
+        set_type_registry_value(lua,&format!("types.{name}"),function)?;
+    }
+    let is_a:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunctiond(state,enum_item_is_a,c"IsA".as_ptr()))?};
+    set_type_registry_value(lua,"types.EnumItem.IsA",is_a)?;
     let get_enums:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunction(state,enum_list::<0>))?};
     crate::native::name_function(lua,&get_enums,c"GetEnums")?;set_type_registry_value(lua,"types.GetEnums",get_enums)?;
     let root=lua.create_userdata(EnumRoot)?;

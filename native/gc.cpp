@@ -20,6 +20,7 @@
 
 extern "C" int emu_is_protected_function(lua_CFunction function);
 extern "C" int emu_is_reference_thread(lua_State* state, lua_State* thread);
+extern "C" int emu_is_executor_prototype(const Proto* proto);
 extern "C" const void* emu_private_registry_key(const char* name);
 // Registry keys are opaque host addresses, not interned Luau strings. A script
 // may still create an identical string and discover it through its own GC view.
@@ -31,6 +32,14 @@ static void private_registry_get(lua_State* state, const char* name)
     const void* key = emu_private_registry_key(name);
     if (!key) luaL_error(state, "Unknown private registry key");
     lua_rawgetp(state, LUA_REGISTRYINDEX, const_cast<void*>(key));
+}
+
+// Read the current frame without pushing or retaining its closure in Luau.
+extern "C" const void* emu_spy_frame_pointer(lua_State* state, int level)
+{
+    if (!state || level < 0 || unsigned(level) >= unsigned(state->ci - state->base_ci)) return nullptr;
+    CallInfo* frame = state->ci - level;
+    return ttisfunction(frame->func) ? clvalue(frame->func) : nullptr;
 }
 
 #if defined(EMULATOR_LOCAL_TEST)
@@ -519,17 +528,15 @@ extern "C" int emu_islclosure(lua_State* state)
     return 1;
 }
 
-// The environment and a marked Lua reference are captured by the host when
-// binding this function. The reference supplies the same prototype marker as
-// filtergc without exposing or relying on the marker's address to Lua code.
+// Executor C closures have the executor environment; Lua closures carry the
+// same private prototype marker used by filtergc.
 extern "C" int emu_isexecutorclosure(lua_State* state)
 {
     luaL_checktype(state, 1, LUA_TFUNCTION);
     Closure* target = clvalue(luaA_toobject(state, 1));
-    Closure* reference = clvalue(luaA_toobject(state, lua_upvalueindex(2)));
     bool owned = target->isC
         ? target->env == hvalue(luaA_toobject(state, lua_upvalueindex(1)))
-        : target->l.p->userdata != nullptr && target->l.p->userdata == reference->l.p->userdata;
+        : emu_is_executor_prototype(target->l.p) != 0;
     lua_pushboolean(state, owned);
     return 1;
 }

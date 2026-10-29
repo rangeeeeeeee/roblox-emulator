@@ -551,7 +551,11 @@ pub(crate) fn parent(lua: &Lua, node: &Link, target: Option<Link>) -> Result<()>
 
 pub(crate) fn destroy(lua: &Lua, node: &Link) -> Result<()> {
     guard_write(lua)?;
-    if node.borrow().destroyed {return Ok(())}
+    if node.borrow().destroyed {
+        let children=node.borrow().children.clone();
+        for child in children {destroy(lua,&child)?;}
+        return Ok(())
+    }
     if node.borrow().class=="AnimationTrack"&&matches!(animation::read(lua,node,"IsPlaying")?,Some(Value::Boolean(true))){animation::control(lua,node,"Stop",args([Value::Number(0.)]),false)?;}
     fire(lua,node,"Destroying",MultiValue::new())?;
     let children = node.borrow().children.clone();
@@ -654,11 +658,18 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
         "Color3" if is("Path2D")=>Some(crate::types::Color3([0.;3]).into_lua(lua)?),
         "Active" if is("GuiObject")=>Some(Value::Boolean(false)),
         "Size"|"Position" if is("GuiObject")=>Some(crate::types::UDim2::default().into_lua(lua)?),
+        "AnchorPoint" if is("GuiObject")=>Some(crate::types::Vector::<2>([0.;2]).into_lua(lua)?),
+        "Rotation" if is("GuiObject")=>Some(Value::Number(0.0)),
+        "Scale" if is("UIScale")=>Some(Value::Number(1.0)),
+        "MinSize" if is("UISizeConstraint")=>Some(crate::types::Vector::<2>([0.;2]).into_lua(lua)?),
+        "MaxSize" if is("UISizeConstraint")=>Some(crate::types::Vector::<2>([f32::INFINITY;2]).into_lua(lua)?),
+        "PaddingTop"|"PaddingBottom"|"PaddingLeft"|"PaddingRight" if is("UIPadding")=>Some(crate::types::UDim::default().into_lua(lua)?),
         "BackgroundTransparency" if is("GuiObject")=>Some(Value::Number(0.0)),
         "Text" if is("TextLabel")||is("TextButton")=>Some(str_value(lua,"")?),
         "Image" if is("ImageLabel")||is("ImageButton")=>Some(str_value(lua,"")?),
         "IsLoaded" if is("ImageLabel")||is("ImageButton")=>Some(Value::Boolean(false)),
         "ImageTransparency" if is("ImageLabel")||is("ImageButton")=>Some(Value::Number(0.0)),
+        "LayoutOrder" if is("GuiObject")=>Some(Value::Integer(0)),
         "ZIndex" if is("GuiObject")=>Some(Value::Integer(1)),
         "ResetOnSpawn" if is("LayerCollector")=>Some(Value::Boolean(true)),
         "DisplayOrder" if is("ScreenGui")=>Some(Value::Integer(0)),
@@ -682,6 +693,14 @@ fn default(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
 
 pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>> {
     if state(lua).is_none(){return Ok(None)}
+    if matches!(key,"AbsoluteSize"|"AbsolutePosition"|"AbsoluteRotation") && (instance::is_a(&node.borrow(),"GuiObject") || node.borrow().class=="ScreenGui") {
+        let geometry=gui_geometry(node)?;
+        return Ok(Some(match key {
+            "AbsoluteSize"=>crate::types::Vector::<2>(geometry.size.map(|value|value as f32)).into_lua(lua)?,
+            "AbsolutePosition"=>crate::types::Vector::<2>(geometry.position.map(|value|value as f32)).into_lua(lua)?,
+            _=>Value::Number(geometry.rotation as f32 as f64),
+        }));
+    }
     if matches!(key,"Enabled"|"Disabled") && instance::is_a(&node.borrow(),"BaseScript") {
         let node = node.borrow();
         if let Some(value) = node.properties.get(key) { return Ok(Some(value.clone())); }
@@ -706,13 +725,16 @@ pub(crate) fn read_property(lua:&Lua,node:&Link,key:&str)->Result<Option<Value>>
     }
     if key=="DistributedGameTime"&&node.borrow().class=="Workspace"{return Ok(Some(Value::Number(now(lua))))}
     if key=="InstanceCount"&&node.borrow().class=="Stats"{return Ok(Some(Value::Integer(required(lua)?.borrow().nodes.values().filter(|node|node.strong_count()>0).count() as i64)))}
-    if event_class(key).is_some_and(|class|class.split('|').any(|class|instance::is_a(&node.borrow(),class))){return Ok(Some(Value::UserData(signal(lua,node,key)?)))}
+    if event_class(key).is_some_and(|class|class.split('|').any(|class|instance::is_a(&node.borrow(),class))){return Ok(Some(Value::UserData(crate::scheduler::signal_reference(lua,&signal(lua,node,key)?)?)))}
     default(lua,node,key)
 }
 
 pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bool> {
     if state(lua).is_none(){return Ok(false)}
     guard_write(lua)?;
+    if matches!(key,"AbsoluteSize"|"AbsolutePosition"|"AbsoluteRotation") && (instance::is_a(&node.borrow(),"GuiObject") || node.borrow().class=="ScreenGui") {
+        return Err(Error::lua_string(format!("Unable to assign property {key}. Property is read only")))
+    }
     if key=="Source"&&instance::is_a(&node.borrow(),"LuaSourceContainer") {
         if crate::executor::thread_identity(lua)!=8{return Err(Error::lua_string("The current thread cannot write Source"))}
         let Value::String(source)=new else{return Err(Error::lua_string("Source must be a string"))};
@@ -838,6 +860,17 @@ pub(crate) fn write_property(lua:&Lua,node:&Link,key:&str,new:&Value)->Result<bo
             if previous()?.as_ref().is_some_and(|old|same(old,&item)){return Ok(true)}node.borrow_mut().properties.insert(key.into(),item);changed(lua,node,key)?;return Ok(true)
         }
         if key=="CollisionGroup"{let group=lua.coerce_string(new.clone())?.ok_or_else(||Error::lua_string("Unable to assign property CollisionGroup. String expected"))?;let next=Value::String(group);if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)}
+    }
+    if key=="LayoutOrder" && instance::is_a(&node.borrow(),"GuiObject") {
+        let next=Value::Integer(i64::from(lua.coerce_number(new.clone())?.unwrap_or(0.0) as i32));
+        if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}
+        node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)
+    }
+    if key=="Rotation" && instance::is_a(&node.borrow(),"GuiObject") || key=="Scale" && instance::is_a(&node.borrow(),"UIScale") {
+        let number=lua.coerce_number(new.clone())?.unwrap_or(0.0) as f32;
+        let next=Value::Number(if key=="Scale" {number.max(1e-7)} else {number} as f64);
+        if previous()?.as_ref().is_some_and(|old|same(old,&next)){return Ok(true)}
+        node.borrow_mut().properties.insert(key.into(),next);changed(lua,node,key)?;return Ok(true)
     }
     if key=="SoundId" && node.borrow().class=="Sound" && !matches!(new,Value::String(_)) {return Err(Error::lua_string("Unable to assign property SoundId. String expected"))}
     match key {
@@ -1187,19 +1220,73 @@ impl PathSegment {
         integrate(self,0.,end,fa,fm,fb,whole,1e-8*(whole.abs()+1.),12)
     }
 }
-fn gui_size(node:&Link)->Result<[f64;2]>{
+#[derive(Clone,Copy)]
+struct GuiGeometry { size:[f64;2], position:[f64;2], rotation:f64, scale:f64 }
+fn gui_property(node:&Link,key:&str)->Option<Value>{node.borrow().properties.get(key).cloned()}
+fn gui_dim2(node:&Link,key:&str)->Result<crate::types::UDim2>{
+    match gui_property(node,key){Some(Value::UserData(value))=>Ok(*value.borrow::<crate::types::UDim2>()?),_=>Ok(crate::types::UDim2::default())}
+}
+fn gui_dim(node:&Link,key:&str)->Result<crate::types::UDim>{
+    match gui_property(node,key){Some(Value::UserData(value))=>Ok(*value.borrow::<crate::types::UDim>()?),_=>Ok(crate::types::UDim::default())}
+}
+fn gui_vector(node:&Link,key:&str,default:[f64;2])->Result<[f64;2]>{
+    match gui_property(node,key){Some(Value::UserData(value))=>Ok(value.borrow::<crate::types::Vector2>()?.0.map(f64::from)),_=>Ok(default)}
+}
+fn gui_number(node:&Link,key:&str,default:f64)->f64{
+    match gui_property(node,key){Some(Value::Number(value))=>value,Some(Value::Integer(value))=>value as f64,_=>default}
+}
+fn gui_component(node:&Link,class:&str)->Option<Link>{node.borrow().children.iter().find(|child|child.borrow().class==class).cloned()}
+fn gui_geometry(node:&Link)->Result<GuiGeometry>{
     let mut chain=Vec::new();let mut cursor=Some(node.clone());
-    while let Some(node)=cursor{
+    while let Some(current)=cursor{
         if chain.len()>=256{return Err(Error::runtime("BudgetExceeded: GUI ancestry"))}
-        let value=node.borrow();if !instance::is_a(&value,"GuiObject"){break}
-        let size=match value.properties.get("Size"){Some(Value::UserData(value))=>*value.borrow::<crate::types::UDim2>()?,_=>crate::types::UDim2::default()};
-        chain.push(size);cursor=value.parent.upgrade();
+        let info=current.borrow();let screen=info.class=="ScreenGui";
+        if !screen&&!instance::is_a(&info,"GuiObject"){break}
+        cursor=info.parent.upgrade();drop(info);chain.push(current);
+        if screen{break}
     }
-    let mut size=[0.;2];for value in chain.into_iter().rev(){size=[value.x.scale as f64*size[0]+value.x.offset as f64,value.y.scale as f64*size[1]+value.y.offset as f64];}Ok(size)
+    chain.reverse();
+    let mut result=GuiGeometry{size:[0.;2],position:[0.;2],rotation:0.,scale:1.};
+    let mut parent:Option<Link>=None;
+    for current in chain {
+        let own_scale=gui_component(&current,"UIScale").map(|scale|gui_number(&scale,"Scale",1.)).unwrap_or(1.);
+        if current.borrow().class=="ScreenGui" {
+            result=GuiGeometry{size:[800.,600.],position:[0.;2],rotation:0.,scale:own_scale};parent=Some(current);continue
+        }
+        let mut inset=[0.;2];let mut content=result.size;
+        if let Some(padding)=parent.as_ref().and_then(|parent|gui_component(parent,"UIPadding")) {
+            let names=[("PaddingLeft","PaddingRight"),("PaddingTop","PaddingBottom")];
+            for axis in 0..2 {let a=gui_dim(&padding,names[axis].0)?;let b=gui_dim(&padding,names[axis].1)?;
+                let left=content[axis]*f64::from(a.scale)+f64::from(a.offset)*result.scale;
+                let right=content[axis]-(content[axis]*f64::from(b.scale)+f64::from(b.offset)*result.scale);
+                inset[axis]=left.min(right);content[axis]=(right-left).abs();}
+        }
+        let size=gui_dim2(&current,"Size")?;let position=gui_dim2(&current,"Position")?;
+        let anchor=gui_vector(&current,"AnchorPoint",[0.;2])?;
+        let mut absolute=[content[0]*f64::from(size.x.scale)+f64::from(size.x.offset)*result.scale,
+            content[1]*f64::from(size.y.scale)+f64::from(size.y.offset)*result.scale];
+        if let Some(constraint)=gui_component(&current,"UISizeConstraint") {
+            let min=gui_vector(&constraint,"MinSize",[0.;2])?;let max=gui_vector(&constraint,"MaxSize",[f64::INFINITY;2])?;
+            for axis in 0..2 {absolute[axis]=absolute[axis].max(min[axis]*result.scale).min(max[axis]*result.scale);}
+        }
+        for axis in 0..2 {absolute[axis]=(absolute[axis]*own_scale) as f32 as f64;}
+        let mut origin=if parent.is_none(){[0.;2]}else{[
+            result.position[0]+inset[0]+content[0]*f64::from(position.x.scale)+f64::from(position.x.offset)*result.scale-absolute[0]*anchor[0],
+            result.position[1]+inset[1]+content[1]*f64::from(position.y.scale)+f64::from(position.y.offset)*result.scale-absolute[1]*anchor[1]]};
+        let angle=result.rotation.to_radians();
+        if parent.is_some()&&angle!=0. {
+            let pivot=[result.position[0]+result.size[0]*0.5,result.position[1]+result.size[1]*0.5];
+            let delta=[origin[0]+absolute[0]*0.5-pivot[0],origin[1]+absolute[1]*0.5-pivot[1]];
+            let (s,c)=angle.sin_cos();origin=[pivot[0]+delta[0]*c-delta[1]*s-absolute[0]*0.5,pivot[1]+delta[0]*s+delta[1]*c-absolute[1]*0.5];
+        }
+        result=GuiGeometry{size:absolute,position:origin.map(|value|value as f32 as f64),rotation:result.rotation+gui_number(&current,"Rotation",0.),scale:result.scale*own_scale};
+        parent=Some(current);
+    }
+    Ok(result)
 }
 fn path_geometry(lua:&Lua,node:&Link)->Result<([f64;2],Vec<PathSegment>)>{
     let parent=node.borrow().parent.upgrade().filter(|parent|instance::is_a(&parent.borrow(),"GuiObject")).ok_or_else(||Error::lua_string("Attempting to use Path2D with invalid parent"))?;
-    let size=gui_size(&parent)?;
+    let size=gui_geometry(&parent)?.size;
     let pixel=|value:crate::types::UDim2|[value.x.scale as f64*size[0]+value.x.offset as f64,value.y.scale as f64*size[1]+value.y.offset as f64];
     let points=path_points(lua,node)?;let closed=matches!(node.borrow().properties.get("Closed"),Some(Value::Boolean(true)));
     let count=if points.len()<2{0}else{points.len()-1+usize::from(closed)};
@@ -1461,7 +1548,7 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
     instance::register_method(m,"GetAssetFetchStatusChangedSignal",|lua,this,input:Value|{
         let id=content_id(lua,input)?;let key=format!("{id}AssetFetchStatusChanged");
         if !this.0.borrow().signals.contains_key(&key)&&this.0.borrow().signals.len()>=MAX_WAITERS{return Err(Error::runtime("BudgetExceeded: asset status signals"))}
-        signal(lua,&this.0,&key)
+        crate::scheduler::signal_reference(lua,&signal(lua,&this.0,&key)?)
     });
     instance::register_method(m,"Preload",|lua,this,input:Value|{
         guard_write(lua)?;let resource=asset_resource(input)?;
@@ -1481,8 +1568,8 @@ pub(crate) fn register_methods<M:UserDataMethods<Instance>>(m:&mut M){
         crate::types::camera_ray(lua,&frame,&viewport,fov,-near,x,y,depth)
     });}
     instance::register_method(m,"Clone",|lua,this,()|clone_node(lua,&this.0)?.map(|n|instance::wrapper(lua,n)).transpose());
-    instance::register_method(m,"GetPropertyChangedSignal",|lua,this,name:String|{instance::read_property(lua,this,&name)?;signal(lua,&this.0,&format!("property:{name}"))});
-    instance::register_method(m,"GetAttributeChangedSignal",|lua,this,name:String|signal(lua,&this.0,&format!("attribute:{name}")));
+    instance::register_method(m,"GetPropertyChangedSignal",|lua,this,name:String|{instance::read_property(lua,this,&name)?;crate::scheduler::signal_reference(lua,&signal(lua,&this.0,&format!("property:{name}"))?)});
+    instance::register_method(m,"GetAttributeChangedSignal",|lua,this,name:String|crate::scheduler::signal_reference(lua,&signal(lua,&this.0,&format!("attribute:{name}"))?));
     instance::register_method(m,"GetPlayers",|lua,this,()|instance::instance_list(lua,this.0.borrow().children.iter().filter(|n|n.borrow().class=="Player").cloned().collect()));
     instance::register_method(m,"GetNetworkPing",|_,this,()|Ok(this.0.borrow().properties.get("NetworkPing").cloned().unwrap_or(Value::Number(0.0))));
     for (name, expected) in [("IsClient","client"),("IsServer","server")] {instance::register_method(m,name,move|lua,_,()|Ok(required(lua)?.borrow().side==expected));}
@@ -2189,7 +2276,9 @@ const COMPLETION_PROPERTIES: &[(&str, &str, &str)] = &[
     ("BasePart", "CFrame ExtentsCFrame", "CFrame"), ("BasePart", "Position Size ExtentsSize", "Vector3"),
     ("BasePart", "Material", "Enum.Material"), ("BasePart", "CollisionGroup", "string"), ("Part", "Shape", "Enum.PartType"),
     ("Humanoid", "Health MaxHealth WalkSpeed JumpPower HipHeight JumpHeight", "number"), ("Humanoid", "UseJumpPower", "boolean"),
-    ("GuiObject", "Visible Active", "boolean"), ("GuiObject", "Size Position", "UDim2"), ("GuiObject", "ZIndex", "number"),
+    ("GuiObject", "Visible Active", "boolean"), ("GuiObject", "Size Position", "UDim2"), ("GuiObject", "AnchorPoint", "Vector2"), ("GuiObject", "ZIndex LayoutOrder Rotation", "number"),
+    ("GuiObject|ScreenGui", "AbsoluteSize AbsolutePosition", "Vector2 (read-only)"), ("GuiObject|ScreenGui", "AbsoluteRotation", "number (read-only)"),
+    ("UIScale", "Scale", "number"), ("UISizeConstraint", "MinSize MaxSize", "Vector2"), ("UIPadding", "PaddingTop PaddingBottom PaddingLeft PaddingRight", "UDim"),
     ("GuiObject", "BackgroundTransparency", "number"), ("TextLabel|TextButton", "Text", "string"),
     ("ImageLabel|ImageButton", "Image", "string"), ("ImageLabel|ImageButton", "IsLoaded", "boolean"),
     ("ImageLabel|ImageButton", "ImageTransparency", "number"), ("LayerCollector", "ResetOnSpawn", "boolean"), ("ScreenGui", "DisplayOrder", "number"),

@@ -66,7 +66,7 @@ pub(crate) fn implemented(class:&str)->bool{
         "StarterPlayer" | "EncodingService" | "CollectionService" | "Stats" | "TweenService" | "Chat" | "ScriptContext" |
         "StarterPlayerScripts" | "StarterCharacterScripts" | "Humanoid" | "Animator" | "Animation" | "AnimationTrack" | "AnimationController" | "Sound" | "ValueBase" |
         "GuiBase2d" | "StringValue" | "NumberValue" | "IntValue" | "BoolValue" | "ObjectValue" |
-        "GuiObject" | "LayerCollector" | "Frame" | "Path2D" | "Tween" | "TextLabel" | "TextButton" | "ImageLabel" |
+        "GuiObject" | "LayerCollector" | "Frame" | "Path2D" | "Tween" | "TextLabel" | "TextButton" | "ImageLabel" | "UIScale" | "UIPadding" | "UISizeConstraint" |
         "ImageButton" | "ScreenGui" | "UnreliableRemoteEvent" | "DataModel" | "Model" | "BasePart" |
         "Camera" | "WorldRoot" | "Actor" | "Tool" | "Workspace" | "WorldModel" | "Part" | "MeshPart" |
         "Terrain" | "Fire" | "ClickDetector" | "ProximityPrompt" | "InputObject" | "BaseScript" | "ModuleScript" | "Script" | "LocalScript" | "Instance")
@@ -185,7 +185,6 @@ pub(crate) fn set_parent(node: &Link, target: Option<Link>) -> Result<()> {
     let mut cursor = target.clone();
     while let Some(parent) = cursor {
         if Rc::ptr_eq(node, &parent) { return Err(Error::runtime("Parent would create a circular reference")); }
-        if parent.borrow().destroyed { return Err(Error::runtime("Cannot parent to a destroyed Instance")); }
         cursor = parent.borrow().parent.upgrade();
     }
     if let Some(parent) = previous { parent.borrow_mut().children.retain(|child| !Rc::ptr_eq(child, node)); }
@@ -244,7 +243,7 @@ fn full_name_bytes(node:&Link)->Vec<u8>{
 }
 
 pub(crate) fn destroy(node: &Link) -> Result<()> {
-    if node.borrow().destroyed { return Ok(()); }
+    if node.borrow().destroyed && node.borrow().children.is_empty() { return Ok(()); }
     let mut all = descendants(node);
     all.push(node.clone());
     for item in all {
@@ -515,6 +514,14 @@ pub fn install(lua: &Lua) -> Result<()> {
     crate::native::set_private_registry_value(lua,CACHE, cache)?;
     let instance = lua.create_table()?;
     let constructor = lua.create_function(|lua, values:MultiValue| {
+        if values.front().is_none_or(Value::is_nil) {
+            return Err(Error::lua_string("missing argument #1 to 'new' (string expected)"));
+        }
+        if let Some(value) = values.front() {
+            if !matches!(value, Value::String(_) | Value::Integer(_) | Value::Number(_)) {
+                return Err(Error::lua_string(format!("invalid argument #1 to 'new' (string expected, got {})", value.type_name())));
+            }
+        }
         let (class,parent)=<(String,Option<AnyUserData>)as mlua::FromLuaMulti>::from_lua_args(values,1,Some("new"),lua).map_err(argument_error)?;
         if class=="AnimationTrack" {return Err(Error::lua_string("Unable to create an Instance of type AnimationTrack"))}
         if class == "GCViewer" && crate::scheduler::current_origin(lua) == "executor" {

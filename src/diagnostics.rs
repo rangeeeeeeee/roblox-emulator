@@ -165,6 +165,7 @@ pub(crate) struct SpyCaller {
     line: i32,
     short_source: String,
     defined_line: i32,
+    function_address: Option<String>,
     name: String,
     nupvalues: u8,
     nparams: u8,
@@ -180,8 +181,10 @@ pub(crate) fn spy_caller(lua: &Lua) -> Option<SpyCaller> {
             if ffi::lua_getinfo(lua.state(), level, c"slnua".as_ptr(), &mut debug) == 0 { break; }
             let source = bounded_c_string(debug.source, 512);
             if debug.currentline > 0 && !source.is_empty() && source != "[C]" {
+                let pointer = crate::native::spy_frame_pointer(lua, level);
+                let function_address = (!pointer.is_null()).then(|| format!("0x{:016x}", ffi::lua_encodepointer(lua.state(), pointer as usize)));
                 return Some(SpyCaller { source, line: debug.currentline,
-                    short_source: bounded_c_string(debug.short_src, 512), defined_line: debug.linedefined,
+                    short_source: bounded_c_string(debug.short_src, 512), defined_line: debug.linedefined, function_address,
                     name: bounded_c_string(debug.name, 128), nupvalues: debug.nupvals,
                     nparams: debug.nparams, isvararg: debug.isvararg != 0 });
             }

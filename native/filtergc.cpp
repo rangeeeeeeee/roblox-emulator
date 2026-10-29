@@ -9,6 +9,11 @@ extern "C" int emu_getgc(lua_State* state);
 
 static char executor_proto_marker;
 
+extern "C" int emu_is_executor_prototype(const Proto* proto)
+{
+    return proto && proto->userdata == &executor_proto_marker;
+}
+
 static void mark_prototypes(lua_State* state, Proto* proto, int depth, int& remaining)
 {
     if (depth > 1000 || --remaining < 0)

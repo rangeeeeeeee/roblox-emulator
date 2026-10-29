@@ -83,6 +83,7 @@ pub(crate) fn random_bytes(bytes:&mut [u8])->std::io::Result<()> {
 }
 
 unsafe extern "C-unwind" {
+    fn emu_spy_frame_pointer(state: *mut ffi::lua_State, level: std::ffi::c_int) -> *const std::ffi::c_void;
     fn emu_inspector_mark_objects(state: *mut ffi::lua_State);
     fn emu_set_executor_profile(state: *mut ffi::lua_State, profile: std::ffi::c_int);
     fn emu_getgc(state: *mut ffi::lua_State) -> std::ffi::c_int;
@@ -129,6 +130,10 @@ unsafe extern "C-unwind" {
     fn emu_collectgarbage(state: *mut ffi::lua_State) -> std::ffi::c_int;
     fn emu_setfunctionname(state: *mut ffi::lua_State, name: *const std::ffi::c_char);
     fn emu_feed_function_hash(state: *mut ffi::lua_State, context: *mut std::ffi::c_void, feed: unsafe extern "C" fn(*mut std::ffi::c_void, *const u8, usize)) -> std::ffi::c_int;
+}
+
+pub(crate) fn spy_frame_pointer(lua: &Lua, level: i32) -> *const std::ffi::c_void {
+    unsafe { emu_spy_frame_pointer(lua.state(), level) }
 }
 
 unsafe extern "C" fn feed_function_hash(context: *mut std::ffi::c_void, data: *const u8, len: usize) {
@@ -183,6 +188,14 @@ pub fn name_function(lua: &Lua, function: &Function, name: &std::ffi::CStr) -> R
     set_function_name(lua, function, name.as_ptr())
 }
 
+unsafe extern "C-unwind" fn unavailable_client_loadstring(state:*mut ffi::lua_State)->i32 {
+    unsafe { ffi::lua_pushstring(state,c"loadstring() is not available".as_ptr());ffi::lua_error(state) }
+}
+pub(crate) fn disable_client_loadstring(lua:&Lua)->Result<()> {
+    let function:Function=unsafe{lua.exec_raw((),|state|ffi::lua_pushcfunctiond(state,unavailable_client_loadstring,c"loadstring".as_ptr()))?};
+    lua.globals().set("loadstring",function)
+}
+
 pub fn clear_function_name(lua: &Lua, function: &Function) -> Result<()> {
     set_function_name(lua, function, std::ptr::null())
 }
@@ -224,11 +237,9 @@ pub(crate) fn bind_debug_helpers(lua: &Lua, environment: &Table, debug: &Table) 
 }
 
 pub fn bind_isexecutorclosure(lua: &Lua, environment: &Table) -> Result<Function> {
-    let reference: Function = lua.load("return function() end").set_environment(environment.clone()).eval()?;
-    mark_executor_function(lua, &reference, environment)?;
     unsafe {
-        lua.exec_raw((environment.clone(), reference), |state| {
-            ffi::lua_pushcclosured(state, emu_isexecutorclosure, c"isexecutorclosure".as_ptr(), 2);
+        lua.exec_raw(environment.clone(), |state| {
+            ffi::lua_pushcclosured(state, emu_isexecutorclosure, c"isexecutorclosure".as_ptr(), 1);
         })
     }
 }

@@ -5,7 +5,7 @@ use mlua::{AnyUserData, Function};
 use serde_json::{Value as Json, json};
 use std::{cell::{Cell, RefCell}, collections::{HashMap, HashSet, VecDeque}, fs, path::Path, rc::Rc, time::{Duration, Instant}};
 
-const MAX_SOURCE: usize = 256 * 1024;
+const MAX_SOURCE: usize = 1024 * 1024;
 const MAX_COMMANDS: usize = 128;
 const MAX_ADVANCE: f64 = 60.0;
 const MAX_TIME: f64 = 3600.0;
@@ -355,7 +355,7 @@ impl Session {
         realm.arm(self.scenario.cpu_ms);
         if context == "executor" {
             let table = internal::<Table>(&realm.lua, "__emu")?.get("executorEnvironment")?;
-            let environment = CommandEnvironment { table, name: format!("Console/{}/executor", realm.config.id) };
+            let environment = CommandEnvironment { table, name: "script".to_owned() };
             self.environments.insert(key, environment.clone());
             return Ok(environment);
         }
@@ -399,7 +399,7 @@ impl Session {
         if context != config.side && !(context == "executor" && config.side == "client" && config.executor) {
             return Err(failure("Context is not available in the selected realm"));
         }
-        if source.len() > MAX_SOURCE { return Err(failure("Command source exceeds 256 KiB")); }
+        if source.len() > MAX_SOURCE { return Err(failure("Command source exceeds 1 MiB")); }
         if self.commands.len() >= MAX_COMMANDS {
             if let Some(index) = self.commands.iter().position(|command| matches!(command.borrow()["status"].as_str(), Some("completed" | "error"))) {
                 self.commands.remove(index);
@@ -424,9 +424,11 @@ impl Session {
             })
         } else { Ok(source.as_bytes().to_vec()) };
         let function = input.and_then(|bytes| {
+            let name = if context == "executor" { format!("=script.{:08x}", self.next_command) }
+                else { format!("=Console/{realm}/{context}/{}", self.next_command) };
             let chunk = runtime.lua.load(bytes)
                 .set_mode(if format == "source" { mlua::chunk::ChunkMode::Text } else { mlua::chunk::ChunkMode::Binary })
-                .set_name(format!("=Console/{realm}/{context}/{}", self.next_command)).set_environment(environment.table.clone());
+                .set_name(name).set_environment(environment.table.clone());
             if context == "executor" { chunk.set_compiler(crate::native::executor_compiler(&runtime.lua)).into_function() }
             else { chunk.into_function() }
         });

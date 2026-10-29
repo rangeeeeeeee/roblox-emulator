@@ -1430,7 +1430,7 @@
       if ($('runButton').disabled) return;
       if (activeScriptId) { await saveScript(activeScriptId); return; }
       const realm = $('realmSelect').value, source = editor.getValue(), context = mode;
-      if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) { showError('Source exceeds 256 KiB.'); return; }
+      if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) { showError('Source exceeds 1 MiB.'); return; }
       const previous = histories[context][0];
       const format = formats[context];
       if (!previous || previous.source !== source || previous.realm !== realm || previous.format !== format) histories[context].unshift({source, realm, format, at: Date.now(), filename: filenames[context]});
@@ -2193,21 +2193,22 @@
     function spyFinderText(event) {
       const realm = (state?.realms || []).find(item => item.id === event?.realm);
       const origin = event?.origin;
-      if (!realm?.executor || event?.direction !== 'outgoing' || event.kind === 'remote_return' || typeof origin?.shortSource !== 'string' || !origin.shortSource || origin.shortSource === '[C]' || !Number.isSafeInteger(origin.definedLine) || origin.definedLine < 1) return null;
-      const source = spyQuote(origin.shortSource); if (!source) return null;
-      return '-- Heuristic only: run in the executor of the captured VM. Identity is not guaranteed.\n' +
+      if (!realm?.executor || event?.direction !== 'outgoing' || event.kind === 'remote_return' || typeof origin?.shortSource !== 'string' || !origin.shortSource || origin.shortSource === '[C]' || !Number.isSafeInteger(origin.definedLine) || origin.definedLine < 1 || !/^0x[0-9a-f]{16}$/i.test(origin.functionAddress || '')) return null;
+      const source = spyQuote(origin.shortSource), address = spyQuote('function: ' + origin.functionAddress); if (!source || !address) return null;
+      return '-- Run promptly in the captured executor VM; GC may collect the function and reuse its address.\n' +
         '-- Optionally fill Constants and Upvalues by hand; they were not captured.\n' +
         'local options = { IgnoreExecutor = false, Constants = {}, Upvalues = {} }\n' +
         'local matches = {}\n' +
         'for _, candidate in filtergc("function", options) do\n' +
         '    if islclosure(candidate) then\n' +
-        '        local ok, source, line = pcall(debug.info, candidate, "sl")\n' +
-        '        if ok and source == ' + source + ' and line == ' + origin.definedLine + ' then\n' +
-        '            table.insert(matches, candidate)\n' +
+        '        local okAddress, address = pcall(tostring, candidate)\n' +
+        '        if okAddress and address == ' + address + ' then\n' +
+        '            local ok, source, line = pcall(debug.info, candidate, "sl")\n' +
+        '            if ok and source == ' + source + ' and line == ' + origin.definedLine + ' then table.insert(matches, candidate) end\n' +
         '        end\n' +
         '    end\n' +
         'end\n' +
-        'if #matches ~= 1 then error("Function finder: expected one candidate, found " .. #matches, 0) end\n' +
+        'if #matches ~= 1 then error("Function finder: expected one candidate, found " .. #matches .. "; capture again if the function was collected", 0) end\n' +
         'return matches[1]';
     }
     function spyBuffer(value) {
@@ -2300,7 +2301,7 @@
       if (spyDetailTab === 'origin') {
         if (!event.origin || typeof event.origin.source !== 'string') { detail.append(element('p', 'inspection-note', 'Caller information was not captured for this message.')); return; }
         const origin = event.origin;
-        const fields = [['Source', origin.source], ['Calling line', origin.line], ['Short source', origin.shortSource], ['Defined line', origin.definedLine], ['Function', origin.name || '(anonymous)'], ['Upvalues', origin.nupvalues], ['Parameters', origin.nparams], ['Vararg', origin.isvararg]];
+        const fields = [['Source', origin.source], ['Calling line', origin.line], ['Short source', origin.shortSource], ['Defined line', origin.definedLine], ['Function', origin.name || '(anonymous)'], ['Address', origin.functionAddress], ['Upvalues', origin.nupvalues], ['Parameters', origin.nparams], ['Vararg', origin.isvararg]];
         for (const [name, value] of fields) if (value !== null && value !== undefined) detail.append(element('div', '', name + ': ' + value));
         return;
       }
@@ -2342,7 +2343,7 @@
       $('spyPause').title = 'Pause capture only; active blocks continue to apply.';
       $('spyCopyPath').disabled = !spyReference(groupEvent?.remote); $('spyCopy').disabled = !spyCopyText(event);
       $('spyCopyFunction').disabled = !spyFinderText(event);
-      $('spyCopyFunction').title = spyFinderText(event) ? 'Heuristic finder for this executor VM; a unique candidate can still be a different closure. Constants and upvalues must be supplied manually.' : 'Available for outgoing Lua calls with source and defined line in an executor VM.';
+      $('spyCopyFunction').title = spyFinderText(event) ? 'Find by captured address, source and line in this executor VM. GC may collect the function and reuse its address; constants and upvalues are optional manual filters.' : 'Available for newly captured outgoing Lua calls with an address, source and defined line in an executor VM.';
       $('spyCopy').textContent = event?.direction === 'outgoing' && event?.kind !== 'remote_return' ? 'Copy calling code' : 'Copy arguments';
       const realm = (state?.realms || []).find(item => item.id === spyTarget), contexts = realm?.side === 'server' ? [['server', 'Server']] : realm?.side === 'client' ? [['client', 'Client'], ...(realm.executor ? [['executor', 'Executor']] : [])] : [];
       const preferredContext = spyReplayChoices.get(spyTarget) || ($('realmSelect').value === spyTarget ? mode : realm?.side) || '';
@@ -2793,9 +2794,9 @@
       if (!/\.(lua|luau|b64)$/i.test(file.name)) { showError('Choose a .lua, .luau or Base64 .b64 file.'); return; }
       const targetMode = mode;
       try {
-        if (file.size > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 256 KiB.');
+        if (file.size > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 1 MiB.');
         const source = await file.text();
-        if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 256 KiB.');
+        if (EmulatorEditor.sourceBytes(source) > EmulatorEditor.MAX_SOURCE_BYTES) throw new Error('Source exceeds 1 MiB.');
         drafts[targetMode] = source; filenames[targetMode] = file.name;
         formats[targetMode] = /\.b64$/i.test(file.name) ? 'bytecode-base64' : 'source';
         if (targetMode === mode) { setFormat(formats[targetMode]); editor.setValue(source); $('documentName').textContent = file.name; }

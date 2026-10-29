@@ -31,6 +31,7 @@ mod inspector;
 mod packet_spy;
 mod lint;
 mod bytecode;
+#[cfg(windows)] mod unicode;
 
 #[cfg(windows)]
 #[link(name="kernel32")]
@@ -305,6 +306,7 @@ impl Host {
             scheduler::install_native_host(&lua)?;
             types::install(&lua)?;
             model::install_native_host(&lua)?;
+            if cfg.side=="client" {native::disable_client_loadstring(&lua)?;}
             executor::install(&lua)?;
         } else {
             lua.load(include_str!("../runtime/scheduler.luau")).set_name("@emulator/scheduler").exec()?;

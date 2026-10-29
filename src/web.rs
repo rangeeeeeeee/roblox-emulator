@@ -46,6 +46,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
     let limit = match path.as_str() {
         "/api/place/load" => 16 * 1024 * 1024,
         "/api/place/update" => 6 * 1024 * 1024,
+        // JSON escaping can expand each source byte to six bytes.
+        "/api/execute" => 6 * 1024 * 1024 + 4096,
         _ => MAX_BODY,
     };
     if length > limit { return Err(format!("Request body exceeds {limit} bytes")); }
