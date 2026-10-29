@@ -162,8 +162,10 @@
     .property-name { padding: 4px 8px 4px 16px; color: #bcbec8; overflow-wrap: anywhere; }
     .property-value { min-width: 0; padding: 4px 7px; border-left: 1px solid #202227; color: #d5d7dd; overflow-wrap: anywhere; }
     .property-value .log-value { color: inherit; }
-    .gc-dialog { position: fixed; inset: auto 22px 42px auto; margin: 0; width: min(740px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 90px)); padding: 0; z-index: 10; overflow: hidden; }
-    .gc-dialog[open] { display: flex; flex-direction: column; }
+    .editor-panel[data-tool]:not([data-tool=""]) > .editor-tools, .editor-panel[data-tool]:not([data-tool=""]) > .editor-wrap, .editor-panel[data-tool]:not([data-tool=""]) > .editor-footer { display: none; }
+    .editor-panel[data-tool]:not([data-tool=""]) #inputFormat { display: none; }
+    .gc-dialog, .spy-dialog { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: 0; overflow: hidden; }
+    .gc-dialog[hidden], .spy-dialog[hidden] { display: none; }
     .gc-dialog h2 { font-size: 15px; }
     .gc-controls { display: grid; grid-template-columns: minmax(120px, 1fr) 130px; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
     .gc-search { grid-column: 1 / -1; display: flex; gap: 4px; }
@@ -173,6 +175,42 @@
     .gc-index { color: var(--muted); min-width: 36px; font-size: 10px; }
     .gc-value { flex: 1; min-width: 0; }
     .gc-insert { align-self: flex-start; flex-shrink: 0; }
+    .spy-toolbar { display:flex; align-items:center; gap:5px; padding:6px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+    .spy-toolbar input[type="search"] { flex:1; min-width:130px; }
+    .spy-toolbar select { max-width:190px; }
+    .spy-toolbar label { white-space:nowrap; }
+    .spy-tabs { display:flex; gap:2px; padding:4px; border-bottom:1px solid var(--line); }
+    .spy-tabs button { flex:1; padding:4px 6px; border-color:transparent; background:transparent; }
+    .spy-tabs button[aria-pressed="true"] { background:var(--raised); border-color:var(--line); color:var(--text); }
+    .spy-side-tabs button { min-width:54px; }
+    .spy-body { display:grid; grid-template-columns:minmax(180px, 30%) minmax(0, 1fr); flex:1; min-height:0; }
+    .spy-sidebar, .spy-main { display:flex; flex-direction:column; min-height:0; background:var(--editor); }
+    .spy-sidebar { border-right:1px solid var(--line); }
+    .spy-list, .spy-captures, .spy-detail { overflow:auto; min-height:0; }
+    .spy-list { flex:1; }
+    .spy-row { display:flex; align-items:center; gap:6px; width:100%; padding:6px 8px; border:0; border-radius:0; border-bottom:1px solid var(--line); background:transparent; text-align:left; white-space:normal; }
+    .spy-row-title { flex:1; min-width:0; color:#c8ddf4; overflow-wrap:anywhere; }
+    .spy-row-meta { flex:none; color:var(--muted); font-size:11px; }
+    .spy-group-title { padding:6px 8px; color:var(--muted); border-bottom:1px solid var(--line); }
+    .spy-captures { flex:1; min-height:90px; }
+    .spy-capture { display:block; width:100%; padding:5px 8px; border:0; border-radius:0; border-bottom:1px solid var(--line); background:transparent; text-align:left; white-space:normal; font:12px/1.45 Consolas, monospace; }
+    .spy-row:nth-child(odd), .spy-capture:nth-child(odd) { background:#1b1d22; }
+    .spy-row:nth-child(even), .spy-capture:nth-child(even) { background:#24262d; }
+    .spy-row:hover, .spy-capture:hover { background:#30343d; }
+    .spy-row[aria-selected="true"], .spy-capture[aria-selected="true"] { background:#314a5e; }
+    .spy-row:focus-visible, .spy-capture:focus-visible { outline:1px solid #85b7e9; outline-offset:-1px; }
+    .spy-capture-value { display:grid; grid-template-columns:24px minmax(0,1fr) auto; gap:6px; overflow-wrap:anywhere; }
+    .spy-capture-type, .spy-capture-meta { color:var(--muted); font-size:11px; }
+    .spy-capture-meta { display:block; margin-top:3px; }
+    .spy-detail-tabs { border-top:1px solid var(--line); }
+    .spy-detail { flex:1; min-height:110px; padding:8px; font:12px/1.5 Consolas, monospace; overflow-wrap:anywhere; }
+    .spy-detail pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:8px; background:#191a1f; border:1px solid var(--line); }
+    .spy-tree { padding-left:16px; border-left:1px solid #3b4b5f; }
+    .spy-tree summary { cursor:pointer; color:#9dc5f5; }
+    .spy-buffer pre { white-space:pre; overflow:auto; font:11px/1.4 Consolas, monospace; }
+    .spy-footer { flex-wrap:wrap; gap:5px; }
+    .spy-footer select { max-width:110px; }
+    .spy-footer #spyStatus { flex:1; min-width:130px; }
     .example-tools { padding: 4px 7px; border-top: 1px solid var(--line); }
     .example-tools select { flex: 1; font-size: 12px; }
     .example-hint { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 11px; min-height: 24px; }
@@ -304,6 +342,7 @@
       <label for="profileSelect">Reset profile</label>
       <select id="profileSelect"><option value="generic">generic (sUNC loadfile)</option><option value="unc">unc (UNC loadfile)</option><option value="macsploit-744.2">macsploit-744.2</option><option value="macsploit-744.4">macsploit-744.4</option></select>
       <button id="resetButton" class="danger" type="button" disabled>Reset VMs…</button>
+      <span id="profilePending" class="runtime-note" hidden>Reset VMs to apply profile</span>
     </div>
   </section>
 
@@ -321,7 +360,8 @@
     <div id="clientField" class="field" hidden><label for="clientSelect">Client</label><select id="clientSelect" disabled></select></div>
     <div class="field"><label for="actorSelect">Actor</label><select id="actorSelect" disabled></select></div>
     <div class="field vm-field"><label for="realmSelect">Virtual machine</label><select id="realmSelect" disabled><option>Waiting for state…</option></select></div>
-    <button id="openGcButton" class="small" type="button" hidden disabled>GC viewers</button>
+    <button id="openGcButton" class="small" type="button" title="Open GC Viewer in the selected client executor VM" disabled>GC Viewer</button>
+    <button id="openSpyButton" class="small" type="button" disabled>Remote Spy</button>
     <button id="openFilesButton" class="small" type="button" hidden disabled>Executor files</button>
     <div class="game-input" aria-label="Game keyboard input">
       <label for="gameInputRealm" class="runtime-note">Input client</label><select id="gameInputRealm" aria-label="Input client" disabled></select>
@@ -469,7 +509,7 @@
     <div class="dialog-actions"><button id="networkDeny" class="danger" type="button" autofocus>Deny</button><button id="networkAllow" type="button">Allow request</button></div>
   </dialog>
 
-  <dialog id="gcDialog" class="gc-dialog" aria-labelledby="gcTitle" aria-describedby="gcContext">
+  <section id="gcDialog" class="gc-dialog" role="tabpanel" aria-labelledby="gcTitle" aria-describedby="gcContext" hidden>
     <div class="panel-heading"><div class="panel-title"><h2 id="gcTitle">GCViewer</h2></div><div class="editor-tools" style="padding:0;border:0"><button id="refreshGc" class="small" type="button">Refresh</button><button id="closeGc" class="small" type="button">Close</button></div></div>
     <div id="gcContext" class="inspection-note"></div>
     <div class="gc-controls">
@@ -479,12 +519,20 @@
     </div>
     <div id="gcList" class="gc-list" tabindex="0" role="region" aria-label="GC values"></div>
     <div class="output-footer"><span id="gcStatus" role="status">No values loaded.</span><button id="gcMore" class="load-more" type="button" hidden>Load more</button></div>
-  </dialog>
+  </section>
+
+  <section id="spyDialog" class="spy-dialog" role="tabpanel" aria-labelledby="spyTitle" aria-describedby="spyContext" hidden>
+    <div class="panel-heading"><h2 id="spyTitle">Remote Spy</h2><span id="spyContext" class="runtime-note"></span><button id="spyClose" class="small" type="button">Close</button></div>
+    <div class="spy-toolbar"><div class="spy-tabs spy-side-tabs" role="group" aria-label="Capture side"><button id="spyServer" type="button" aria-pressed="false">Server</button><button id="spyClient" type="button" aria-pressed="true">Client</button></div><label for="spyRealm">VM</label><select id="spyRealm" aria-label="Remote Spy VM"></select><input id="spyFilter" type="search" placeholder="Filter remotes…" aria-label="Filter remote messages"><label><input id="spyShowIgnored" type="checkbox"> Show ignored</label><button id="spyToggle" class="small" type="button">Stop</button><button id="spyPause" class="small" type="button">Pause</button><button id="spyClear" class="small" type="button">Clear</button></div>
+    <div class="spy-body"><div class="spy-sidebar"><div class="spy-tabs" role="group" aria-label="Message direction"><button type="button" data-spy-direction="all" aria-pressed="false">All</button><button type="button" data-spy-direction="outgoing" aria-pressed="true">Outgoing</button><button type="button" data-spy-direction="incoming" aria-pressed="false">Incoming</button></div><div id="spyList" class="spy-list" role="listbox" aria-label="Captured remotes"></div></div><div class="spy-main"><div id="spyGroupTitle" class="spy-group-title">Select a remote.</div><div id="spyCaptures" class="spy-captures" role="listbox" aria-label="Captured calls"></div><div class="spy-tabs spy-detail-tabs" role="group" aria-label="Capture details"><button type="button" data-spy-detail="arguments" aria-pressed="true">Arguments</button><button type="button" data-spy-detail="code" aria-pressed="false">Code</button><button type="button" data-spy-detail="origin" aria-pressed="false">Origin</button></div><div id="spyDetail" class="spy-detail">Select a remote message.</div></div></div>
+    <div class="output-footer spy-footer"><span id="spyStatus" role="status">Not listening</span><button id="spyIgnore" class="small" type="button" disabled>Ignore</button><button id="spyBlock" class="small" type="button" disabled>Block</button><button id="spyCopyPath" class="small" type="button" disabled>Copy remote path</button><button id="spyCopy" class="small" type="button" disabled>Copy</button><button id="spyCopyFunction" class="small" type="button" disabled>Copy function finder</button><label for="spyReplayContext">Replay as</label><select id="spyReplayContext" aria-label="Replay context"></select><button id="spyReplay" class="small" type="button" disabled>Replay</button></div>
+  </section>
 
   <script src="/assets/editor.js"></script>
   <script>
     'use strict';
     const $ = id => document.getElementById(id);
+    $('documentTabs').after($('gcDialog'), $('spyDialog'));
     const modes = ['server', 'client', 'executor'];
     const titles = {server: 'Server', client: 'Client', executor: 'Executor'};
     const PLACE_SOURCE_LIMIT = 1024 * 1024, RUNTIME_SOURCE_LIMIT = 8 * 1024 * 1024;
@@ -529,7 +577,10 @@
     let gcView = null, gcSerial = 0, gcSearchTimer = null;
     let place = null, placeView = false, placeSelection = '', placeDirty = false, placeEpoch = 0, placeRequestSerial = 0, placeImportError = '', placeAutosaveError = '', placeHasRecovery = false, profileChosenByUser = false;
     let placeInsertParent = null, placeInsertObjectId = '', explorerSelected = null;
-    let activeScriptId = null, activeRuntimeKey = null, switchingDocument = false, displayedNetworkId = null;
+    let activeScriptId = null, activeRuntimeKey = null, activeTool = null, switchingDocument = false, displayedNetworkId = null;
+    const toolTabs = new Set();
+    let spyState = null, spyTarget = '', spySelected = null, spyGroup = '', spySide = 'client', spyDirection = 'outgoing', spyDetailTab = 'arguments', spyTimer = null, spyBusy = false, spyEpoch = 0, spyFingerprint = '', spyDetailKey = null, spyError = '';
+    const spyChoices = {server: '', client: ''}, spyOwned = new Set(), spyStopped = new Set(), spyIgnored = new Set(), spyReplayChoices = new Map(), spyManagedBlocks = new Set();
     let scriptAutosaveTimer = null, scriptAutosaveBlocked = false, savingScripts = false, replacingPlace = false;
     const scriptDocs = new Map(), runtimeDocs = new Map(), placeExpanded = new Set();
     const missingStudioIcons = new Set(), checkingStudioIcons = new Set();
@@ -584,7 +635,8 @@
         select.replaceChildren(fragment);
         select._options = signature;
       }
-      select.value = items.some(item => item[0] === preferred) ? preferred : (items[0]?.[0] || '');
+      const nextValue = items.some(item => item[0] === preferred) ? preferred : (items[0]?.[0] || '');
+      if (select.value !== nextValue) select.value = nextValue;
     }
     function eligibleRealms() {
       return (state?.realms || []).filter(realm => mode === 'executor' ? realm.executor === true : realm.side === mode);
@@ -647,9 +699,12 @@
       for (const id of ['clientSelect', 'actorSelect', 'realmSelect']) $(id).disabled = busy || !state;
       for (const button of document.querySelectorAll('.mode')) button.disabled = busy;
       $('profileSelect').disabled = busy;
+      const executorRealms = (state?.realms || []).filter(realm => realm.executor);
+      $('profilePending').hidden = !executorRealms.length || executorRealms.every(realm => realm.executorProfile === $('profileSelect').value);
       $('gameInputRealm').disabled = !available || !$('gameInputRealm').value;
       $('gameInput').disabled = !available || !$('gameInputRealm').value;
       $('openFilesButton').disabled = !available || mode !== 'executor' || !$('realmSelect').value;
+      $('openSpyButton').disabled = !available || !!state?.stopped || !$('realmSelect').value;
       $('budgetSelect').disabled = !available || !Number.isFinite(state?.limits?.cpuMs);
       $('refreshExplorer').disabled = !available || !$('realmSelect').value;
       for (const id of ['placeNew', 'placeSave', 'placeLoad', 'placeRecover']) $(id).disabled = !available || (id === 'placeSave' && !place);
@@ -678,6 +733,7 @@
       $('historySelect').title = storageAvailable ? 'Last 20 runs for this mode, stored in this browser' : 'Browser storage is unavailable; history lasts until this page closes';
     }
     function switchMode(next, initial = false) {
+      const previousTool = activeTool;
       if (!initial && (activeScriptId || activeRuntimeKey)) showConsole();
       const previousRealm = initial ? null : selectedRealm();
       if (!initial) drafts[mode] = editor.getValue();
@@ -692,6 +748,7 @@
       if (editor.getValue() !== drafts[mode]) editor.setValue(drafts[mode]);
       $('documentName').textContent = filenames[mode];
       renderHistory(); renderTargets(); cursor();
+      if (previousTool && toolTabs.has(previousTool)) { activeTool = previousTool; updateToolPanels(); renderDocumentTabs(); }
       if (!initial) save();
     }
     function cursor() {
@@ -881,22 +938,34 @@
       icon.src = '/assets/studio-class/' + (['Script', 'LocalScript', 'ModuleScript'].includes(className) ? className : 'Script') + '.png';
       icon.onerror = () => { icon.hidden = true; }; return icon;
     }
+    function showTool(kind) {
+      if (!toolTabs.has(kind)) return;
+      activeTool = kind; updateToolPanels(); renderDocumentTabs();
+    }
+    function updateToolPanels() {
+      document.querySelector('.editor-panel').dataset.tool = activeTool || '';
+      $('gcDialog').hidden = activeTool !== 'gc'; $('spyDialog').hidden = activeTool !== 'spy';
+      if (activeTool) $('documentName').textContent = activeTool === 'gc' ? 'GC Viewer' : 'Remote Spy';
+      else if (activeScriptId && scriptDocs.has(activeScriptId)) { const doc = scriptDocs.get(activeScriptId); $('documentName').textContent = doc.name + ' · ' + doc.class; }
+      else if (activeRuntimeKey && runtimeDocs.has(activeRuntimeKey)) { const doc = runtimeDocs.get(activeRuntimeKey); $('documentName').textContent = doc.name + ' · ' + doc.class + ' · ' + doc.realm; }
+      else $('documentName').textContent = filenames[mode];
+    }
     function renderDocumentTabs() {
       const tabs = $('documentTabs'), fragment = document.createDocumentFragment();
-      const consoleWrapper = element('div', 'document-tab'); consoleWrapper.dataset.selected = String(!activeScriptId && !activeRuntimeKey);
+      const consoleWrapper = element('div', 'document-tab'); consoleWrapper.dataset.selected = String(!activeTool && !activeScriptId && !activeRuntimeKey);
       const consoleTab = element('button', 'small', 'Console');
-      consoleTab.type = 'button'; consoleTab.setAttribute('role', 'tab'); consoleTab.setAttribute('aria-selected', String(!activeScriptId && !activeRuntimeKey));
+      consoleTab.type = 'button'; consoleTab.setAttribute('role', 'tab'); consoleTab.setAttribute('aria-selected', String(!activeTool && !activeScriptId && !activeRuntimeKey));
       consoleTab.addEventListener('click', showConsole); consoleWrapper.append(consoleTab); fragment.append(consoleWrapper);
       for (const [id, doc] of scriptDocs) {
         if (doc.closed) continue;
         const wrapper = element('div', 'document-tab');
-        wrapper.dataset.selected = String(activeScriptId === id);
+        wrapper.dataset.selected = String(!activeTool && activeScriptId === id);
         const tab = element('button', 'small'); tab.append(documentIcon(doc.class), document.createTextNode(doc.name + (doc.source !== doc.savedSource ? ' •' : '')));
-        tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeScriptId === id));
+        tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(!activeTool && activeScriptId === id));
         tab.title = doc.class + ' · ' + doc.name; tab.addEventListener('click', () => showScript(id));
         const close = element('button', 'close-tab', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close ' + doc.name);
         close.addEventListener('click', () => {
-          if (activeScriptId === id) showConsole();
+          if (activeScriptId === id) { const previousTool = activeTool; showConsole(); if (previousTool) showTool(previousTool); }
           if (doc.source !== doc.savedSource || doc.savingSource !== undefined) { doc.closed = true; scriptAutosaveBlocked = false; scheduleScriptAutosave(0); }
           else { editor.forgetDocument('place:' + placeEpoch + ':' + id); scriptDocs.delete(id); }
           renderDocumentTabs(); updateActions();
@@ -905,37 +974,45 @@
       }
       for (const [key, doc] of runtimeDocs) {
         const wrapper = element('div', 'document-tab');
-        wrapper.dataset.selected = String(activeRuntimeKey === key);
+        wrapper.dataset.selected = String(!activeTool && activeRuntimeKey === key);
         const tab = element('button', 'small'); tab.append(documentIcon(doc.class), document.createTextNode(doc.name + ' · Read-only'));
-        tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeRuntimeKey === key));
+        tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(!activeTool && activeRuntimeKey === key));
         tab.title = doc.class + ' · ' + doc.name + ' · ' + doc.realm + ' · ' + titles[doc.context] + ' (read-only snapshot)';
         tab.addEventListener('click', () => showRuntimeDocument(key));
         const close = element('button', 'close-tab', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close ' + doc.name + ' read-only');
         close.addEventListener('click', () => {
-          if (activeRuntimeKey === key) showConsole();
+          if (activeRuntimeKey === key) { const previousTool = activeTool; showConsole(); if (previousTool) showTool(previousTool); }
           editor.forgetDocument('runtime:' + key); runtimeDocs.delete(key); renderDocumentTabs(); updateActions();
         });
+        wrapper.append(tab, close); fragment.append(wrapper);
+      }
+      for (const [kind, name] of [['gc', 'GC Viewer'], ['spy', 'Remote Spy']]) {
+        if (!toolTabs.has(kind)) continue;
+        const wrapper = element('div', 'document-tab'); wrapper.dataset.selected = String(activeTool === kind);
+        const tab = element('button', 'small', name); tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(activeTool === kind)); tab.addEventListener('click', () => showTool(kind));
+        const close = element('button', 'close-tab', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close ' + name); close.disabled = kind === 'spy' && spyBusy;
+        close.addEventListener('click', () => { if (kind === 'gc') closeGcViewer(); else closeSpy(); });
         wrapper.append(tab, close); fragment.append(wrapper);
       }
       tabs.replaceChildren(fragment);
     }
     function showConsole(discardCurrent = false) {
-      if (!activeScriptId && !activeRuntimeKey) return;
+      if (!activeScriptId && !activeRuntimeKey) { if (activeTool) { activeTool = null; updateToolPanels(); renderDocumentTabs(); editor.focus(); } return; }
       const current = scriptDocs.get(activeScriptId); if (current && discardCurrent !== true) current.source = editor.getValue();
-      activeScriptId = null; activeRuntimeKey = null; switchingDocument = true;
+      activeScriptId = null; activeRuntimeKey = null; activeTool = null; updateToolPanels(); switchingDocument = true;
       try { editor.setContext(mode); editor.setReadOnly(replacingPlace); setFormat(formats[mode]); if (editor.getValue() !== drafts[mode]) editor.setValue(drafts[mode]); }
       finally { switchingDocument = false; }
       $('documentName').textContent = filenames[mode]; renderDocumentTabs(); cursor(); updateActions();
     }
     function showScript(id) {
       const node = scriptNode(id); if (!node) return;
-      if (activeScriptId === id) { editor.focus(); return; }
+      if (activeScriptId === id) { activeTool = null; updateToolPanels(); renderDocumentTabs(); editor.focus(); return; }
       if (activeScriptId) { const current = scriptDocs.get(activeScriptId); if (current) current.source = editor.getValue(); }
       else if (!activeRuntimeKey) drafts[mode] = editor.getValue();
       let doc = scriptDocs.get(id);
       if (!doc) { doc = {name: node.name, class: node.class, source: node.source || '', savedSource: node.source || ''}; scriptDocs.set(id, doc); }
       doc.closed = false;
-      activeScriptId = id; activeRuntimeKey = null; switchingDocument = true;
+      activeScriptId = id; activeRuntimeKey = null; activeTool = null; updateToolPanels(); switchingDocument = true;
       let loaded = true;
       try {
         const context = scriptContext(node);
@@ -949,10 +1026,10 @@
     }
     function showRuntimeDocument(key) {
       const doc = runtimeDocs.get(key); if (!doc) return;
-      if (activeRuntimeKey === key) { editor.focus(); return; }
+      if (activeRuntimeKey === key) { activeTool = null; updateToolPanels(); renderDocumentTabs(); editor.focus(); return; }
       if (activeScriptId) { const current = scriptDocs.get(activeScriptId); if (current) current.source = editor.getValue(); }
       else if (!activeRuntimeKey) drafts[mode] = editor.getValue();
-      activeScriptId = null; activeRuntimeKey = key; switchingDocument = true;
+      activeScriptId = null; activeRuntimeKey = key; activeTool = null; updateToolPanels(); switchingDocument = true;
       let loaded = true;
       try {
         editor.setContext(doc.context, 'runtime:' + key); editor.setReadOnly(false); editor.setFormat('source');
@@ -1531,19 +1608,23 @@
     }
     function hideGc() {
       ++gcSerial; clearTimeout(gcSearchTimer); gcView = null;
-      if ($('gcDialog').open) $('gcDialog').close();
+      toolTabs.delete('gc'); if (activeTool === 'gc') activeTool = null;
+      updateToolPanels(); renderDocumentTabs();
       $('gcList').replaceChildren();
     }
     function resetInspections() {
       ++inspectionGeneration; ++explorerEpoch; ++propertySerial;
       explorerOrigin = null; explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null; explorerExpanded.clear(); explorerLoadedOffsets.clear(); viewerSeen.clear(); hideGc(); closeRuntimeDocuments();
+      clearTimeout(spyTimer); ++spyEpoch; spyState = null; spyTarget = ''; spySelected = null; spyGroup = ''; spyFingerprint = ''; spyDetailKey = null; spyError = ''; spyBusy = false;
+      spyChoices.server = spyChoices.client = ''; spyOwned.clear(); spyStopped.clear(); spyIgnored.clear(); spyReplayChoices.clear(); spyManagedBlocks.clear();
+      toolTabs.delete('spy'); if (activeTool === 'spy') activeTool = null; updateToolPanels(); renderDocumentTabs();
       rows.clear(); expanded.clear(); $('logList').replaceChildren();
     }
     function syncInspectorTarget() {
       const origin = {realm: $('realmSelect').value, context: mode, generation: inspectionGeneration};
       const changed = !sameOrigin(origin, explorerOrigin);
       if (changed) {
-        explorerOrigin = origin; explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null; explorerExpanded.clear(); explorerLoadedOffsets.clear(); hideGc();
+        explorerOrigin = origin; explorerSelection = ''; explorerSelectionObjectId = ''; explorerSelected = null; explorerExpanded.clear(); explorerLoadedOffsets.clear();
         if (!placeView) {
           $('explorerContext').textContent = origin.realm ? titles[origin.context] + ' · ' + origin.realm : 'Select a VM.';
           $('explorerTree').replaceChildren(); propertiesTitle();
@@ -1837,33 +1918,37 @@
       renderTargets(); save(); selectInstance(id, explorerOrigin);
     }
     function eligibleViewers() {
-      return mode === 'executor' ? (state?.viewers || []).filter(viewer => viewer.realm === $('realmSelect').value && viewer.enabled === true) : [];
+      const realm = gcView?.realm || (mode === 'executor' ? $('realmSelect').value : '');
+      return (state?.viewers || []).filter(viewer => viewer.realm === realm && viewer.enabled === true);
     }
     function syncGcViewers(targetChanged = false) {
       const viewers = eligibleViewers();
-      $('openGcButton').hidden = mode !== 'executor';
-      $('openGcButton').disabled = !connected || busy || !!state?.network?.pending || !selectedRealm()?.executor;
+      const gcRealm = selectedRealm();
+      const gcAvailable = gcRealm?.side === 'client' && gcRealm.executor === true;
+      $('openGcButton').disabled = !connected || busy || !!state?.network?.pending || !!state?.stopped || !gcAvailable;
+      $('openGcButton').title = gcAvailable ? 'Open GC Viewer for ' + gcRealm.id + (mode === 'client' ? ' in Executor context' : '') : 'Select a client VM with an executor to open GC Viewer';
       $('openFilesButton').hidden = mode !== 'executor';
       $('openFilesButton').disabled = !connected || busy || !$('realmSelect').value;
-      $('openGcButton').textContent = viewers.length ? 'GC viewers (' + viewers.length + ')' : 'Create GC viewer';
+      $('openGcButton').textContent = viewers.length ? 'GC Viewer (' + viewers.length + ')' : 'GC Viewer';
       setOptions($('gcViewerSelect'), viewers.map(viewer => [viewer.id, viewer.name || 'GCViewer']), gcView?.id);
       if (gcView && !viewers.some(viewer => viewer.id === gcView.id && viewer.realm === gcView.realm)) hideGc();
-      const changed = viewers.find(viewer => !viewerSeen.has(viewer.realm + '/' + viewer.id) || viewerSeen.get(viewer.realm + '/' + viewer.id) !== viewer.revision);
-      if (changed || (targetChanged && viewers.length)) { openGcViewer(changed || viewers[0]); return; }
+      const changed = gcView ? viewers.find(viewer => viewer.id === gcView.id && viewer.revision !== gcView.revision) : viewers.find(viewer => !viewerSeen.has(viewer.realm + '/' + viewer.id) || viewerSeen.get(viewer.realm + '/' + viewer.id) !== viewer.revision);
+      if (changed || (!gcView && targetChanged && viewers.length)) { openGcViewer(changed || viewers[0]); return; }
       if (gcView) {
         const current = viewers.find(viewer => viewer.id === gcView.id);
         if (current) $('gcTitle').textContent = current.name || 'GCViewer';
       }
     }
     function openGcViewer(viewer, fresh = true) {
-      if (!viewer || viewer.realm !== $('realmSelect').value || mode !== 'executor') return;
+      if (!viewer || (viewer.realm !== gcView?.realm && (viewer.realm !== $('realmSelect').value || mode !== 'executor'))) return;
+      if (gcView && gcView.realm === viewer.realm && gcView.id === viewer.id && gcView.revision === viewer.revision) { showTool('gc'); return; }
       ++gcSerial; clearTimeout(gcSearchTimer);
       gcView = {realm: viewer.realm, id: viewer.id, revision: viewer.revision, generation: inspectionGeneration, count: 0, nextOffset: null, opened: new Set()};
       viewerSeen.set(viewer.realm + '/' + viewer.id, viewer.revision);
       $('gcTitle').textContent = viewer.name || 'GCViewer';
       $('gcContext').textContent = 'Executor · ' + viewer.realm;
       $('gcViewerSelect').value = viewer.id;
-      if (!$('gcDialog').open) $('gcDialog').show();
+      toolTabs.add('gc'); showTool('gc');
       loadGcPage(fresh, 0);
     }
     async function loadGcPage(fresh = false, offset = 0) {
@@ -1897,13 +1982,13 @@
             if (busy || current.generation !== inspectionGeneration || current.snapshot !== page.snapshot || gcView !== current) { showError('GC snapshot changed. Refresh the viewer and insert again.'); return; }
             const realm = state?.realms?.find(realm => realm.id === current.realm && realm.executor);
             if (!realm) { showError('The selected executor VM is no longer available.'); return; }
-            if (activeScriptId || activeRuntimeKey) showConsole();
+            if (activeScriptId || activeRuntimeKey || activeTool) showConsole();
             if (mode !== 'executor') switchMode('executor');
             if (formats[mode] !== 'source') { showError('Switch the editor to Luau source before inserting a GC expression.'); return; }
             choices.executor = {realm: current.realm, client: realm.clientId || '', actor: realm.actorId ? 'actor:' + realm.actorId : '@main'};
             renderTargets();
             editor.insert(expression);
-            hideGc(); editor.focus();
+            editor.focus();
             status('Value expression inserted · Executor · ' + current.realm); save();
           });
           const copy = element('button', 'small gc-insert', 'Copy'); copy.type = 'button';
@@ -2027,6 +2112,397 @@
       lastFilter = filter;
     }
 
+    function spyQuote(value) {
+      const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+      if (!bytes || typeof bytes.length !== 'number') return null;
+      let result = '"';
+      for (const byte of bytes) {
+        if (!Number.isInteger(byte) || byte < 0 || byte > 255) return null;
+        if (byte === 34 || byte === 92) result += '\\' + String.fromCharCode(byte);
+        else if (byte >= 32 && byte <= 126) result += String.fromCharCode(byte);
+        else result += '\\x' + byte.toString(16).padStart(2, '0');
+      }
+      return result + '"';
+    }
+    function spyReference(ref) {
+      if (!Array.isArray(ref?.path)) return null;
+      let result = 'game';
+      for (const part of ref.path) {
+        const quoted = spyQuote(typeof part === 'string' ? part : part?.bytes);
+        if (quoted === null) return null;
+        result += ':FindFirstChild(' + quoted + ')';
+      }
+      return result;
+    }
+    function spyNumber(value) {
+      if (value?.special === 'nan') return '(0/0)';
+      if (value?.special === '+inf') return 'math.huge';
+      if (value?.special === '-inf') return '-math.huge';
+      return Number.isFinite(value?.value) ? (Object.is(value.value, -0) ? '-0.0' : String(value.value)) : null;
+    }
+    function spyExpression(value, refs, depth = 0) {
+      if (!value || value.truncated || depth > 24) return null;
+      if (value.tag === 'nil') return 'nil';
+      if (value.tag === 'boolean') return typeof value.value === 'boolean' ? String(value.value) : null;
+      if (value.tag === 'number') return spyNumber(value);
+      if (value.tag === 'string') return spyQuote(typeof value.value === 'string' ? value.value : value.bytes);
+      if (value.tag === 'buffer') { const bytes = spyQuote(value.bytes); return bytes === null ? null : 'buffer.fromstring(' + bytes + ')'; }
+      if (value.tag === 'instance') return spyReference(refs?.[value.id]);
+      if (value.tag === 'table') {
+        if (!Array.isArray(value.entries) || value.entries.length > 500) return null;
+        const entries = [];
+        for (const entry of value.entries) {
+          const key = spyExpression(entry.key, refs, depth + 1), item = spyExpression(entry.value, refs, depth + 1);
+          if (key === null || item === null) return null;
+          entries.push('[' + key + '] = ' + item);
+        }
+        return '{' + entries.join(', ') + '}';
+      }
+      const scalar = (...names) => names.map(name => Number.isFinite(value[name]) ? String(value[name]) : null);
+      let parts = null, constructor = value.tag;
+      if (value.tag === 'Vector2') parts = scalar('x', 'y');
+      else if (value.tag === 'Vector3') parts = scalar('x', 'y', 'z');
+      else if (value.tag === 'Color3') parts = scalar('r', 'g', 'b');
+      else if (value.tag === 'UDim') parts = scalar('scale', 'offset');
+      else if (value.tag === 'UDim2') parts = scalar('xScale', 'xOffset', 'yScale', 'yOffset');
+      else if (value.tag === 'NumberRange') parts = scalar('min', 'max');
+      else if (['CFrame', 'Vector2int16', 'Vector3int16'].includes(value.tag) && Array.isArray(value.components)) parts = value.components.map(number => Number.isFinite(number) ? String(number) : null);
+      else if (value.tag === 'EnumItem') {
+        const family = spyQuote(value.enum), name = spyQuote(value.name);
+        return family === null || name === null ? null : 'Enum[' + family + '][' + name + ']';
+      }
+      return parts && parts.every(part => part !== null) ? constructor + '.new(' + parts.join(', ') + ')' : null;
+    }
+    function spyTuple(event) {
+      const args = event?.arguments;
+      if (event?.truncated || !Number.isInteger(args?.n) || !Array.isArray(args.values) || args.values.length !== args.n) return null;
+      const result = args.values.map(value => spyExpression(value, event.references));
+      return result.some(value => value === null) ? null : result;
+    }
+    function spyCopyText(event) {
+      const values = spyTuple(event); if (!values) return null;
+      if (event.direction !== 'outgoing' || event.kind === 'remote_return') return 'table.pack(' + values.join(', ') + ')';
+      const remote = spyReference(event.remote); if (!remote) return null;
+      if (event.method === 'FireClient' || event.method === 'InvokeClient') {
+        const player = spyReference(event.targetReference); if (!player) return null;
+        values.unshift(player);
+      }
+      if (!['FireServer', 'FireClient', 'FireAllClients', 'InvokeServer', 'InvokeClient'].includes(event.method)) return null;
+      return remote + ':' + event.method + '(' + values.join(', ') + ')';
+    }
+    function spyFinderText(event) {
+      const realm = (state?.realms || []).find(item => item.id === event?.realm);
+      const origin = event?.origin;
+      if (!realm?.executor || event?.direction !== 'outgoing' || event.kind === 'remote_return' || typeof origin?.shortSource !== 'string' || !origin.shortSource || origin.shortSource === '[C]' || !Number.isSafeInteger(origin.definedLine) || origin.definedLine < 1) return null;
+      const source = spyQuote(origin.shortSource); if (!source) return null;
+      return '-- Heuristic only: run in the executor of the captured VM. Identity is not guaranteed.\n' +
+        '-- Optionally fill Constants and Upvalues by hand; they were not captured.\n' +
+        'local options = { IgnoreExecutor = false, Constants = {}, Upvalues = {} }\n' +
+        'local matches = {}\n' +
+        'for _, candidate in filtergc("function", options) do\n' +
+        '    if islclosure(candidate) then\n' +
+        '        local ok, source, line = pcall(debug.info, candidate, "sl")\n' +
+        '        if ok and source == ' + source + ' and line == ' + origin.definedLine + ' then\n' +
+        '            table.insert(matches, candidate)\n' +
+        '        end\n' +
+        '    end\n' +
+        'end\n' +
+        'if #matches ~= 1 then error("Function finder: expected one candidate, found " .. #matches, 0) end\n' +
+        'return matches[1]';
+    }
+    function spyBuffer(value) {
+      const bytes = Array.isArray(value.bytes) ? value.bytes : [];
+      const total = Number.isSafeInteger(value.totalBytes) ? value.totalBytes : bytes.length;
+      const details = element('details', 'spy-buffer'), summary = document.createElement('summary');
+      summary.textContent = 'buffer [' + total + ' bytes]' + (value.truncated ? ' · ' + bytes.length + ' saved' : '') + ' ' + (spyQuote(bytes.slice(0, 16)) || '');
+      const content = document.createElement('div'), hex = document.createElement('pre'), more = element('button', 'small', 'Load more');
+      const copy = element('button', 'small', value.truncated ? 'Copy saved hex' : 'Copy hex');
+      more.type = copy.type = 'button';
+      copy.disabled = !bytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255);
+      let offset = 0;
+      function appendPage() {
+        const end = Math.min(offset + 256, bytes.length), lines = [];
+        for (let start = offset; start < end; start += 16) {
+          const row = bytes.slice(start, Math.min(start + 16, end));
+          const numbers = row.map(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255 ? byte.toString(16).padStart(2, '0') : '??').join(' ');
+          const ascii = row.map(byte => Number.isInteger(byte) && byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '.').join('');
+          lines.push(start.toString(16).padStart(8, '0') + '  ' + numbers.padEnd(47) + '  |' + ascii + '|');
+        }
+        if (lines.length) hex.textContent += (hex.textContent ? '\n' : '') + lines.join('\n');
+        offset = end; more.hidden = offset >= bytes.length;
+      }
+      details.addEventListener('toggle', () => { if (details.open && !offset) appendPage(); });
+      more.addEventListener('click', appendPage);
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(bytes.map(byte => byte.toString(16).padStart(2, '0')).join(' ')); $('spyStatus').textContent = 'Copied saved buffer bytes'; }
+        catch { spyError = 'Clipboard unavailable'; renderSpy(); }
+      });
+      content.append(hex, more, copy); details.append(summary, content); return details;
+    }
+    function spyValueTree(value, event, depth = 0) {
+      if (value?.tag === 'table' && Array.isArray(value.entries) && depth < 24) {
+        const details = document.createElement('details'), summary = document.createElement('summary'), children = element('div', 'spy-tree');
+        summary.textContent = 'table · ' + value.entries.length + ' entries'; details.append(summary, children);
+        for (const entry of value.entries.slice(0, 200)) {
+          const row = document.createElement('div'), key = spyExpression(entry.key, event.references, depth + 1);
+          row.append(document.createTextNode('[' + (key ?? '?') + '] = '), spyValueTree(entry.value, event, depth + 1)); children.append(row);
+        }
+        if (value.entries.length > 200) children.append(element('div', 'value-note', 'Additional entries omitted from this view.'));
+        return details;
+      }
+      if (value?.tag === 'buffer') return spyBuffer(value);
+      const span = document.createElement('span');
+      if (value?.tag === 'instance') {
+        const ref = event.references?.[value.id]; span.textContent = ref ? ref.class + ' "' + ref.name + '"' + (ref.destroyed ? ' (destroyed)' : '') : 'Instance (details unavailable)';
+      } else if (value?.tag === 'string' && value.truncated) span.textContent = (spyQuote(value.bytes || '') || '') + ' … (' + (value.bytes?.length ?? 0) + '/' + (value.totalBytes ?? '?') + ' bytes saved)';
+      else if (value?.tag === 'truncated') span.textContent = 'Value omitted: ' + (value.reason || 'snapshot limit');
+      else span.textContent = spyExpression(value, event.references, depth) ?? JSON.stringify(value);
+      return span;
+    }
+    function spyGroupKey(event) {
+      return typeof event?.remote?.id === 'string' ? 'remote:' + event.remote.id : 'unknown:' + (event?.requestId || event?.method || event?.kind || '');
+    }
+    function spyIgnoreKey(group) { return JSON.stringify([spyTarget, group]); }
+    function spyTime(event) {
+      const simulated = 'sim ' + Number(event.time || 0).toFixed(3) + ' s';
+      return Number.isFinite(event.wallTimeMs) ? new Date(event.wallTimeMs).toLocaleTimeString([], {hour12:false}) + ' · ' + simulated : simulated;
+    }
+    function spyOrigin(event) {
+      if (typeof event?.origin?.source !== 'string' || !event.origin.source) return 'Source unavailable';
+      return event.origin.source + (Number.isFinite(event.origin.line) && event.origin.line > 0 ? ':' + event.origin.line : '');
+    }
+    function spySummary(value, event) {
+      if (value?.tag === 'buffer') return 'buffer [' + (value.totalBytes ?? value.bytes?.length ?? '?') + ' bytes]' + (value.truncated ? ' (partial)' : '');
+      if (value?.tag === 'table') return 'table · ' + (value.entries?.length ?? 0) + ' entries' + (value.truncated ? ' (partial)' : '');
+      if (value?.tag === 'instance') { const ref = event.references?.[value.id]; return ref ? ref.class + ' "' + ref.name + '"' : 'Instance'; }
+      if (value?.tag === 'truncated') return '(value omitted)';
+      if (value?.tag === 'string' && value.truncated) return (spyQuote(value.bytes || '') || '') + ' …';
+      const text = spyExpression(value, event.references) ?? JSON.stringify(value) ?? '(unavailable)';
+      return text.length > 120 ? text.slice(0, 120) + '…' : text;
+    }
+    function spyEvents() {
+      const query = $('spyFilter').value.trim().toLowerCase(), showIgnored = $('spyShowIgnored').checked;
+      return (Array.isArray(spyState?.events) ? spyState.events : []).filter(event =>
+        (spyDirection === 'all' || event.direction === spyDirection)
+        && (showIgnored || !spyIgnored.has(spyIgnoreKey(spyGroupKey(event))))
+        && (!query || JSON.stringify(event).toLowerCase().includes(query))).slice().reverse();
+    }
+    function renderSpyDetail() {
+      const detail = $('spyDetail'), event = (spyState?.events || []).find(item => item.id === spySelected);
+      detail.replaceChildren();
+      for (const tab of document.querySelectorAll('[data-spy-detail]')) tab.setAttribute('aria-pressed', String(tab.dataset.spyDetail === spyDetailTab));
+      if (!event) { detail.textContent = 'Select a captured call.'; return; }
+      const meta = element('div', 'inspection-note', (event.direction === 'outgoing' ? 'Outgoing' : 'Incoming') + ' · ' + event.from + ' → ' + event.target + ' · ' + spyTime(event) + ' · capture #' + event.id);
+      detail.append(meta);
+      if (event.senderReference) detail.append(element('div', 'inspection-note', 'Implicit Player: ' + event.senderReference.name + ' (separate from wire arguments)'));
+      if (event.kind === 'remote_return') detail.append(element('div', 'inspection-note', 'Return: ' + (event.ok ? 'success' : 'error')));
+      if (event.truncated) detail.append(element('p', 'inspection-note', 'Partial snapshot: ' + (event.omittedReason || 'snapshot limit') + '. Copy and replay are unavailable.'));
+      if (spyDetailTab === 'origin') {
+        if (!event.origin || typeof event.origin.source !== 'string') { detail.append(element('p', 'inspection-note', 'Caller information was not captured for this message.')); return; }
+        const origin = event.origin;
+        const fields = [['Source', origin.source], ['Calling line', origin.line], ['Short source', origin.shortSource], ['Defined line', origin.definedLine], ['Function', origin.name || '(anonymous)'], ['Upvalues', origin.nupvalues], ['Parameters', origin.nparams], ['Vararg', origin.isvararg]];
+        for (const [name, value] of fields) if (value !== null && value !== undefined) detail.append(element('div', '', name + ': ' + value));
+        return;
+      }
+      if (spyDetailTab === 'code') {
+        const code = document.createElement('pre'); code.textContent = spyCopyText(event) || 'Copy unavailable: the snapshot or instance path cannot be reproduced.';
+        detail.append(code, element('p', 'inspection-note', 'Replay is unavailable until captured instance identities can be checked atomically. Copied paths may resolve to different instances later.')); return;
+      }
+      const args = event.arguments; detail.append(element('h3', '', 'Wire arguments (' + (args?.n ?? '?') + ')'));
+      if (Array.isArray(args?.values)) args.values.forEach((value, index) => {
+        const row = element('div', 'spy-tree'); row.append(document.createTextNode('[' + (index + 1) + '] = '), spyValueTree(value, event)); detail.append(row);
+      });
+      else detail.append(element('p', 'inspection-note', 'Arguments were not retained.'));
+    }
+    function renderSpy() {
+      const value = spyState || {}, all = Array.isArray(value.events) ? value.events : [];
+      const realms = (state?.realms || []).filter(realm => realm.side === spySide);
+      setOptions($('spyRealm'), realms.length ? realms.map(realm => [realm.id, realm.id + (realm.actorId ? ' · Actor: ' + realm.actorId : '') + (realm.clientId ? ' · ' + realm.clientId : '')]) : [['', 'No matching VMs']], spyTarget);
+      $('spyRealm').disabled = spyBusy || !realms.length;
+      $('spyServer').setAttribute('aria-pressed', String(spySide === 'server')); $('spyClient').setAttribute('aria-pressed', String(spySide === 'client'));
+      $('spyServer').disabled = spyBusy || !(state?.realms || []).some(realm => realm.side === 'server');
+      $('spyClient').disabled = spyBusy || !(state?.realms || []).some(realm => realm.side === 'client');
+      for (const tab of document.querySelectorAll('[data-spy-direction]')) tab.setAttribute('aria-pressed', String(tab.dataset.spyDirection === spyDirection));
+      $('spyContext').textContent = spyTarget ? 'VM: ' + spyTarget : 'No VM selected';
+      $('spyToggle').textContent = value.active ? 'Stop' : 'Start'; $('spyPause').textContent = value.paused ? 'Resume' : 'Pause';
+      $('spyToggle').disabled = spyBusy || !spyTarget; $('spyPause').disabled = spyBusy || !value.active; $('spyClear').disabled = spyBusy || !spyTarget; $('spyClose').disabled = spyBusy;
+      const visible = spyEvents(), groups = new Map();
+      for (const event of visible) { const key = spyGroupKey(event); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(event); }
+      if (!groups.has(spyGroup)) { spyGroup = groups.keys().next().value || ''; spySelected = groups.get(spyGroup)?.[0]?.id ?? null; spyDetailKey = null; }
+      const captures = groups.get(spyGroup) || [];
+      if (!captures.some(event => event.id === spySelected)) { spySelected = captures[0]?.id ?? null; spyDetailKey = null; }
+      const event = captures.find(item => item.id === spySelected), groupEvent = event || captures[0];
+      const ignored = !!spyGroup && spyIgnored.has(spyIgnoreKey(spyGroup));
+      $('spyIgnore').textContent = ignored ? 'Unignore remote' : 'Ignore remote'; $('spyIgnore').disabled = !spyGroup || spyBusy;
+      $('spyIgnore').title = 'Filters this view only; capture and transport continue.';
+      const blockable = value.active && event?.remote?.class === 'RemoteEvent' && typeof event.remote.id === 'string' && ['incoming', 'outgoing'].includes(event.direction);
+      const blocked = blockable && (value.blocks || []).some(item => item.remoteId === event.remote.id && item.direction === event.direction);
+      $('spyBlock').textContent = blocked ? 'Unblock' : 'Block'; $('spyBlock').disabled = spyBusy || !blockable;
+      $('spyBlock').title = blockable ? 'Block this RemoteEvent in ' + spyTarget + ' · ' + event.direction + '. Pause retains blocks; Stop removes them.' : 'Select a captured RemoteEvent in an active VM to block its direction.';
+      $('spyPause').title = 'Pause capture only; active blocks continue to apply.';
+      $('spyCopyPath').disabled = !spyReference(groupEvent?.remote); $('spyCopy').disabled = !spyCopyText(event);
+      $('spyCopyFunction').disabled = !spyFinderText(event);
+      $('spyCopyFunction').title = spyFinderText(event) ? 'Heuristic finder for this executor VM; a unique candidate can still be a different closure. Constants and upvalues must be supplied manually.' : 'Available for outgoing Lua calls with source and defined line in an executor VM.';
+      $('spyCopy').textContent = event?.direction === 'outgoing' && event?.kind !== 'remote_return' ? 'Copy calling code' : 'Copy arguments';
+      const realm = (state?.realms || []).find(item => item.id === spyTarget), contexts = realm?.side === 'server' ? [['server', 'Server']] : realm?.side === 'client' ? [['client', 'Client'], ...(realm.executor ? [['executor', 'Executor']] : [])] : [];
+      const preferredContext = spyReplayChoices.get(spyTarget) || ($('realmSelect').value === spyTarget ? mode : realm?.side) || '';
+      setOptions($('spyReplayContext'), contexts, preferredContext); $('spyReplayContext').disabled = true;
+      $('spyReplay').disabled = true;
+      $('spyReplay').title = 'Replay unavailable: instance identities can change before execution. Copy the reconstructed code instead.';
+      const signature = JSON.stringify([visible.map(item => item.id), value.blocks, spyGroup, spySelected, spyDirection, $('spyFilter').value, $('spyShowIgnored').checked, [...spyIgnored]]);
+      if (signature !== spyFingerprint) {
+        spyFingerprint = signature; const list = $('spyList'), scroll = list.scrollTop; list.replaceChildren();
+        for (const [key, events] of groups) {
+          const latest = events[0], button = element('button', 'spy-row'); button.type = 'button'; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(key === spyGroup));
+          const className = latest.remote?.class || (latest.kind === 'remote_event' ? 'RemoteEvent' : 'RemoteFunction');
+          const blockedDirections = (value.blocks || []).filter(item => item.remoteId === latest.remote?.id).map(item => item.direction);
+          button.append(treeIcon(className), element('span', 'spy-row-title', latest.remote?.name || 'Unknown remote'), element('span', 'spy-row-meta', '×' + events.length + (spyIgnored.has(spyIgnoreKey(key)) ? ' · ignored' : '') + (blockedDirections.length ? ' · blocked ' + blockedDirections.join('/') : '')));
+          button.addEventListener('click', () => { spyGroup = key; spySelected = events[0].id; spyFingerprint = ''; spyDetailKey = null; renderSpy(); }); list.append(button);
+        }
+        if (!groups.size) list.append(element('div', 'inspection-note', $('spyFilter').value ? 'No matching remotes.' : 'No remote messages captured.'));
+        list.scrollTop = scroll;
+        $('spyGroupTitle').textContent = groupEvent ? (groupEvent.remote?.name || 'Unknown remote') + ' · ' + captures.length + ' saved ' + (captures.length === 1 ? 'call' : 'calls') : 'Select a remote.';
+        const calls = $('spyCaptures'), callScroll = calls.scrollTop; calls.replaceChildren();
+        for (const item of captures) {
+          const button = element('button', 'spy-capture'); button.type = 'button'; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(item.id === spySelected));
+          const args = item.arguments?.values;
+          if (Array.isArray(args) && args.length) args.slice(0, 8).forEach((argument, index) => {
+            const row = element('span', 'spy-capture-value'); row.append(element('span', 'spy-capture-type', String(index + 1)), element('span', '', spySummary(argument, item)), element('span', 'spy-capture-type', argument?.tag || '?')); button.append(row);
+          });
+          else button.append(element('span', 'spy-capture-type', item.truncated ? 'Arguments unavailable' : 'No arguments'));
+          if (Array.isArray(args) && args.length > 8) button.append(element('span', 'spy-capture-meta', (args.length - 8) + ' more arguments'));
+          button.append(element('span', 'spy-capture-meta', item.method + (item.blocked ? ' · blocked' : '') + ' · ' + spyOrigin(item) + ' · ' + spyTime(item)));
+          button.addEventListener('click', () => { spySelected = item.id; spyFingerprint = ''; spyDetailKey = null; renderSpy(); }); calls.append(button);
+        }
+        calls.scrollTop = callScroll;
+      }
+      const detailKey = event ? event.realm + '/' + event.id + '/' + spyDetailTab : '';
+      if (detailKey !== spyDetailKey) { spyDetailKey = detailKey; renderSpyDetail(); }
+      const stateText = value.active ? (value.paused ? 'Paused' : 'Listening') : 'Stopped';
+      $('spyStatus').textContent = spyError || stateText + ' · ' + visible.length + '/' + all.length + ' saved captures shown' + (value.dropped ? ' · ' + value.dropped + ' older captures evicted' : '');
+    }
+    async function spyAction(action, realm = spyTarget, background = false, options = {}) {
+      if (spyBusy || !realm || !connected || state?.network?.pending) return false;
+      const wasActive = spyState?.realm === realm && spyState.active;
+      const epoch = background ? spyEpoch : ++spyEpoch;
+      if (!background) { spyBusy = true; renderSpy(); }
+      try {
+        const result = await request('packet-spy', {action, realm, ...options}, false);
+        if (epoch !== spyEpoch) return false;
+        if (action === 'start') { if (!wasActive) spyOwned.add(realm); spyStopped.delete(realm); }
+        if (action === 'stop') {
+          spyOwned.delete(realm); spyStopped.add(realm);
+          for (const key of spyManagedBlocks) if (JSON.parse(key)[0] === realm) spyManagedBlocks.delete(key);
+        }
+        if (action === 'block') spyManagedBlocks.add(JSON.stringify([realm, options.remoteId, options.direction]));
+        if (action === 'unblock') spyManagedBlocks.delete(JSON.stringify([realm, options.remoteId, options.direction]));
+        spyState = result; spyError = ''; if (action !== 'state') spyFingerprint = ''; renderSpy(); return true;
+      } catch (error) { if (epoch === spyEpoch) spyError = error.message; return false; }
+      finally { if (!background && epoch === spyEpoch) { spyBusy = false; renderSpy(); } }
+    }
+    function scheduleSpy() {
+      clearTimeout(spyTimer);
+      if (!toolTabs.has('spy')) return;
+      spyTimer = setTimeout(async () => { if (!spyBusy && !state?.network?.pending) await spyAction('state', spyTarget, true); scheduleSpy(); }, 800);
+    }
+    async function selectSpyTarget(realm, autoStart = true) {
+      const target = (state?.realms || []).find(item => item.id === realm);
+      if (!target || spyBusy || state?.network?.pending) return;
+      clearTimeout(spyTimer); ++spyEpoch; spyTarget = realm; spySide = target.side; spyChoices[spySide] = realm;
+      spyState = null; spySelected = null; spyGroup = ''; spyFingerprint = ''; spyDetailKey = null; spyError = ''; renderSpy();
+      if (await spyAction('state', realm) && autoStart && !spyState?.active && !spyStopped.has(realm)) await spyAction('start', realm);
+      scheduleSpy();
+    }
+    async function startSpyBackground(realm, epoch) {
+      if (!realm || spyBusy || spyStopped.has(realm) || epoch !== spyEpoch || state?.network?.pending) return;
+      spyBusy = true; renderSpy();
+      try {
+        const current = await request('packet-spy', {action:'state', realm}, false);
+        if (epoch !== spyEpoch || current.active) return;
+        await request('packet-spy', {action:'start', realm}, false);
+        if (epoch === spyEpoch) spyOwned.add(realm);
+        else await request('packet-spy', {action:'stop', realm}, false).catch(() => {});
+      } catch (error) { if (epoch === spyEpoch) { spyError = error.message; renderSpy(); } }
+      finally { if (epoch === spyEpoch) { spyBusy = false; renderSpy(); } }
+    }
+    $('openSpyButton').addEventListener('click', async () => {
+      const realm = $('realmSelect').value; if (!realm || busy || spyBusy || state?.network?.pending) return;
+      if (toolTabs.has('spy')) { showTool('spy'); return; }
+      toolTabs.add('spy'); showTool('spy');
+      await selectSpyTarget(realm);
+      const otherSide = spySide === 'server' ? 'client' : 'server';
+      const other = (state?.realms || []).find(item => item.side === otherSide && (!item.actorId || otherSide === 'server'));
+      if (other) { spyChoices[otherSide] = other.id; await startSpyBackground(other.id, spyEpoch); }
+    });
+    for (const [id, side] of [['spyServer', 'server'], ['spyClient', 'client']]) $(id).addEventListener('click', () => {
+      if (spyBusy) return;
+      const realms = (state?.realms || []).filter(item => item.side === side);
+      const realm = realms.find(item => item.id === spyChoices[side]) || realms.find(item => !item.actorId) || realms[0];
+      if (realm) selectSpyTarget(realm.id);
+    });
+    $('spyRealm').addEventListener('change', () => selectSpyTarget($('spyRealm').value));
+    for (const tab of document.querySelectorAll('[data-spy-direction]')) tab.addEventListener('click', () => {
+      spyDirection = tab.dataset.spyDirection; spyGroup = ''; spySelected = null; spyFingerprint = ''; spyDetailKey = null; renderSpy();
+    });
+    for (const tab of document.querySelectorAll('[data-spy-detail]')) tab.addEventListener('click', () => {
+      spyDetailTab = tab.dataset.spyDetail; spyDetailKey = null; renderSpy();
+    });
+    $('spyToggle').addEventListener('click', () => spyAction(spyState?.active ? 'stop' : 'start'));
+    $('spyPause').addEventListener('click', () => spyAction(spyState?.paused ? 'resume' : 'pause'));
+    $('spyClear').addEventListener('click', async () => { if (await spyAction('clear')) { spySelected = null; spyGroup = ''; spyFingerprint = ''; spyDetailKey = null; renderSpy(); } });
+    $('spyFilter').addEventListener('input', () => { spyFingerprint = ''; renderSpy(); });
+    $('spyShowIgnored').addEventListener('change', () => { spyFingerprint = ''; renderSpy(); });
+    $('spyIgnore').addEventListener('click', () => {
+      if (!spyGroup) return;
+      const key = spyIgnoreKey(spyGroup);
+      if (spyIgnored.has(key)) spyIgnored.delete(key); else spyIgnored.add(key);
+      spyFingerprint = ''; renderSpy();
+    });
+    $('spyBlock').addEventListener('click', () => {
+      const event = (spyState?.events || []).find(item => item.id === spySelected);
+      if (!event || $('spyBlock').disabled) return;
+      const options = {remoteId: event.remote.id, direction: event.direction};
+      const blocked = (spyState?.blocks || []).some(item => item.remoteId === options.remoteId && item.direction === options.direction);
+      spyAction(blocked ? 'unblock' : 'block', spyTarget, false, options);
+    });
+    $('spyCopyPath').addEventListener('click', async () => {
+      const event = (spyState?.events || []).find(item => item.id === spySelected), path = spyReference(event?.remote);
+      if (!path) return;
+      try { await navigator.clipboard.writeText(path); $('spyStatus').textContent = 'Copied captured remote path'; }
+      catch { spyError = 'Clipboard unavailable'; renderSpy(); }
+    });
+    $('spyCopy').addEventListener('click', async () => {
+      const event = (spyState?.events || []).find(item => item.id === spySelected), text = spyCopyText(event); if (!text) return;
+      try { await navigator.clipboard.writeText(text); $('spyStatus').textContent = 'Copied to clipboard'; }
+      catch { spyError = 'Clipboard unavailable'; renderSpy(); }
+    });
+    $('spyCopyFunction').addEventListener('click', async () => {
+      const event = (spyState?.events || []).find(item => item.id === spySelected), text = spyFinderText(event); if (!text) return;
+      try { await navigator.clipboard.writeText(text); $('spyStatus').textContent = 'Copied heuristic function finder for ' + event.realm; }
+      catch { spyError = 'Clipboard unavailable'; renderSpy(); }
+    });
+    async function closeSpy() {
+      if (spyBusy || state?.network?.pending) return;
+      spyBusy = true; renderSpy(); clearTimeout(spyTimer); const epoch = ++spyEpoch, stopped = new Set();
+      for (const realm of [...spyOwned]) {
+        try { await request('packet-spy', {action:'stop', realm}, false); spyOwned.delete(realm); stopped.add(realm); }
+        catch (error) { if (epoch === spyEpoch) spyError = error.message; }
+      }
+      for (const key of [...spyManagedBlocks]) {
+        const [realm, remoteId, direction] = JSON.parse(key);
+        try {
+          if (spyOwned.has(realm)) continue;
+          if (!stopped.has(realm)) await request('packet-spy', {action:'unblock', realm, remoteId, direction}, false);
+          spyManagedBlocks.delete(key);
+        } catch (error) { if (epoch === spyEpoch) spyError = error.message; }
+      }
+      if (epoch !== spyEpoch) return;
+      spyBusy = false;
+      if (spyOwned.size || spyManagedBlocks.size) { renderSpy(); scheduleSpy(); return; }
+      toolTabs.delete('spy'); if (activeTool === 'spy') activeTool = null; updateToolPanels(); renderDocumentTabs();
+    }
+    $('spyClose').addEventListener('click', closeSpy);
+
     for (const button of document.querySelectorAll('.mode')) button.addEventListener('click', () => switchMode(button.dataset.mode));
     $('fileMenu').addEventListener('click', event => { if (event.target.closest('button')) $('fileMenu').open = false; });
     document.addEventListener('click', event => {
@@ -2072,6 +2548,8 @@
     $('filesRefresh').addEventListener('click', refreshFiles);
     $('filesClose').addEventListener('click', () => $('filesDialog').close());
     $('openGcButton').addEventListener('click', () => {
+      if (toolTabs.has('gc')) { showTool('gc'); return; }
+      if (mode !== 'executor') switchMode('executor');
       const viewer = eligibleViewers().find(viewer => viewer.id === $('gcViewerSelect').value) || eligibleViewers()[0];
       if (viewer) { openGcViewer(viewer, false); return; }
       const realm = $('realmSelect').value;
@@ -2085,7 +2563,6 @@
     $('gcSearch').addEventListener('input', filterGc);
     $('gcClearSearch').addEventListener('click', () => { $('gcSearch').value = ''; filterGc(); $('gcSearch').focus(); });
     $('closeGc').addEventListener('click', closeGcViewer);
-    $('gcDialog').addEventListener('cancel', event => { event.preventDefault(); closeGcViewer(); });
     $('gcDialog').addEventListener('keydown', event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeGcViewer(); }
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); $('gcSearch').focus(); $('gcSearch').select(); }
@@ -2296,7 +2773,7 @@
     $('resetButton').addEventListener('click', () => { $('resetProfileName').textContent = $('profileSelect').value; $('resetDialog').showModal(); });
     $('cancelReset').addEventListener('click', () => $('resetDialog').close());
     $('confirmReset').addEventListener('click', () => { $('resetDialog').close(); dismissedRuntimeError = ''; commandOverride = null; resetInspections(); scrollPositions.clear(); mutate('reset', {profile: $('profileSelect').value}, 'Resetting VMs…', 'VMs reset'); });
-    $('profileSelect').addEventListener('change', () => { profileChosenByUser = true; save(); scriptAutosaveBlocked = false; if (place) { $('placeName').textContent = place.name + (hasPlaceChanges() ? ' •' : ''); scheduleScriptAutosave(); } });
+    $('profileSelect').addEventListener('change', () => { profileChosenByUser = true; save(); scriptAutosaveBlocked = false; updateActions(); if (place) { $('placeName').textContent = place.name + (hasPlaceChanges() ? ' •' : ''); scheduleScriptAutosave(); } });
     $('budgetSelect').addEventListener('change', () => mutate('budget', {cpuMs: Number($('budgetSelect').value)}, 'Updating execution limit…', 'Execution limit updated'));
     $('historySelect').addEventListener('change', () => {
       if ($('historySelect').value === '') return;

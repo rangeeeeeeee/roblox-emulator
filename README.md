@@ -6,17 +6,17 @@ This is a partial implementation of Roblox APIs, not a replacement for Studio or
 
 ## Executor compatibility results
 
-Measured on Windows on 29 October 2026 in the default headless session, without additional game scripts or modules. These numbers are results of the named tests, not overall API coverage or Roblox equivalence.
+Measured on Windows on 29 October 2026 in the default headless session, without additional user scripts or modules. These numbers are results of the named tests, not overall API coverage or Roblox equivalence.
 
 | Test | Profile | Result |
 | --- | --- | --- |
-| [Archived UNC Environment Check](https://github.com/unified-naming-convention/NamingStandard/blob/main/UNCCheckEnv.lua) | `generic` | 72/83 passed (87%); 6 missing alias groups |
-| Archived UNC Environment Check | `unc` | 74/83 passed (89%); 6 missing alias groups |
-| [Vyperia UNC](https://gitlab.com/ltseverydayyou/uuuuuuu/-/raw/main/UNC%20test) | `generic` | 105/161 scored functions passed (65.2%); 7 untested excluded |
-| Vyperia UNC | `unc` | 106/161 scored functions passed (65.8%); 7 untested excluded |
-| [sUNC](https://docs.sunc.io/) | `generic` | No score: the default 64 MiB VM exhausted memory; with 512 MiB and a 10 s execution budget, execution exceeded the budget. |
+| [Archived UNC Environment Check](https://github.com/unified-naming-convention/NamingStandard/blob/main/UNCCheckEnv.lua) | `generic` | 78/83 passed (94%); 6 missing alias groups |
+| Archived UNC Environment Check | `unc` | 80/83 passed (96%); 6 missing alias groups |
+| [Vyperia UNC](https://gitlab.com/ltseverydayyou/uuuuuuu/-/raw/main/UNC%20test) | `generic` | 115/161 scored functions passed (71.4%); 7 untested excluded |
+| Vyperia UNC | `unc` | 116/161 scored functions passed (72.0%); 7 untested excluded |
+| [sUNC](https://docs.sunc.io/) | `generic` | No score in the v0.2.1 attempt: the default 64 MiB VM exhausted memory; with 512 MiB and a 10 s execution budget, execution exceeded the budget. |
 
-The UNC test expects Roblox game scripts and modules absent from the default session, and its `ws://echo.websocket.events` endpoint did not complete a handshake. Vyperia's approved HTTPS and WSS echo checks passed. GitLab returned HTTP 429 during the Vyperia run, so the run used a previously downloaded, byte-for-byte verified copy (SHA-256 `f35567a617eef539576c026b6d968ce091a98b46dbd4f0f8ca94f49abc841808`). The sUNC project states that v2 requires its dedicated testing game for verified results; no official sUNC score is claimed here.
+The UNC test expects an old Roblox CoreGui module and a loaded module absent from the default session, and its `ws://echo.websocket.events` endpoint did not complete a handshake. Vyperia's approved HTTPS and WSS echo checks passed. GitLab previously returned HTTP 429, so the Vyperia runs used a downloaded, byte-for-byte verified copy (SHA-256 `f35567a617eef539576c026b6d968ce091a98b46dbd4f0f8ca94f49abc841808`). The sUNC project states that v2 requires its dedicated testing game for verified results; no official sUNC score is claimed here.
 
 ## What is included
 
@@ -84,6 +84,8 @@ The UI starts paused. Use the running/stepping controls to advance scheduled wor
 
 For an editable test place, switch Explorer to **Place**, select a parent such as `ServerScriptService` or `StarterPlayerScripts`, and create a `Script`, `LocalScript`, `ModuleScript`, `Actor`, or another supported instance. Drag instances in Explorer to reparent them and open a script in its own editor tab. **Save Place** downloads a JSON file with the draft, sources and selected executor profile; **Open Place** imports it. **Run Place** starts fresh server/client and applicable Actor VMs from the draft. Supported scenarios opened with `--ui` are imported into the draft with their realm and Actor configuration. If import fails, Explorer shows the reason and the original runtime remains available. The initial character is headless and has no physics or full R15 rig. Editing a draft does not rewrite the original scenario.
 
+The default character's `Animate` is a partial headless controller: it loads an idle track and switches basic tracks on `Humanoid.StateChanged`, without simulating joints, movement, or visual animation. A user-provided `Animate` takes precedence. When enabled, a missing `Animator` is added to the initial character's shared Humanoid; an existing one is kept. This controller is installed for characters present at session startup; automatic respawn or adding it to a later replacement character is not implemented.
+
 Explorer switches to **Runtime** when a test starts and returns to **Place** when it stops. In the selected VM, create, rename, move, duplicate or delete supported instances, drag them in the tree, and edit supported properties. Runtime edits do not change the saved place. New runtime scripts are empty and do not start automatically. Auto-refresh is optional; double-click an available script to open a read-only source snapshot. Runtime snapshots close on reset or when running a place.
 
 Edits are debounced into the place draft and a recovery copy beside the executable in `autosaves/`. Use **File → Open Auto Save** to choose a copy after a restart; it never overwrites an imported place file. Recovery files are local plaintext JSON containing the place's scripts and are excluded from the repository. Export a place explicitly with **Save Place**. The Output options include an opt-in view of caught errors; those diagnostic entries are kept in host output and are not sent to `LogService`.
@@ -105,6 +107,22 @@ Instance.new("GCViewer")
 ```
 
 GC Viewer uses weak object handles. Inserted `getgcvalue(viewer, snapshot, index)` expressions belong to that realm and snapshot; they expire after refresh, close, reset or ten minutes. Strings are copied into bounded host storage because Luau strings do not behave as weak references.
+
+Use **GC Viewer** or **Remote Spy** in the context bar to open these tools as editor tabs without executing a script. Remote Spy captures serialized `RemoteEvent` and `RemoteFunction` messages independently for each selected server, client, or Actor VM; it does not inspect raw Roblox network packets. Filter the history by direction and inspect saved arguments, buffers, and available sender-side origin information. `Block` applies to the selected `RemoteEvent`, VM and direction. The function finder uses source and definition line as a heuristic; constants and upvalues can be supplied manually, and even one match does not guarantee identity. The shared history is limited to 200 records and 1 MiB. Large or unsupported values may be partial or omitted and are marked accordingly. Copied calls reconstruct wire values, so original table and buffer identity and metatables are not retained. Replay is unavailable until instance identity can be checked atomically.
+
+## Local automation API
+
+Start the executable with `--ui --port 0 --no-browser` and read its `INTERPRETER_URL`. The address is loopback-only; send the URL fragment's token in the `X-Emulator-Token` header. POST requests use `Content-Type: application/json`. The token grants control of the session, so keep it private. This is an HTTP JSON API, not an MCP server.
+
+| Endpoint | Request | Purpose |
+| --- | --- | --- |
+| `GET /api/state` | — | List realms and available GC viewers. |
+| `POST /api/gc/create` | `{"realm":"client1"}` | Create a viewer for an executor-enabled client VM. Its ID appears in `viewers` in the returned state. |
+| `POST /api/inspect` | `{"realm":"client1","context":"executor","kind":"gc","viewer":"<viewer id>","refresh":true,"offset":0}` | Read a GC snapshot page; optional `query` and `valueType` filter it. Use `kind: "closeGc"` to release the viewer. |
+| `POST /api/packet-spy` | `{"realm":"client1","action":"start"}` | Start capture; use `state`, `pause`, `resume`, `clear` or `stop` to inspect and control it. |
+| `POST /api/packet-spy` | `{"realm":"client1","action":"block","remoteId":"<remote id>","direction":"outgoing"}` | Block that VM's incoming or outgoing `RemoteEvent`; use `unblock` to remove the rule. Pausing keeps rules active; stopping capture removes them. |
+
+Replace `client1`, viewer IDs and remote IDs with values from the current session. Viewer snapshots and captured objects are VM-scoped and transient.
 
 ## A self-contained scenario
 
@@ -142,6 +160,7 @@ Use `sourcePath` instead of `source` to load a Luau file; relative paths resolve
 | --- | --- |
 | `duration`, `step`, `latency` | Simulated seconds, scheduler step and remote delivery delay. |
 | `signalBehavior` | `deferred` by default, or `immediate`. |
+| `defaultAnimate` | Opt in to the partial default character controller for initial characters in a native-engine scenario. Standard generated places enable it; existing imported scenarios default to `false`. |
 | `memoryMb`, `cpuMs` | Per-VM memory limit and wall-time execution budget. |
 | `traceErrors` | Observe protected-call errors where Luau exposes a debug callback. |
 | `expect`, `reject` | Required and forbidden output substrings across the entire run. |

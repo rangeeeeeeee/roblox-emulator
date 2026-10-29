@@ -96,7 +96,7 @@ impl LogRegistry {
     }
 }
 #[derive(Clone)]
-pub(crate) struct MessageSink(pub Rc<dyn Fn(String,Json)->Result<()>>);
+pub(crate) struct MessageSink(pub Rc<dyn Fn(&Lua,String,Json)->Result<()>>);
 // Host ownership contains no Lua callback: execution always stays in the registering VM.
 #[derive(Clone,Default)]
 pub(crate) struct BindableRegistry(Rc<RefCell<BindableRecords>>);
@@ -142,6 +142,44 @@ const MAX_ASSETS: usize = 4096;
 fn state(lua: &Lua) -> Option<State> { lua.app_data_ref::<State>().map(|s| s.clone()) }
 fn required(lua: &Lua) -> Result<State> { state(lua).ok_or_else(|| Error::runtime("UnsupportedApi: model runtime not installed")) }
 fn lookup(lua: &Lua, id: &str) -> Option<Link> { state(lua)?.borrow().nodes.get(id)?.upgrade() }
+
+// Resolve only instances visible in the VM being inspected. A path is copyable
+// only when every segment is unique and reaches that VM's DataModel.
+pub(crate) fn remote_spy_reference(lua:&Lua,id:&str)->Option<Json>{
+    let node=lookup(lua,id)?;
+    let (name,class,destroyed)={let n=node.borrow();(crate::console::display_bytes(instance::name_bytes(&n),512),n.class.clone(),n.destroyed)};
+    if destroyed{return Some(json!({"id":id,"name":name,"class":class,"path":null,"destroyed":true}));}
+    let mut path=Vec::new();let mut current=Some(node);let mut copyable=true;let mut rooted=false;
+    while let Some(node)=current {
+        let (class,bytes,parent)={let n=node.borrow();(n.class.clone(),instance::name_bytes(&n).to_vec(),n.parent.upgrade())};
+        if class=="DataModel" {rooted=true;break;}
+        let Some(parent)=parent else {break};
+        if path.len()>=32 || bytes.len()>512 {copyable=false;break;}
+        let unique={let parent=parent.borrow();parent.children.len()<=512 && parent.children.iter().filter(|child|{
+            let child=child.borrow();!child.destroyed&&instance::name_bytes(&child)==bytes.as_slice()
+        }).take(2).count()==1};
+        if !unique {copyable=false;break;}
+        path.push(match std::str::from_utf8(&bytes){Ok(text)=>json!(text),Err(_)=>json!({"bytes":bytes})});
+        current=Some(parent);
+    }
+    path.reverse();
+    Some(json!({"id":id,"name":name,"class":class,"path":if rooted&&copyable{Some(path)}else{None},"destroyed":false}))
+}
+
+pub(crate) fn remote_spy_visible(lua:&Lua,id:&str)->bool {lookup(lua,id).is_some()}
+
+pub(crate) fn remote_spy_event_identity(lua:&Lua,id:&str)->Option<u64> {
+    let node=lookup(lua,id)?;
+    let node=node.borrow();
+    (!node.destroyed && instance::is_a(&node,"RemoteEvent")).then_some(node.cache_id)
+}
+
+pub(crate) fn remote_spy_deliverable(lua:&Lua,kind:&str,payload:&Json)->bool {
+    if kind=="remote_return" {
+        return state(lua).is_some_and(|state|state.borrow().pending.contains_key(payload["requestId"].as_str().unwrap_or("")));
+    }
+    payload["remoteId"].as_str().and_then(|id|lookup(lua,id)).is_some_and(|node|!node.borrow().destroyed)
+}
 pub(crate) fn get_instance(lua:&Lua,id:&str)->Result<Option<AnyUserData>> {
     lookup(lua,id).map(|node|instance::wrapper(lua,node)).transpose()
 }
@@ -315,21 +353,21 @@ pub(crate) fn script_from_thread(lua:&Lua,thread:Thread)->Result<Value>{
 }
 pub(crate) fn script_thread(lua:&Lua,node:&Link)->Result<Option<Thread>>{
     if !instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(Error::lua_string("LuaSourceContainer expected"))}
-    let id=node.borrow().id.clone();
-    let thread:Option<Thread>=crate::native::private_registry_value::<Table>(lua,SCRIPT_THREADS)?.raw_get(id)?;
+    let key=node.borrow().cache_id as i64;
+    let thread:Option<Thread>=crate::native::private_registry_value::<Table>(lua,SCRIPT_THREADS)?.raw_get(key)?;
     Ok(thread.filter(|thread|!thread.is_finished()&&!thread.is_error()))
 }
 pub(crate) fn active_script_environment(lua:&Lua,node:&Link)->Result<Option<Table>>{
     if !instance::is_a(&node.borrow(),"LuaSourceContainer") {return Err(Error::lua_string("LuaSourceContainer expected"))}
     let state=required(lua)?;
-    let (id,realm_actor)={let state=state.borrow();(node.borrow().id.clone(),state.actor.clone())};
+    let (id,key,realm_actor)={let state=state.borrow();let node=node.borrow();(node.id.clone(),node.cache_id as i64,state.actor.clone())};
     let mut parent=node.borrow().parent.upgrade();
     while let Some(ancestor)=parent {
         let ancestor=ancestor.borrow();
         if ancestor.class=="Actor" {if ancestor.id!=realm_actor {return Ok(None)} break}
         parent=ancestor.parent.upgrade();
     }
-    let environment:Option<Table>=crate::native::private_registry_value::<Table>(lua,ENVS)?.raw_get(id.as_str())?;
+    let environment:Option<Table>=crate::native::private_registry_value::<Table>(lua,ENVS)?.raw_get(key)?;
     let Some(environment)=environment else{return Err(Error::lua_string("Script is not currently running"))};
     let active_module=matches!(state.borrow().modules.get(&id),Some(Module::Loading{..}|Module::Ready(_)));
     let active_thread=script_thread(lua,node)?.is_some();
@@ -887,20 +925,20 @@ fn emit(lua:&Lua,kind:&str,payload:Json)->Result<()>{
     // The host wire representation must not be materialized in the Lua heap:
     // doing so changes observable gcinfo() and adds a native callback frame.
     let sink=lua.app_data_ref::<MessageSink>().map(|sink|sink.0.clone());
-    if let Some(sink)=sink {sink(kind.into(),payload)}
+    if let Some(sink)=sink {sink(lua,kind.into(),payload)}
     else {crate::internal::<Function>(lua,"__host_emit")?.call((kind,lua.to_value(&payload)?))}
 }
 
 pub(crate) fn env(lua:&Lua,node:&Link)->Result<Table>{
-    let table:Table=crate::native::private_registry_value(lua,ENVS)?;let id=node.borrow().id.clone();
-    if let Value::Table(e)=table.raw_get(id.as_str())?{return Ok(e)}
+    let table:Table=crate::native::private_registry_value(lua,ENVS)?;let key=node.borrow().cache_id as i64;
+    if let Value::Table(e)=table.raw_get(key)?{return Ok(e)}
     let base:Table=crate::native::private_registry_value(lua,BASE_ENV)?;
     let e=lua.create_table()?;e.raw_set("script",instance::wrapper(lua,node.clone())?)?;
     for key in ["_G","shared"]{e.raw_set(key,base.raw_get::<Value>(key)?)?;}
     let mt=lua.create_table()?;mt.raw_set("__index",base)?;e.set_metatable(Some(mt))?;
     e.set_safeenv(true);
     crate::native::private_registry_value::<Table>(lua,ENV_OWNERS)?.raw_set(e.clone(),instance::wrapper(lua,node.clone())?)?;
-    table.raw_set(id,e.clone())?;Ok(e)
+    table.raw_set(key,e.clone())?;Ok(e)
 }
 fn thread_environment(lua:&Lua,thread:&Thread,node:&Link)->Result<()>{crate::scheduler::set_thread_environment(lua,thread,&env(lua,node)?)}
 fn callback_thread(lua:&Lua,node:&Link,key:&str,callback:Function)->Result<Thread>{
@@ -1680,7 +1718,7 @@ pub fn apply_changes(lua:&Lua,nodes:&[Json])->Result<()>{let s=required(lua)?;s.
 pub fn run_script(lua:&Lua,id:&str)->Result<Thread>{
     let n=lookup(lua,id).ok_or_else(||Error::runtime("Script unavailable"))?;let f=compile(lua,&n)?;let thread=lua.create_thread(f.clone())?;
     thread_environment(lua,&thread,&n)?;
-    crate::native::private_registry_value::<Table>(lua,SCRIPT_THREADS)?.raw_set(id,thread.clone())?;
+    crate::native::private_registry_value::<Table>(lua,SCRIPT_THREADS)?.raw_set(n.borrow().cache_id as i64,thread.clone())?;
     let name=n.borrow().name.clone();crate::scheduler::set_script_category(lua,&thread,&f,&name)?;
     crate::scheduler::spawn_with(lua,Value::Thread(thread),MultiValue::new(),Some("serial"),Some("game"))
 }

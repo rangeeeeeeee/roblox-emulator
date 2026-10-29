@@ -158,6 +158,38 @@ pub(crate) fn caller(lua: &Lua) -> Option<(String, i32)> {
     None
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SpyCaller {
+    source: String,
+    line: i32,
+    short_source: String,
+    defined_line: i32,
+    name: String,
+    nupvalues: u8,
+    nparams: u8,
+    isvararg: bool,
+}
+
+// These options only read active debug frames; unlike 'f', they never push a
+// function or execute Lua code. Keep this separate from ordinary output.
+pub(crate) fn spy_caller(lua: &Lua) -> Option<SpyCaller> {
+    unsafe {
+        for level in 1..32 {
+            let mut debug: ffi::lua_Debug = std::mem::zeroed();
+            if ffi::lua_getinfo(lua.state(), level, c"slnua".as_ptr(), &mut debug) == 0 { break; }
+            let source = bounded_c_string(debug.source, 512);
+            if debug.currentline > 0 && !source.is_empty() && source != "[C]" {
+                return Some(SpyCaller { source, line: debug.currentline,
+                    short_source: bounded_c_string(debug.short_src, 512), defined_line: debug.linedefined,
+                    name: bounded_c_string(debug.name, 128), nupvalues: debug.nupvals,
+                    nparams: debug.nparams, isvararg: debug.isvararg != 0 });
+            }
+        }
+    }
+    None
+}
+
 pub fn snapshot(lua: &Lua) -> Result<Json> {
     let Some(handle) = lua.app_data_ref::<Handle>() else {
         return Ok(json!({"enabled": false, "total": 0, "dropped": 0, "errors": []}));

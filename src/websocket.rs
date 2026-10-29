@@ -59,7 +59,12 @@ mod windows {
     unsafe impl Sync for Internet {}
     impl Drop for Internet {fn drop(&mut self){unsafe{WinHttpCloseHandle(self.0);}}}
     fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
-    fn check(value:i32,what:&str)->Result<(),String>{if value==0{Err(format!("WebSocket {what}: {}",io::Error::last_os_error()))}else{Ok(())}}
+    fn check(value:i32,what:&str)->Result<(),String>{
+        if value!=0{return Ok(())}
+        let error=io::Error::last_os_error();
+        if error.raw_os_error()==Some(12152){return Err(format!("WebSocket {what}: server returned an invalid response (WinHTTP 12152)"));}
+        Err(format!("WebSocket {what}: {error}"))
+    }
 
     pub struct Socket { _process:crate::sandbox_windows::WorkerProcess, commands:mpsc::SyncSender<Value> }
     impl Socket {

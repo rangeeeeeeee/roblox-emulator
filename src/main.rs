@@ -28,6 +28,7 @@ mod sandbox_windows {
 }
 mod console;
 mod inspector;
+mod packet_spy;
 mod lint;
 mod bytecode;
 
@@ -156,6 +157,7 @@ struct Scenario {
     #[serde(default = "default_engine")] engine: String,
     #[serde(default = "default_signal_behavior")] signal_behavior: String,
     #[serde(default)] trace_errors: bool,
+    #[serde(default)] default_animate: bool,
     #[serde(default = "default_duration")] duration: f64,
     #[serde(default = "default_step")] step: f64,
     #[serde(default = "default_memory")] memory_mb: usize,
@@ -176,7 +178,7 @@ fn default_executor_profile() -> String { "generic".into() }
 fn default_signal_behavior() -> String { "deferred".into() }
 
 #[derive(Clone)]
-struct Message { from: String, kind: String, payload: Json, at: f64, bytes: usize }
+struct Message { from: String, kind: String, payload: Json, at: f64, bytes: usize, origin: Option<diagnostics::SpyCaller> }
 struct Realm { config: RealmConfig, lua: Lua, deadline: Rc<Cell<Instant>>, wall_time_exceeded: Rc<Cell<bool>>, native: bool }
 struct Host {
     messages: Rc<RefCell<VecDeque<Message>>>,
@@ -185,6 +187,7 @@ struct Host {
     emitted: Rc<Cell<usize>>,
     pending_bytes: Rc<Cell<usize>>,
     log_sequence: Rc<Cell<u64>>,
+    packet_spy: Rc<RefCell<packet_spy::PacketSpy>>,
     bindables: model::BindableRegistry,
     log_registry: model::LogRegistry,
     network: Option<network::Broker>,
@@ -194,7 +197,7 @@ struct Host {
 
 impl Host {
     fn new() -> Self {
-        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), bindables: Default::default(), log_registry: Default::default(), network: None, interactive: false, quiet: false }
+        Self { messages: Default::default(), logs: Default::default(), clock: Default::default(), emitted: Default::default(), pending_bytes: Default::default(), log_sequence: Default::default(), packet_spy: Default::default(), bindables: Default::default(), log_registry: Default::default(), network: None, interactive: false, quiet: false }
     }
 
     fn interactive() -> Self { Self { interactive: true, network: Some(network::Broker::new()), ..Self::new() } }
@@ -257,10 +260,11 @@ impl Host {
         let messages = self.messages.clone();
         let emitted = self.emitted.clone();
         let pending_bytes = self.pending_bytes.clone();
+        let packet_spy = self.packet_spy.clone();
         let clock = self.clock.clone();
         let realm_id = cfg.id.clone();
         let latency = scenario.latency;
-        let emit=Rc::new(move |kind:String,payload:Json| -> LuaResult<()> {
+        let emit=Rc::new(move |lua:&Lua,kind:String,payload:Json| -> LuaResult<()> {
             let bytes = serde_json::to_vec(&payload).map_err(LuaError::external)?.len();
             if bytes > 1024 * 1024 {
                 return Err(LuaError::runtime("BudgetExceeded: message size"));
@@ -270,13 +274,16 @@ impl Host {
             emitted.set(emitted.get().saturating_add(1));
             pending_bytes.set(pending_bytes.get() + bytes);
             let delay = if kind.starts_with("remote_") { latency } else { 0.0 };
-            messages.borrow_mut().push_back(Message { from: realm_id.clone(), kind, payload, at: clock.get() + delay, bytes });
+            // Source metadata stays host-side and is captured only while the
+            // sender's VM is being inspected. It is never sent over the wire.
+            let origin=if matches!(kind.as_str(),"remote_event"|"remote_call") && packet_spy.borrow().watching(&realm_id) {diagnostics::spy_caller(lua)} else {None};
+            messages.borrow_mut().push_back(Message { from: realm_id.clone(), kind, payload, at: clock.get() + delay, bytes, origin });
             Ok(())
         });
         if native_mode {
             lua.set_app_data(model::MessageSink(emit));
         } else {
-            globals.set("__host_emit", lua.create_function(move |lua, (kind, payload): (String, Value)| emit(kind,lua.from_value(payload)?))?)?;
+            globals.set("__host_emit", lua.create_function(move |lua, (kind, payload): (String, Value)| emit(lua,kind,lua.from_value(payload)?))?)?;
             globals.set("__host_compile", lua.create_function(|lua, (source, name, environment): (String, String, Table)| {
                 if source.len() > 8 * 1024 * 1024 { return Err(LuaError::runtime("BudgetExceeded: source size")); }
                 lua.load(&source).set_mode(mlua::chunk::ChunkMode::Text).set_name(name).set_environment(environment).into_function()
@@ -364,6 +371,59 @@ fn table_field<'a>(table: &'a Json, key: &str) -> Option<&'a Json> {
 }
 fn json_text(value: &Json) -> Option<&str> {
     value.as_str().or_else(||(value["tag"]=="string").then(||value["value"].as_str()).flatten())
+}
+
+// Only scenarios that model Roblox's automatic character scripts opt in.
+// An explicitly supplied Animate always wins over the headless default.
+fn prepare_default_animations(scenario: &mut Scenario) {
+    if !scenario.default_animate { return; }
+    let mut used:std::collections::HashSet<String>=scenario.nodes.iter().map(|node|node_id(node).to_owned()).collect();
+    let mut characters=std::collections::HashSet::new();
+    let mut targets=Vec::new();
+    for (index, realm) in scenario.realms.iter().enumerate() {
+        if realm.side!="client" || realm.actor_id.is_some() { continue; }
+        let Some(player_id)=realm.client_id.as_deref() else { continue; };
+        let Some(player)=scenario.nodes.iter().find(|node|node_id(node)==player_id && node["class"]=="Player") else { continue; };
+        let Some(character)=table_field(&player["properties"],"Character")
+            .filter(|value|value["tag"]=="instance").and_then(|value|value["id"].as_str()) else { continue; };
+        if !scenario.nodes.iter().any(|node|node_id(node)==character && node["class"]=="Model" && node["destroyed"]!=true)
+            || !characters.insert(character.to_owned()) { continue; }
+        let Some(humanoid)=scenario.nodes.iter().find(|node|node["parent"]==character && node["class"]=="Humanoid" && node["destroyed"]!=true)
+            .map(node_id) else { continue; };
+        let needs_animator=!scenario.nodes.iter().any(|node|node["parent"]==humanoid && node["class"]=="Animator" && node["destroyed"]!=true);
+        let needs_script=!scenario.nodes.iter().any(|node|node["parent"]==character && node["name"]=="Animate" && node["destroyed"]!=true);
+        targets.push((index,character.to_owned(),humanoid.to_owned(),needs_animator,needs_script));
+    }
+    let mut serial=0usize;
+    let mut fresh=||loop {
+        serial+=1;let id=format!("__default_animate_{serial}");
+        if used.insert(id.clone()) {break id}
+    };
+    for (realm,character,humanoid,needs_animator,needs_script) in targets {
+        // Animator must originate in the shared model for client tracks to replicate.
+        if needs_animator {
+            scenario.nodes.push(json!({"id":fresh(),"class":"Animator","name":"Animator","parent":humanoid}));
+        }
+        if !needs_script {continue}
+        let id=fresh();
+        scenario.nodes.push(json!({"id":id,"class":"LocalScript","name":"Animate","parent":character,
+            "source":include_str!("../runtime/character_animate.luau")}));
+        scenario.realms[realm].entry.insert(0,id.clone());
+        for (group, clips) in [
+            ("idle", &[("Animation1","507766666"),("Animation2","507766951")][..]),
+            ("walk", &[("WalkAnim","507777826")]), ("run", &[("RunAnim","507767714")]),
+            ("jump", &[("JumpAnim","507765000")]), ("fall", &[("FallAnim","507767968")]),
+            ("climb", &[("ClimbAnim","507765644")]), ("swim", &[("Swim","507784897")]),
+            ("swimidle", &[("SwimIdle","507785072")]), ("sit", &[("SitAnim","2506281703")]),
+        ] {
+            let folder=fresh();
+            scenario.nodes.push(json!({"id":folder,"class":"Folder","name":group,"parent":id}));
+            for (name,asset) in clips {
+                scenario.nodes.push(json!({"id":fresh(),"class":"Animation","name":name,"parent":folder,
+                    "properties":{"AnimationId":format!("rbxassetid://{asset}")}}));
+            }
+        }
+    }
 }
 fn client_script_source(node: &Json, scenario: &Scenario) -> bool {
     if node["class"]!="Script" {return true}
@@ -483,6 +543,12 @@ fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
             let Some(server)=realms.iter().find(|realm|realm.config.side=="server")else{continue};
             if !model::animation_authorized(&server.lua,&msg.payload,if from.config.side=="client"{from.config.client_id.as_deref()}else{None})?{continue;}
         }
+        let remote_id=msg.payload.get("remoteId").and_then(Json::as_str).unwrap_or("");
+        let outgoing_blocked=msg.kind=="remote_event" && host.packet_spy.borrow().blocked(&from.lua,&from.config.id,"outgoing",remote_id);
+        if matches!(msg.kind.as_str(),"remote_event"|"remote_call"|"remote_return") && host.packet_spy.borrow().watching(&from.config.id) {
+            host.packet_spy.borrow_mut().observe(&from.lua,&from.config.id,&from.config.id,&from.config.side,&msg.kind,&target,&msg.payload,host.clock.get(),"outgoing",outgoing_blocked,msg.origin.as_ref());
+        }
+        if outgoing_blocked {continue;}
         for to in realms {
             let selected = match msg.kind.as_str() {
                 "animation" => to.config.id!=from.config.id,
@@ -497,7 +563,16 @@ fn route(host: &Host, realms: &[Realm], scenario: &Scenario) -> LuaResult<()> {
                 "remote_return" => to.config.id == target,
                 _ => return Err(LuaError::runtime(format!("UnsupportedMessage: {}", msg.kind))),
             };
-            if selected { to.arm(scenario.cpu_ms); to.deliver(&msg.kind, &msg.payload)?; }
+            if selected {
+                let incoming_blocked=msg.kind=="remote_event" && host.packet_spy.borrow().blocked(&to.lua,&to.config.id,"incoming",remote_id);
+                if matches!(msg.kind.as_str(),"remote_event"|"remote_call"|"remote_return")
+                    && host.packet_spy.borrow().watching(&to.config.id)
+                    && model::remote_spy_deliverable(&to.lua,&msg.kind,&msg.payload) {
+                    host.packet_spy.borrow_mut().observe(&to.lua,&to.config.id,&from.config.id,&from.config.side,&msg.kind,&target,&msg.payload,host.clock.get(),"incoming",incoming_blocked,None);
+                }
+                if incoming_blocked {continue;}
+                to.arm(scenario.cpu_ms); to.deliver(&msg.kind, &msg.payload)?;
+            }
         }
     }
     Ok(())
@@ -560,8 +635,10 @@ fn load_nodes(nodes: &mut [Json], base: &Path) -> Result<Vec<Json>, Box<dyn std:
     Ok(snapshots)
 }
 
-fn run_scenario(scenario: Scenario, source_snapshots: Vec<Json>) -> Result<Json, Box<dyn std::error::Error>> {
+fn run_scenario(mut scenario: Scenario, source_snapshots: Vec<Json>) -> Result<Json, Box<dyn std::error::Error>> {
     if !matches!(scenario.engine.as_str(), "native"|"behavioral") { return Err("engine must be native or behavioral".into()); }
+    if scenario.default_animate && scenario.engine!="native" {return Err("defaultAnimate requires the native engine".into());}
+    prepare_default_animations(&mut scenario);
     if !matches!(scenario.signal_behavior.as_str(), "immediate"|"deferred") { return Err("signalBehavior must be immediate or deferred".into()); }
     if !scenario.duration.is_finite() || !(0.0..=3600.0).contains(&scenario.duration) || !scenario.step.is_finite() || !(0.001..=1.0).contains(&scenario.step) || !scenario.latency.is_finite() || !(0.0..=60.0).contains(&scenario.latency) || !(8..=512).contains(&scenario.memory_mb) || !(10..=10000).contains(&scenario.cpu_ms) || scenario.realms.is_empty() || scenario.realms.len()>16 {
         return Err("Invalid scenario limits".into());

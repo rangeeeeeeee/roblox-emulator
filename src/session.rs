@@ -116,7 +116,7 @@ impl Session {
     pub(crate) fn stopped() -> Self {
         let scenario = Scenario {
             name: "Stopped".into(), engine: "native".into(), signal_behavior: "deferred".into(),
-            trace_errors: false, duration: 0.0, step: 1.0 / 60.0, memory_mb: 64, cpu_ms: 2000,
+            trace_errors: false, default_animate: false, duration: 0.0, step: 1.0 / 60.0, memory_mb: 64, cpu_ms: 2000,
             latency: 0.0, nodes: Vec::new(), realms: Vec::new(), expect: Vec::new(),
             reject: Vec::new(), expected_errors: Vec::new(),
         };
@@ -136,7 +136,7 @@ impl Session {
     pub(crate) fn default_scenario(profile: &str) -> Result<Scenario> {
         valid_profile(profile)?;
         let scenario: Scenario = serde_json::from_value(json!({
-            "name":"Interactive session", "engine":"native", "duration":0.0,
+            "name":"Interactive session", "engine":"native", "duration":0.0, "defaultAnimate":true,
             "nodes":[
                 {"id":"player1","class":"Player","name":"LocalPlayer","parent":"Players","properties":{"UserId":1,"Character":{"tag":"instance","id":"character1"}}},
                 {"id":"playerScripts1","class":"PlayerScripts","name":"PlayerScripts","parent":"player1"},
@@ -205,8 +205,9 @@ impl Session {
 
     pub(crate) fn set_origin(&mut self, origin: Option<String>) { self.origin=origin; }
 
-    pub(crate) fn from_scenario(scenario: Scenario) -> Result<Self> {
+    pub(crate) fn from_scenario(mut scenario: Scenario) -> Result<Self> {
         if scenario.engine != "native" { return Err(failure("Interactive sessions require the native engine")); }
+        crate::prepare_default_animations(&mut scenario);
         if !matches!(scenario.signal_behavior.as_str(), "immediate" | "deferred")
             || !scenario.step.is_finite() || !(0.001..=1.0).contains(&scenario.step)
             || !scenario.latency.is_finite() || !(0.0..=60.0).contains(&scenario.latency)
@@ -629,6 +630,22 @@ impl Session {
             return Err(failure("Completion path requires at most 16 segments of 1..256 bytes"));
         }
         Ok(json!({"items":model::completions(&realm.lua,path)?}))
+    }
+
+    pub(crate) fn packet_spy(&mut self, body:&Json)->Result<Json> {
+        if self.network_blocked(){return Err(failure("VMs are paused for network approval"));}
+        let action=body.get("action").and_then(Json::as_str).ok_or_else(||failure("Missing remote spy action"))?;
+        let realm=body.get("realm").and_then(Json::as_str).ok_or_else(||failure("Select a VM"))?;
+        let vm=self.realms.iter().find(|item|item.config.id==realm).ok_or_else(||failure("Select an available VM"))?;
+        let mut spy=self.host.packet_spy.borrow_mut();
+        if matches!(action,"block"|"unblock") {
+            let id=body.get("remoteId").and_then(Json::as_str).filter(|id|!id.is_empty()).ok_or_else(||failure("Select a RemoteEvent"))?;
+            let direction=body.get("direction").and_then(Json::as_str).ok_or_else(||failure("Select incoming or outgoing"))?;
+            let identity=if action=="block" {model::remote_spy_event_identity(&vm.lua,id)} else {None};
+            spy.set_block(realm,id,direction,identity,action=="block").map_err(failure)?;
+        } else {spy.control(action,realm).map_err(failure)?;}
+        spy.prune_blocks(&vm.lua,realm);
+        Ok(spy.snapshot(realm))
     }
 
     pub(crate) fn workspace_files(&self, realm: &str) -> Result<Json> {

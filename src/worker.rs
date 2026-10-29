@@ -68,6 +68,7 @@ fn execute(session: &mut Option<Session>, request: &Value) -> Result<Value,Strin
         "trace" => done(session.set_trace_errors(request.get("enabled").and_then(Value::as_bool).ok_or("Missing enabled")?)),
         "execute" => session.execute_input(string(request,"realm")?,string(request,"context")?,string(request,"source")?,string(request,"format")?).map_err(|error|error.to_string()),
         "gc_create" => done(session.create_gc_viewer(string(request,"realm")?)),
+        "packet_spy" => session.packet_spy(request.get("body").ok_or("Missing body")?).map_err(|error|error.to_string()),
         "input" => done(session.keyboard_input(string(request,"realm")?,string(request,"key")?,request.get("down").and_then(Value::as_bool).ok_or("Missing down")?)),
         "advance" => done(session.advance(request.get("seconds").and_then(Value::as_f64).ok_or("Missing seconds")?).map(|_|())),
         "completions" => {

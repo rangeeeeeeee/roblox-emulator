@@ -575,7 +575,7 @@ impl Place {
             if side == "client" { realm["clientId"] = json!("player1"); }
             realms.push(realm);
         }
-        serde_json::from_value(json!({"name":self.name,"engine":"native","duration":0.0,"nodes":scenario_nodes,"realms":realms}))
+        serde_json::from_value(json!({"name":self.name,"engine":"native","duration":0.0,"defaultAnimate":true,"nodes":scenario_nodes,"realms":realms}))
             .map_err(|e| format!("Invalid generated scenario: {e}"))
     }
 }

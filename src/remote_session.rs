@@ -297,6 +297,7 @@ impl Session {
     pub(crate) fn create_gc_viewer(&mut self,realm:&str)->Result<()> {
         self.call(json!({"op":"gc_create","realm":realm})).map(|_|())
     }
+    pub(crate) fn packet_spy(&mut self,body:&Value)->Result<Value> {self.call(json!({"op":"packet_spy","body":body}))}
     pub(crate) fn keyboard_input(&mut self,realm:&str,key:&str,down:bool)->Result<()> {
         self.call(json!({"op":"input","realm":realm,"key":key,"down":down})).map(|_|())
     }

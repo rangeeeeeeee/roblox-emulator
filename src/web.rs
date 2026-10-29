@@ -271,6 +271,7 @@ impl App {
                 .map_err(|error|error.to_string());
         }
         if path == "/api/inspect" { return self.session.inspect(&body).map_err(|error|error.to_string()); }
+        if path == "/api/packet-spy" { return self.session.packet_spy(&body).map_err(|error|error.to_string()); }
         if path == "/api/runtime/update" {
             let result = self.session.runtime_update(&body,self.running).map_err(|error|error.to_string())?;
             let mut state = self.snapshot().map_err(|error|error.to_string())?;
